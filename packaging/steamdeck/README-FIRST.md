@@ -1,21 +1,15 @@
-# Install GDOX on Steam Deck
+# gdox / steam deck
 
-1. Switch to Desktop Mode and extract this archive.
-2. Open the extracted folder and run `install.sh`.
-3. Complete the single administrator prompt for USB-drive access.
-4. Return to Gaming Mode and launch **GDOX** from the Non-Steam library.
+1. in desktop mode, extract the archive and run `install.sh`.
+2. complete the one administrator prompt.
+3. return to gaming mode and open gdox from the non-steam library.
+4. add your firmware, connect the `HL-DT-ST GP63EX70 RF02`, and insert a disc.
 
-The installer creates one Steam shortcut with library artwork. Reinstalling
-updates that shortcut instead of adding another copy. GDOX opens at the Deck's
-1280 x 800 display size; xemu starts fullscreen with a 16:9 game picture and
-2x internal rendering by default. Select **Quit** at the top right to close
-GDOX.
+d-pad and A navigate. LB/RB change pages. gdox hands the controller to xemu
+while a game runs.
 
-The bundled xemu runtime and blank Xbox HDD are included. Firmware you provide,
-xemu configuration, and game saves stay in private home-directory data and are
-not replaced by application updates. Preservation output defaults to the same
-persistent data area and can be redirected from Sources.
+reinstalling updates the same shortcut and leaves firmware, hdd data, settings,
+saves, and preservation output alone.
 
-Connect the supported `HL-DT-ST GP63EX70 RF02` drive before inserting a disc.
-If the Deck account has no administrator password yet, set one once with
-`passwd` in Konsole, then rerun the installer.
+if the deck has no administrator password, set one with `passwd` in konsole
+before installing.

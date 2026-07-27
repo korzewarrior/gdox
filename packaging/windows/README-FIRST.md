@@ -1,15 +1,12 @@
-# Run GDOX on Windows
+# gdox / windows
 
-1. Connect the supported `HL-DT-ST GP63EX70 RF02` USB drive.
-2. Double-click `gdox.exe`.
-3. If requested, drag your own 512-byte MCPX 1.0 dump and compatible
-   256 KiB, 512 KiB, or 1 MiB Xbox BIOS onto the GDOX window.
-4. Insert an original Xbox disc.
+1. open `gdox.exe`.
+2. add your MCPX rom and xbox bios on sources.
+3. connect the `HL-DT-ST GP63EX70 RF02`.
+4. insert an original xbox disc.
+5. choose start xemu.
 
-The xemu runtime and blank HDD template are already in this folder. GDOX
-creates a private writable HDD and settings under your Windows account;
-replacing this release folder does not replace saves or firmware. GDOX does
-not install the inserted game during normal play.
+keep this folder together. your firmware, hdd, settings, and saves live in
+appdata and survive app updates.
 
-GDOX uses the standard Windows optical-storage driver. Do not replace it with
-WinUSB or install a third-party device driver.
+keep the stock cd-rom and usb storage drivers. do not install winusb or zadig.
