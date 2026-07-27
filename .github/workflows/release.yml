@@ -76,7 +76,7 @@ jobs:
           --output dist/release
       - name: Audit release payload
         run: python scripts/audit_release.py --path dist/release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gdox-${{ matrix.target }}
           path: |
@@ -104,7 +104,7 @@ jobs:
           --output dist/release
       - name: Audit release payload
         run: python scripts/audit_release.py --path dist/release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gdox-x86_64-pc-windows-msvc
           path: |
@@ -126,7 +126,7 @@ jobs:
         run: python scripts/fetch_runtime.py source --output dist
       - name: Audit source payload
         run: python scripts/audit_release.py --path dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sources
           path: |
