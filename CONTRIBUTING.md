@@ -9,8 +9,8 @@ contact me before shipping or ordering anything.
 ## drive code
 
 a new drive gets its own adapter, exact identity check, recovery path, and
-physical test results. never loosen the gp63 check or try unknown drive-memory
-commands on similar hardware.
+physical test results. never loosen an existing drive check or try unknown
+drive-memory commands on similar hardware.
 
 ## everything else
 

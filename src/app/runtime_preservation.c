@@ -131,7 +131,13 @@ bool gdox_runtime_run_preservation(
     );
     gdox_runtime_publish(runtime, snapshot);
 
-    if (!gdox_optical_open_gp63(3U, 30000U, &whole, error)
+    if (!gdox_optical_open(
+            runtime->optical_drive,
+            3U,
+            30000U,
+            &whole,
+            error
+        )
         || !gdox_xdvdfs_find_volume(&whole, &volume, error)
         || !gdox_xdvdfs_inspect(&whole, &volume, &metadata, error)) {
         goto cleanup;

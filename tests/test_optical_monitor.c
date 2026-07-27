@@ -5,8 +5,12 @@
 void gdox_test_optical_monitor(void)
 {
     gdox_optical_monitor monitor;
-    gdox_optical_presence ready = {true, true, true};
-    gdox_optical_presence absent = {false, false, false};
+    gdox_optical_presence ready = {
+        .drive_present = true,
+        .media_status_known = true,
+        .media_present = true,
+    };
+    gdox_optical_presence absent = {0};
     uint32_t observation;
 
     gdox_optical_monitor_initialize(&monitor);

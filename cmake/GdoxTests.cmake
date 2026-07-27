@@ -12,10 +12,12 @@ add_executable(
     tests/test_preserve.c
     tests/test_protocol.c
     tests/test_runtime_bundle.c
+    tests/test_scsi_transport.c
     tests/test_security.c
     tests/test_session.c
     tests/test_source.c
     tests/test_xdvdfs.c
+    src/platform/scsi_transport.c
 )
 target_link_libraries(gdox_tests PRIVATE gdox::core)
 target_sources(
@@ -48,6 +50,7 @@ set(
     preservation_naming
     preserve
     runtime_bundle
+    scsi_transport
     security
     session
     source
@@ -56,3 +59,16 @@ set(
 foreach(group IN LISTS GDOX_TEST_GROUPS)
     add_test(NAME core.${group} COMMAND gdox_tests ${group})
 endforeach()
+
+if(GDOX_BUILD_OPTICAL)
+    add_executable(gdox_gp08_tests tests/test_gp08_source.c)
+    target_include_directories(
+        gdox_gp08_tests
+        PRIVATE
+            tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(gdox_gp08_tests PRIVATE gdox::optical)
+    gdox_enable_c_warnings(gdox_gp08_tests)
+    add_test(NAME optical.gp08 COMMAND gdox_gp08_tests)
+endif()

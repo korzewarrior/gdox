@@ -13,8 +13,11 @@ gdox can also make a playable xiso or a full-disc archival image.
 
 ## now
 
-0.1.0 is an active development release. direct-disc playback currently needs
-the stock `HL-DT-ST GP63EX70` with `RF02` firmware.
+0.1.0 is an active development release. direct-disc playback is validated with
+the stock `HL-DT-ST GP63EX70` with `RF02` firmware. an exact-identity
+`HL-DT-ST GP08NU10 JE01` profile is also included after a community-reported
+successful activation and xbox-sector read from Eddi (`@eddifpv`); live-play
+testing remains.
 
 linux, steam deck, macos, and windows builds are available. android is still
 in development.

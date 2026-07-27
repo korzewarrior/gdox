@@ -21,6 +21,17 @@ typedef struct gdox_scsi_transport_ops {
         size_t *transferred,
         gdox_error *error
     );
+    bool (*command_out)(
+        void *context,
+        const char *name,
+        const uint8_t *cdb,
+        size_t cdb_bytes,
+        const uint8_t *input,
+        size_t input_bytes,
+        uint32_t timeout_ms,
+        size_t *transferred,
+        gdox_error *error
+    );
     bool (*command_none)(
         void *context,
         const char *name,
@@ -46,6 +57,17 @@ bool gdox_scsi_command_in(
     size_t cdb_bytes,
     uint8_t *output,
     size_t output_bytes,
+    uint32_t timeout_ms,
+    size_t *transferred,
+    gdox_error *error
+);
+bool gdox_scsi_command_out(
+    gdox_scsi_transport *transport,
+    const char *name,
+    const uint8_t *cdb,
+    size_t cdb_bytes,
+    const uint8_t *input,
+    size_t input_bytes,
     uint32_t timeout_ms,
     size_t *transferred,
     gdox_error *error

@@ -3,7 +3,7 @@
 1. in desktop mode, extract the archive and run `install.sh`.
 2. complete the one administrator prompt.
 3. return to gaming mode and open gdox from the non-steam library.
-4. add your firmware, connect the `HL-DT-ST GP63EX70 RF02`, and insert a disc.
+4. add your firmware, connect a supported optical drive, and insert a disc.
 
 d-pad and A navigate. LB/RB change pages. gdox hands the controller to xemu
 while a game runs.

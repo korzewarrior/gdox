@@ -1,3 +1,5 @@
+#include "gdox/optical.h"
+
 #include <CoreFoundation/CoreFoundation.h>
 #include <DiskArbitration/DiskArbitration.h>
 #include <IOKit/IOCFPlugIn.h>
@@ -24,6 +26,12 @@ typedef struct {
     int status;
     unsigned references;
 } GdoxMacUnmountContext;
+
+typedef enum {
+    kGdoxMacDriveUnknown = 0,
+    kGdoxMacDriveGp63,
+    kGdoxMacDriveGp08,
+} GdoxMacDriveIdentity;
 
 enum {
     kGdoxMacScsiOpenMountBusy = 7,
@@ -101,10 +109,51 @@ static int service_ancestor_number_equals(
     return actual == expected;
 }
 
-static int service_is_supported_gp63(io_service_t service)
+static GdoxMacDriveIdentity requested_identity(
+    uint16_t vendor_id,
+    uint16_t product_id)
 {
-    return service_ancestor_number_equals(service, CFSTR("idVendor"), 0x0e8d)
-        && service_ancestor_number_equals(service, CFSTR("idProduct"), 0x1887)
+    if (vendor_id == GDOX_GP63_USB_VENDOR_ID
+        && product_id == GDOX_GP63_USB_PRODUCT_ID) {
+        return kGdoxMacDriveGp63;
+    }
+    if (vendor_id == GDOX_GP08_USB_VENDOR_ID
+        && product_id == GDOX_GP08_USB_PRODUCT_ID) {
+        return kGdoxMacDriveGp08;
+    }
+    return kGdoxMacDriveUnknown;
+}
+
+static int service_is_supported_drive(
+    io_service_t service,
+    GdoxMacDriveIdentity identity)
+{
+    int vendor_id;
+    int product_id;
+    CFStringRef model;
+    CFStringRef revision;
+
+    if (identity == kGdoxMacDriveGp63) {
+        vendor_id = GDOX_GP63_USB_VENDOR_ID;
+        product_id = GDOX_GP63_USB_PRODUCT_ID;
+        model = CFSTR("DVDRAM GP63EX70");
+        revision = CFSTR("RF02");
+    } else if (identity == kGdoxMacDriveGp08) {
+        vendor_id = GDOX_GP08_USB_VENDOR_ID;
+        product_id = GDOX_GP08_USB_PRODUCT_ID;
+        model = CFSTR(GDOX_GP08_SCSI_MODEL);
+        revision = CFSTR(GDOX_GP08_SCSI_REVISION);
+    } else {
+        return 0;
+    }
+    return service_ancestor_number_equals(
+               service,
+               CFSTR("idVendor"),
+               vendor_id)
+        && service_ancestor_number_equals(
+               service,
+               CFSTR("idProduct"),
+               product_id)
         && service_dictionary_string_equals(
                service,
                CFSTR("Device Characteristics"),
@@ -114,12 +163,12 @@ static int service_is_supported_gp63(io_service_t service)
                service,
                CFSTR("Device Characteristics"),
                CFSTR("Product Name"),
-               CFSTR("DVDRAM GP63EX70"))
+               model)
         && service_dictionary_string_equals(
                service,
                CFSTR("Device Characteristics"),
                CFSTR("Product Revision Level"),
-               CFSTR("RF02"))
+               revision)
         && service_dictionary_string_equals(
                service,
                CFSTR("Protocol Characteristics"),
@@ -127,7 +176,7 @@ static int service_is_supported_gp63(io_service_t service)
                CFSTR("USB"));
 }
 
-static io_service_t find_supported_gp63(void)
+static io_service_t find_supported_drive(GdoxMacDriveIdentity identity)
 {
     io_iterator_t iterator = IO_OBJECT_NULL;
     kern_return_t result = IOServiceGetMatchingServices(
@@ -139,7 +188,7 @@ static io_service_t find_supported_gp63(void)
     io_service_t selected = IO_OBJECT_NULL;
     io_service_t service;
     while ((service = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
-        if (service_is_supported_gp63(service)) {
+        if (service_is_supported_drive(service, identity)) {
             selected = service;
             break;
         }
@@ -149,9 +198,9 @@ static io_service_t find_supported_gp63(void)
     return selected;
 }
 
-static io_service_t find_supported_gp63_media(void)
+static io_service_t find_supported_media(GdoxMacDriveIdentity identity)
 {
-    io_service_t drive = find_supported_gp63();
+    io_service_t drive = find_supported_drive(identity);
     if (drive == IO_OBJECT_NULL) return IO_OBJECT_NULL;
 
     io_iterator_t iterator = IO_OBJECT_NULL;
@@ -176,19 +225,29 @@ static io_service_t find_supported_gp63_media(void)
     return selected;
 }
 
-int gdox_macos_scsi_observe(int *drive_present, int *media_present)
+int gdox_macos_scsi_observe(
+    uint16_t vendor_id,
+    uint16_t product_id,
+    int *drive_present,
+    int *media_present)
 {
+    GdoxMacDriveIdentity identity =
+        requested_identity(vendor_id, product_id);
     io_service_t drive;
     io_service_t media;
 
-    if (drive_present == NULL || media_present == NULL) return 1;
+    if (identity == kGdoxMacDriveUnknown
+        || drive_present == NULL
+        || media_present == NULL) {
+        return 1;
+    }
     *drive_present = 0;
     *media_present = 0;
-    drive = find_supported_gp63();
+    drive = find_supported_drive(identity);
     if (drive == IO_OBJECT_NULL) return 0;
     *drive_present = 1;
     IOObjectRelease(drive);
-    media = find_supported_gp63_media();
+    media = find_supported_media(identity);
     if (media != IO_OBJECT_NULL) {
         *media_present = 1;
         IOObjectRelease(media);
@@ -197,13 +256,14 @@ int gdox_macos_scsi_observe(int *drive_present, int *media_present)
 }
 
 static int open_mmc(
+    GdoxMacDriveIdentity identity,
     MMCDeviceInterface ***output,
     char *error,
     size_t error_capacity)
 {
-    io_service_t service = find_supported_gp63();
+    io_service_t service = find_supported_drive(identity);
     if (service == IO_OBJECT_NULL) {
-        set_error(error, error_capacity, "the supported GP63 optical service is not available");
+        set_error(error, error_capacity, "the requested optical service is not available");
         return 1;
     }
 
@@ -239,45 +299,51 @@ static int open_mmc(
     return 0;
 }
 
-static int description_string_contains(
-    CFDictionaryRef description,
-    CFStringRef key,
-    CFStringRef expected)
+static io_service_t find_dvd_service_ancestor(io_service_t service)
 {
-    CFTypeRef value = CFDictionaryGetValue(description, key);
-    return value != NULL
-        && CFGetTypeID(value) == CFStringGetTypeID()
-        && CFStringFind(
-               (CFStringRef)value,
-               expected,
-               kCFCompareCaseInsensitive).location != kCFNotFound;
+    io_service_t current = service;
+
+    if (IOObjectRetain(current) != KERN_SUCCESS) {
+        return IO_OBJECT_NULL;
+    }
+    for (;;) {
+        io_service_t parent = IO_OBJECT_NULL;
+        if (IOObjectConformsTo(current, "IODVDServices")) {
+            return current;
+        }
+        if (IORegistryEntryGetParentEntry(
+                current,
+                kIOServicePlane,
+                &parent) != KERN_SUCCESS) {
+            IOObjectRelease(current);
+            return IO_OBJECT_NULL;
+        }
+        IOObjectRelease(current);
+        current = parent;
+    }
 }
 
-static int disk_is_supported_gp63(DADiskRef disk)
+static int disk_is_supported_drive(DADiskRef disk)
 {
-    CFDictionaryRef description = DADiskCopyDescription(disk);
-    if (description == NULL) return 0;
-    int matches =
-        description_string_contains(
-            description,
-            kDADiskDescriptionDeviceVendorKey,
-            CFSTR("HL-DT-ST"))
-        && description_string_contains(
-            description,
-            kDADiskDescriptionDeviceModelKey,
-            CFSTR("GP63EX70"))
-        && description_string_contains(
-            description,
-            kDADiskDescriptionDeviceProtocolKey,
-            CFSTR("USB"));
-    CFRelease(description);
+    io_service_t media = DADiskCopyIOMedia(disk);
+    io_service_t drive;
+    int matches;
+
+    if (media == IO_OBJECT_NULL) return 0;
+    drive = find_dvd_service_ancestor(media);
+    IOObjectRelease(media);
+    if (drive == IO_OBJECT_NULL) return 0;
+    matches =
+        service_is_supported_drive(drive, kGdoxMacDriveGp63)
+        || service_is_supported_drive(drive, kGdoxMacDriveGp08);
+    IOObjectRelease(drive);
     return matches;
 }
 
-static DADissenterRef prevent_gp63_mount(DADiskRef disk, void *context)
+static DADissenterRef prevent_supported_mount(DADiskRef disk, void *context)
 {
     (void)context;
-    if (!disk_is_supported_gp63(disk)) return NULL;
+    if (!disk_is_supported_drive(disk)) return NULL;
     return DADissenterCreate(
         kCFAllocatorDefault,
         kDAReturnExclusiveAccess,
@@ -299,7 +365,7 @@ static void initialize_mount_guard(void)
     DARegisterDiskMountApprovalCallback(
         mount_guard_session,
         NULL,
-        prevent_gp63_mount,
+        prevent_supported_mount,
         NULL);
     DASessionSetDispatchQueue(mount_guard_session, mount_guard_queue);
 }
@@ -360,12 +426,22 @@ static void unmount_complete(
     unmount_context_release(context);
 }
 
-int gdox_macos_scsi_release_system_media(char *error, size_t error_capacity)
+int gdox_macos_scsi_release_system_media(
+    uint16_t vendor_id,
+    uint16_t product_id,
+    char *error,
+    size_t error_capacity)
 {
+    GdoxMacDriveIdentity identity =
+        requested_identity(vendor_id, product_id);
+    if (identity == kGdoxMacDriveUnknown) {
+        set_error(error, error_capacity, "the requested optical service is unsupported");
+        return 1;
+    }
     int guard = gdox_macos_scsi_start_mount_guard(error, error_capacity);
     if (guard != 0) return guard;
 
-    io_service_t media = find_supported_gp63_media();
+    io_service_t media = find_supported_media(identity);
     if (media == IO_OBJECT_NULL) return 0;
     DADiskRef disk = DADiskCreateFromIOMedia(
         kCFAllocatorDefault,
@@ -373,7 +449,7 @@ int gdox_macos_scsi_release_system_media(char *error, size_t error_capacity)
         media);
     IOObjectRelease(media);
     if (disk == NULL) {
-        set_error(error, error_capacity, "could not identify the published GP63 media");
+        set_error(error, error_capacity, "could not identify the published optical media");
         return 2;
     }
     DADiskRef whole_disk = DADiskCopyWholeDisk(disk);
@@ -428,11 +504,19 @@ int gdox_macos_scsi_release_system_media(char *error, size_t error_capacity)
 }
 
 int gdox_macos_scsi_inquiry(
+    uint16_t vendor_id,
+    uint16_t product_id,
     uint8_t *output,
     size_t output_length,
     char *error,
     size_t error_capacity)
 {
+    GdoxMacDriveIdentity identity =
+        requested_identity(vendor_id, product_id);
+    if (identity == kGdoxMacDriveUnknown) {
+        set_error(error, error_capacity, "the requested optical service is unsupported");
+        return 1;
+    }
     if (output == NULL || output_length < 36) {
         set_error(error, error_capacity, "the INQUIRY buffer is too small");
         return 1;
@@ -440,7 +524,7 @@ int gdox_macos_scsi_inquiry(
     int guard = gdox_macos_scsi_start_mount_guard(error, error_capacity);
     if (guard != 0) return guard;
     MMCDeviceInterface **mmc = NULL;
-    int opened = open_mmc(&mmc, error, error_capacity);
+    int opened = open_mmc(identity, &mmc, error, error_capacity);
     if (opened != 0) return opened;
 
     SCSITaskStatus status = 0;
@@ -476,10 +560,18 @@ int gdox_macos_scsi_inquiry(
 }
 
 int gdox_macos_scsi_media_present(
+    uint16_t vendor_id,
+    uint16_t product_id,
     int *present,
     char *error,
     size_t error_capacity)
 {
+    GdoxMacDriveIdentity identity =
+        requested_identity(vendor_id, product_id);
+    if (identity == kGdoxMacDriveUnknown) {
+        set_error(error, error_capacity, "the requested optical service is unsupported");
+        return 1;
+    }
     if (present == NULL) {
         set_error(error, error_capacity, "the media-status output is missing");
         return 1;
@@ -487,7 +579,7 @@ int gdox_macos_scsi_media_present(
     int guard = gdox_macos_scsi_start_mount_guard(error, error_capacity);
     if (guard != 0) return guard;
     MMCDeviceInterface **mmc = NULL;
-    int opened = open_mmc(&mmc, error, error_capacity);
+    int opened = open_mmc(identity, &mmc, error, error_capacity);
     if (opened != 0) return opened;
 
     SCSITaskStatus status = 0;
@@ -534,10 +626,18 @@ int gdox_macos_scsi_media_present(
 }
 
 int gdox_macos_scsi_open(
+    uint16_t vendor_id,
+    uint16_t product_id,
     GdoxMacScsiDevice **output,
     char *error,
     size_t error_capacity)
 {
+    GdoxMacDriveIdentity identity =
+        requested_identity(vendor_id, product_id);
+    if (identity == kGdoxMacDriveUnknown) {
+        set_error(error, error_capacity, "the requested optical service is unsupported");
+        return 1;
+    }
     if (output == NULL) {
         set_error(error, error_capacity, "the native-device output is missing");
         return 1;
@@ -547,7 +647,7 @@ int gdox_macos_scsi_open(
     if (guard != 0) return guard;
 
     MMCDeviceInterface **mmc = NULL;
-    int opened = open_mmc(&mmc, error, error_capacity);
+    int opened = open_mmc(identity, &mmc, error, error_capacity);
     if (opened != 0) return opened;
     SCSITaskDeviceInterface **scsi = (*mmc)->GetSCSITaskDeviceInterface(mmc);
     if (scsi == NULL) {
@@ -601,6 +701,7 @@ static int execute(
     size_t cdb_length,
     uint8_t *data,
     size_t data_length,
+    int data_out,
     uint32_t timeout_ms,
     uint8_t *sense_output,
     size_t sense_capacity,
@@ -638,7 +739,9 @@ static int execute(
             &range,
             1,
             data_length,
-            kSCSIDataTransfer_FromTargetToInitiator);
+            data_out
+                ? kSCSIDataTransfer_FromInitiatorToTarget
+                : kSCSIDataTransfer_FromTargetToInitiator);
     }
     if (result == kIOReturnSuccess) {
         result = (*task)->SetTimeoutDuration(task, timeout_ms);
@@ -706,6 +809,39 @@ int gdox_macos_scsi_command_in(
         cdb_length,
         data,
         data_length,
+        0,
+        timeout_ms,
+        sense,
+        sense_capacity,
+        transferred,
+        error,
+        error_capacity);
+}
+
+int gdox_macos_scsi_command_out(
+    GdoxMacScsiDevice *device,
+    const uint8_t *cdb,
+    size_t cdb_length,
+    const uint8_t *data,
+    size_t data_length,
+    uint32_t timeout_ms,
+    uint8_t *sense,
+    size_t sense_capacity,
+    size_t *transferred,
+    char *error,
+    size_t error_capacity)
+{
+    if (data == NULL || data_length == 0) {
+        set_error(error, error_capacity, "the native SCSI data buffer is empty");
+        return 1;
+    }
+    return execute(
+        device,
+        cdb,
+        cdb_length,
+        (uint8_t *)data,
+        data_length,
+        1,
         timeout_ms,
         sense,
         sense_capacity,
@@ -730,6 +866,7 @@ int gdox_macos_scsi_command_none(
         cdb,
         cdb_length,
         NULL,
+        0,
         0,
         timeout_ms,
         sense,

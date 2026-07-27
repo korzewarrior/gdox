@@ -3,7 +3,9 @@ find_package(PkgConfig QUIET)
 add_library(
     gdox_optical
     STATIC
+        src/platform/gp08_source.c
         src/platform/mt1887_source.c
+        src/platform/optical.c
         src/platform/scsi_transport.c
 )
 add_library(gdox::optical ALIAS gdox_optical)
@@ -34,6 +36,7 @@ if(APPLE)
     target_compile_definitions(gdox_optical PUBLIC GDOX_HAS_LIBUSB=0)
 elseif(WIN32)
     target_sources(gdox_optical PRIVATE src/platform/usb_bot_windows.c)
+    target_link_libraries(gdox_optical PRIVATE cfgmgr32 setupapi)
     target_compile_definitions(gdox_optical PUBLIC GDOX_HAS_LIBUSB=0)
 elseif(PkgConfig_FOUND)
     pkg_check_modules(LIBUSB QUIET IMPORTED_TARGET libusb-1.0)

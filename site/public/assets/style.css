@@ -1,0 +1,302 @@
+@font-face {
+  font-family: "Chakra Petch";
+  src: url("/assets/fonts/chakra-petch-v13-latin-400.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
+:root {
+  --background: #07140b;
+  --text: #b7c5b9;
+  --heading: #e8f1e9;
+  --green: #91ec68;
+  --muted: #819184;
+  --width: 38rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+  background: var(--background);
+}
+
+body {
+  width: min(calc(100% - 4rem), var(--width));
+  margin: 0 auto;
+  color: var(--text);
+  background: var(--background);
+  font: 400 15px/1.6 "Chakra Petch", ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--green);
+  text-underline-offset: 0.18em;
+}
+
+a:hover {
+  color: var(--heading);
+}
+
+:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 3px;
+}
+
+::selection {
+  background: var(--green);
+  color: var(--background);
+}
+
+.skip-link {
+  position: fixed;
+  top: 0.75rem;
+  left: 0.75rem;
+  translate: 0 -200%;
+  padding: 0.4rem 0.6rem;
+  background: var(--green);
+  color: var(--background);
+}
+
+.skip-link:focus {
+  translate: 0;
+}
+
+main {
+  padding: 3.5rem 0;
+}
+
+section {
+  margin-top: 2.5rem;
+}
+
+h1,
+h2,
+h3 {
+  color: var(--heading);
+  line-height: 1.2;
+}
+
+h1,
+h2,
+h3,
+strong,
+b {
+  font-weight: 400;
+}
+
+h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.2rem;
+  letter-spacing: 0;
+}
+
+h2 {
+  margin: 0 0 0.9rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+p {
+  max-width: 38rem;
+  margin: 0.65rem 0;
+}
+
+.download-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+  margin-top: 1.25rem;
+}
+
+.primary-download {
+  display: inline-block;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--green);
+  color: var(--background);
+  background: var(--green);
+  line-height: 1.2;
+  text-decoration: none;
+}
+
+.primary-download:hover {
+  border-color: var(--heading);
+  color: var(--background);
+  background: var(--heading);
+}
+
+.secondary-action {
+  display: inline-block;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--muted);
+  color: var(--green);
+  line-height: 1.2;
+  text-decoration: none;
+}
+
+.secondary-action:hover {
+  border-color: var(--heading);
+  color: var(--heading);
+}
+
+code {
+  color: inherit;
+  font-family: inherit;
+  font-weight: inherit;
+}
+
+pre {
+  font: inherit;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+ul,
+ol {
+  padding-left: 1.25rem;
+}
+
+li + li {
+  margin-top: 0.3rem;
+}
+
+.index p {
+  margin: 0;
+  padding: 0.35rem 0;
+}
+
+.drive {
+  scroll-margin-top: 1rem;
+  padding: 1rem 0;
+}
+
+.drive + .drive {
+  margin-top: 1rem;
+}
+
+.contributor-credit {
+  display: grid;
+  grid-template-columns: 5.4rem 1fr;
+  gap: 1rem;
+  align-items: start;
+  margin: 0.9rem 0;
+}
+
+.contributor-credit img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.contributor-credit figcaption {
+  padding-top: 0.15rem;
+}
+
+.disc-analogy {
+  margin: 0.8rem 0 0;
+}
+
+.disc-analogy img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.disc-analogy figcaption {
+  margin-top: 0.6rem;
+}
+
+summary {
+  color: var(--green);
+  cursor: pointer;
+  font-weight: 400;
+}
+
+summary:hover {
+  color: var(--heading);
+}
+
+details[open] summary {
+  margin-bottom: 1.25rem;
+}
+
+.technical h3 {
+  margin: 1.5rem 0 0.35rem;
+  color: var(--muted);
+}
+
+.technical-table-wrap {
+  overflow-x: auto;
+}
+
+.technical-table {
+  width: 100%;
+  margin: 0.75rem 0;
+  border-collapse: collapse;
+}
+
+.technical-table th,
+.technical-table td {
+  padding: 0.35rem 0.45rem;
+  border-bottom: 1px solid rgb(129 145 132 / 30%);
+  text-align: left;
+  vertical-align: top;
+}
+
+.technical-table th {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.technical-table code {
+  white-space: nowrap;
+}
+
+.reading ul {
+  margin-bottom: 0;
+}
+
+.reading li span {
+  display: block;
+}
+
+.reading li + li {
+  margin-top: 0.85rem;
+}
+
+footer {
+  margin-top: 3rem;
+  padding: 1.25rem 0 0;
+}
+
+.footer-links {
+  display: flex;
+  gap: 1rem;
+}
+
+.disclaimer {
+  margin-top: 1rem;
+}
+
+@media (max-width: 32rem) {
+  body {
+    width: min(calc(100% - 2rem), var(--width));
+  }
+
+  main {
+    padding: 2rem 0;
+  }
+}

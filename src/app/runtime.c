@@ -538,7 +538,7 @@ static void publish_empty_drive(
     gdox_runtime_copy_text(
         snapshot->drive,
         sizeof(snapshot->drive),
-        "HL-DT-ST DVDRAM GP63EX70 RF02"
+        gdox_optical_drive_name(runtime->optical_drive)
     );
     gdox_runtime_copy_text(
         snapshot->disc,
@@ -591,6 +591,7 @@ static bool prepare_live_session(
     gdox_runtime_set_controls(snapshot, false, false);
     gdox_runtime_publish(runtime, snapshot);
     if (!gdox_runtime_media_open_physical(
+            runtime->optical_drive,
             &runtime->exported,
             &media,
             error
@@ -751,6 +752,7 @@ static void select_physical_source(
     snapshot->image_game_partition_lba = 0U;
     snapshot->disc_image_path[0] = '\0';
     snapshot->phase = GDOX_RUNTIME_DISCOVERING;
+    runtime->optical_drive = GDOX_OPTICAL_DRIVE_NONE;
     gdox_runtime_copy_text(
         snapshot->drive,
         sizeof(snapshot->drive),
@@ -974,7 +976,10 @@ static void runtime_thread(void *raw_runtime)
             if (runtime->preservation_hold) {
                 if ((commands & GDOX_RUNTIME_COMMAND_EJECT) != 0U) {
                     runtime->preservation_hold = false;
-                    if (!gdox_optical_eject_gp63(&error)) {
+                    if (!gdox_optical_eject(
+                            runtime->optical_drive,
+                            &error
+                        )) {
                         attention(runtime, &snapshot, "Eject failed", &error, false, false);
                     }
                     observation_delay = GDOX_OBSERVATION_INTERVAL_TICKS;
@@ -992,7 +997,7 @@ static void runtime_thread(void *raw_runtime)
                 }
             }
             if ((commands & GDOX_RUNTIME_COMMAND_EJECT) != 0U) {
-                if (!gdox_optical_eject_gp63(&error)) {
+                if (!gdox_optical_eject(runtime->optical_drive, &error)) {
                     attention(runtime, &snapshot, "Eject failed", &error, false, false);
                 }
                 gdox_optical_monitor_block(&optical_monitor);
@@ -1010,13 +1015,15 @@ static void runtime_thread(void *raw_runtime)
                 if (current_bundle(runtime, &bundle)) {
                     gdox_runtime_copy_bundle_status(&snapshot, &bundle);
                 }
-                if (!gdox_optical_observe_gp63(&presence, &error)) {
+                if (!gdox_optical_observe(&presence, &error)) {
+                    runtime->optical_drive = GDOX_OPTICAL_DRIVE_NONE;
                     (void)gdox_optical_monitor_observe(
                         &optical_monitor,
                         &presence
                     );
                     publish_missing_drive(runtime, &snapshot, error.message);
                 } else if (!presence.drive_present) {
+                    runtime->optical_drive = GDOX_OPTICAL_DRIVE_NONE;
                     (void)gdox_optical_monitor_observe(
                         &optical_monitor,
                         &presence
@@ -1028,12 +1035,14 @@ static void runtime_thread(void *raw_runtime)
                     );
                 } else if (presence.media_status_known
                     && !presence.media_present) {
+                    runtime->optical_drive = presence.drive;
                     (void)gdox_optical_monitor_observe(
                         &optical_monitor,
                         &presence
                     );
                     publish_empty_drive(runtime, &snapshot);
                 } else {
+                    runtime->optical_drive = presence.drive;
                     if (gdox_optical_monitor_observe(
                             &optical_monitor,
                             &presence
@@ -1054,7 +1063,9 @@ static void runtime_thread(void *raw_runtime)
                         gdox_runtime_copy_text(
                             snapshot.drive,
                             sizeof(snapshot.drive),
-                            "HL-DT-ST DVDRAM GP63EX70 RF02"
+                            gdox_optical_drive_name(
+                                runtime->optical_drive
+                            )
                         );
                         gdox_runtime_copy_text(
                             snapshot.status,
@@ -1087,7 +1098,8 @@ static void runtime_thread(void *raw_runtime)
                 && live_device_delay == 0U) {
                 bool drive_connected = false;
                 gdox_error observation_error;
-                const bool observed = gdox_optical_gp63_connected(
+                const bool observed = gdox_optical_connected(
+                    runtime->optical_drive,
                     &drive_connected,
                     &observation_error
                 );
@@ -1113,7 +1125,10 @@ static void runtime_thread(void *raw_runtime)
                 && (commands & GDOX_RUNTIME_COMMAND_EJECT) != 0U) {
                 if (!stop_emulator(runtime, &snapshot, &error)
                     || !close_export(runtime, &snapshot, &error)
-                    || !gdox_optical_eject_gp63(&error)) {
+                    || !gdox_optical_eject(
+                        runtime->optical_drive,
+                        &error
+                    )) {
                     attention(runtime, &snapshot, "Could not eject disc", &error, false, false);
                 }
                 gdox_optical_monitor_block(&optical_monitor);

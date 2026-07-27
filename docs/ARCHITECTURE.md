@@ -82,9 +82,9 @@ file. The Android QEMU adapter coalesces nearby requests through one forward-onl
 small pieces. That window is destroyed with the session and cannot sustain a
 game after USB detach. Only it and filesystem metadata created by the
 compatibility view remain in memory. Successful hardware READ(12) commands,
-sectors, bytes, and the last physical LBA are counted at the MT1887 layer and
-propagated through source adapters to the Details page. Virtual metadata
-cannot increment those counters.
+sectors, bytes, and the last physical LBA are counted by the active drive
+adapter and propagated through source adapters to the Details page. Virtual
+metadata cannot increment those counters.
 
 The managed Xbox HDD retains dashboard data and saves, but its X, Y, and Z FATX
 cache metadata is restored to an empty state before every xemu launch. The
@@ -110,18 +110,22 @@ Explicit media polling resumes only after xemu exits.
 - libusb Bulk-Only Transport on Linux;
 - native SCSI pass-through over the Windows optical class driver;
 - IOKit/Disk Arbitration/SCSI transport on macOS;
-- the exact GP63/MT1887 optical adapter.
+- separate exact-identity GP63/MT1887 and GP08/PL-2507 optical adapters.
 
 The MT1887 mechanism accepts a transport opener and a requested speed from its
 platform adapter. Desktop discovery selects the mechanism's maximum rate;
 Android supplies its authorized USB file descriptor and mobile power policy.
 Neither policy is compiled into the portable disc or application layers.
 
-The GP63 adapter accepts only the validated USB identity and drive revision.
-Its volatile state transaction validates expected values, applies only the
-allowlisted changes, and restores the prior state during normal teardown.
-Adding another drive means adding a separate source adapter with its own
-identity, transport, state transaction, error recovery, and physical tests.
+Each drive adapter accepts only its validated USB identity, SCSI identity, and
+revision. Its volatile state transaction validates expected values, applies
+only the allowlisted changes, and restores the stock state during normal
+teardown and failed initialization. The GP08 adapter keeps its multi-field
+activation and restoration order inside its own source module, uses SCSI DATA
+OUT only for those validated volatile-memory writes, and caps READ(10) at the
+PL-2507 bridge's validated 32-sector transfer size. Adding another drive means
+adding another source adapter with its own identity, transport, state
+transaction, error recovery, and physical tests.
 
 Drive discovery is non-owning. Linux uses libusb enumeration plus the kernel
 optical media-status interface; Windows enumerates optical class devices and
@@ -131,12 +135,12 @@ remains exclusively owned through the live session, including any
 operating-system reset recovery.
 
 SteamOS resets USB storage interfaces during system resume. If Linux reports
-that the claimed GP63 interface was lost, the transport closes the stale
-handle, reopens only the same allowlisted USB identity, reclaims its bulk
-interface, resets the Bulk-Only session, and retries the blocked optical read.
-The NBD export and xemu process remain alive while that bounded recovery runs.
-If the drive does not return, the read fails and teardown remains safe with no
-disc-image fallback.
+that a claimed supported-drive interface was lost, the transport closes the
+stale handle, reopens only the same allowlisted USB identity, reclaims its
+bulk interface, resets the Bulk-Only session, and retries the blocked optical
+read. The NBD export and xemu process remain alive while that bounded recovery
+runs. If the drive does not return, the read fails and teardown remains safe
+with no disc-image fallback.
 
 ## Desktop presentation
 

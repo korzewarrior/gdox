@@ -1,7 +1,7 @@
 VERSION := $(shell sed -n 's/^[[:space:]]*VERSION \([0-9][0-9.]*\).*/\1/p' CMakeLists.txt | head -n1)
 LINUX_TARGET := x86_64-unknown-linux-gnu
 
-.PHONY: all configure build test check privacy-check android-debug android-source release-linux release-steamdeck source
+.PHONY: all configure build test check site site-check privacy-check android-debug android-source release-linux release-steamdeck source
 
 all: build
 
@@ -14,7 +14,7 @@ build: configure
 test: build
 	ctest --preset dev --output-on-failure
 
-check:
+check: site-check
 	cmake --preset core
 	cmake --build --preset core --parallel
 	ctest --preset core --output-on-failure
@@ -28,6 +28,12 @@ check:
 	python scripts/audit_architecture.py
 	python scripts/audit_release.py
 	git diff --check
+
+site:
+	python scripts/build_site.py
+
+site-check: site
+	python scripts/audit_site.py
 
 privacy-check:
 	python scripts/audit_release.py

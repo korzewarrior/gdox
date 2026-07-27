@@ -20,6 +20,7 @@ static bool start_export(
 }
 
 bool gdox_runtime_media_open_physical(
+    gdox_optical_drive drive,
     gdox_nbd_export **exported,
     gdox_runtime_media_info *info,
     gdox_error *error
@@ -41,7 +42,7 @@ bool gdox_runtime_media_open_physical(
         );
         return false;
     }
-    if (!gdox_optical_open_gp63(3U, 20000U, &whole, error)
+    if (!gdox_optical_open(drive, 3U, 20000U, &whole, error)
         || !gdox_live_disc_build(&whole, &disc, &live_info, error)
         || !start_export(&disc, exported, error)) {
         goto cleanup;

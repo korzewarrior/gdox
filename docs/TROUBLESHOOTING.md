@@ -2,9 +2,15 @@
 
 ## Supported drive unavailable
 
-Confirm the identity on Details. The supported mechanism must report
-`HL-DT-ST DVDRAM GP63EX70 RF02` and USB `0e8d:1887`; a similar retail name is
-not enough.
+Confirm the identity on Details. A supported drive must report one complete
+profile:
+
+- `HL-DT-ST DVDRAM GP63EX70 RF02` and USB `0e8d:1887`;
+- `HL-DT-ST DVDRAM GP08NU10 JE01` and Prolific PL-2507 USB `152e:2507`.
+
+A similar retail name, firmware revision, or internal mechanism is not enough.
+The GP08 adapter also refuses activation if any expected stock memory value
+differs.
 
 On Linux, rerun `sudo ./setup-device-access.sh`, disconnect the drive, and
 reconnect it in the active desktop session. Do not run GDOX as root.

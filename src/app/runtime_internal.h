@@ -10,6 +10,7 @@
 #include "app/runtime_bundle.h"
 
 #include "gdox/nbd.h"
+#include "gdox/optical.h"
 #include "platform/portable_sync.h"
 
 #include <stdatomic.h>
@@ -39,6 +40,7 @@ struct gdox_runtime {
     gdox_runtime_snapshot snapshot;
     gdox_nbd_export *exported;
     gdox_emulator_process *emulator;
+    gdox_optical_drive optical_drive;
     gdox_runtime_bundle_status bundle;
 };
 

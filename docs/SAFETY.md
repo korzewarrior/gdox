@@ -2,10 +2,16 @@
 
 ## Normal use
 
-Live play is read-only with respect to the disc and game data. The GP63 adapter
-uses a narrow, validated volatile memory transaction; it does not flash drive
-firmware. Normal teardown restores the prior values, and a USB power cycle
-clears volatile state if the process is terminated unexpectedly.
+Live play is read-only with respect to the disc and game data. The supported
+drive adapters use narrow, validated volatile memory transactions; they do not
+flash drive firmware. Normal teardown restores the prior values, and a USB
+power cycle clears volatile state if the process is terminated unexpectedly.
+
+The GP08 adapter verifies the exact USB and SCSI identity and every expected
+stock value before activation. It runs the complete restore sequence on
+teardown and every error path, and reports when a transport failure makes a
+power cycle necessary. Capacity is activated last and restored first so a
+partial transition cannot be treated as a ready source.
 
 Preserve is the only path that writes game data. It writes to a user-selected
 file, never to the disc or optical drive, and publishes the final name only
@@ -37,7 +43,9 @@ delivery fault.
 
 Do not assume two retail enclosures contain the same optical mechanism.
 Require the exact model, revision, and USB identity shown on Details before a
-drive adapter runs. GDOX fails closed for unknown hardware.
+drive adapter runs. The GP08 profile additionally requires the exact Prolific
+PL-2507 USB bridge identity. GDOX fails closed for unknown hardware or an
+unexpected stock memory state.
 
 ## Private data
 

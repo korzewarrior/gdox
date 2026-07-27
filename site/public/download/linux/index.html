@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>linux + steam deck — gdox</title>
+  <meta name="description" content="Set up GDOX on desktop Linux or Steam Deck.">
+  <meta name="theme-color" content="#07140b">
+  <link rel="canonical" href="https://gdox.korze.org/download/linux/">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="preload" href="/assets/fonts/chakra-petch-v13-latin-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/assets/style.css?v={{STYLE_VERSION}}">
+</head>
+<body>
+  <a class="skip-link" href="#main">skip to content</a>
+
+  <main id="main">
+    <nav aria-label="breadcrumb">
+      <h1><a href="/">gdox</a> / <a href="/download/">release</a> / <span aria-current="page">linux + steam deck</span></h1>
+    </nav>
+    <p>desktop linux and steam deck run the same build.</p>
+
+    <section id="get-steam-deck">
+      <h2>download</h2>
+      <p><a href="/downloads/0.1.0/gdox-0.1.0-x86_64-steamdeck-linux-gnu.tar.gz">steam deck</a> <span>— 21 MB. adds the gaming mode installer and artwork.</span></p>
+      <p><a href="/downloads/0.1.0/gdox-0.1.0-x86_64-unknown-linux-gnu.tar.gz">desktop linux</a> <span>— 19 MB. same gdox and xemu build.</span></p>
+      <p>check it before installing:</p>
+      <pre><code>curl -O https://gdox.korze.org/downloads/0.1.0/SHA256SUMS
+curl -O https://gdox.korze.org/downloads/0.1.0/SHA256SUMS.minisig
+curl -O https://gdox.korze.org/minisign.pub
+minisign -V -p minisign.pub -m SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing</code></pre>
+      <p>source: <a href="/downloads/0.1.0/gdox-0.1.0-source.tar.gz">gdox</a> and <a href="/downloads/0.1.0/xemu-0.8.136-source.tar.zst">xemu</a>. the same files are attached to the <a href="https://github.com/korzewarrior/gdox/releases/tag/v0.1.0" rel="external">v0.1.0 release on github</a>.</p>
+    </section>
+
+    <section>
+      <h2>before you start</h2>
+      <ul>
+        <li>64-bit x86 linux, glibc 2.38 or newer, GLIBCXX 3.4.31</li>
+        <li>an X11 desktop, OpenGL, and a game controller</li>
+        <li>a <a href="/drives/">compatible stock dvd drive</a></li>
+        <li>your own 512-byte MCPX 1.0 rom and compatible xbox bios</li>
+      </ul>
+      <p>keep the extracted folder together. gdox looks for xemu, its libraries, and the hdd next to the launcher.</p>
+    </section>
+
+    <section id="desktop-linux">
+      <h2>desktop linux</h2>
+      <ol>
+        <li>extract the complete linux archive.</li>
+        <li>open a terminal in the extracted folder.</li>
+        <li>run <code>sudo ./setup-device-access.sh</code> once.</li>
+        <li>start gdox with <code>./gdox</code>.</li>
+        <li>open sources, add your mcpx rom and bios, connect the drive, then insert the disc.</li>
+      </ol>
+      <p>optional: run <code>./install.sh</code> to add gdox to your application menu.</p>
+      <p><code>setup-device-access.sh</code> installs the optical-drive udev rule. gdox then runs as your normal user.</p>
+    </section>
+
+    <section id="steam-deck">
+      <h2>steam deck</h2>
+      <ol>
+        <li>switch the deck to desktop mode and extract the complete steam deck archive.</li>
+        <li>open the folder and run <code>install.sh</code>.</li>
+        <li>complete the one administrator prompt for optical-drive access.</li>
+        <li>return to gaming mode and open gdox from the non-steam library.</li>
+        <li>add your firmware on sources, connect the drive, and insert the disc.</li>
+      </ol>
+      <p>the installer adds one non-steam shortcut with artwork, and updates it if you run it again.</p>
+      <p>d-pad and A to navigate, LB/RB to change pages, quit at the top right to exit. while a game runs, gdox hides and hands the controller to xemu.</p>
+      <p>if the deck account has no administrator password, set one once with <code>passwd</code> in konsole before running the installer.</p>
+    </section>
+
+    <section>
+      <h2>distro notes</h2>
+      <ul>
+        <li>arch linux and steamos</li>
+        <li>ubuntu: 24.04 LTS or newer</li>
+        <li>debian: 13 or newer</li>
+        <li>fedora: any current release</li>
+      </ul>
+      <p>this release is a plain archive, not a flatpak, appimage, deb, or rpm. other formats may come later.</p>
+    </section>
+
+    <section>
+      <h2>updates and user data</h2>
+      <ul>
+        <li>application: <code>~/.local/opt/gdox</code></li>
+        <li>preferences and imported firmware: <code>~/.config/gdox</code></li>
+        <li>writable hdd and saves: <code>~/.local/share/gdox</code></li>
+      </ul>
+      <p>reinstalling or replacing gdox leaves that data alone.</p>
+    </section>
+
+    <footer>
+      <nav class="footer-links" aria-label="footer">
+        <a href="https://korze.org/" rel="me">korze(warrior)</a>
+        <a href="https://github.com/korzewarrior/gdox" rel="external">github</a>
+        <a href="https://x.com/korzewarrior" rel="me external">x</a>
+        <a href="https://discord.gg/TEzuUEJk4B" rel="external">discord</a>
+      </nav>
+      <p class="disclaimer">GDOX is an independent open source project and is not affiliated with Microsoft Corporation or the xemu project. Xbox, Microsoft, xemu, and other product and company names belong to their respective owners and are used only for identification. Their use does not imply endorsement or association.</p>
+    </footer>
+  </main>
+</body>
+</html>

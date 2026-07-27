@@ -22,6 +22,7 @@ static const test_group groups[] = {
     {"preservation_naming", gdox_test_preservation_naming},
     {"preserve", gdox_test_preserve},
     {"runtime_bundle", gdox_test_runtime_bundle},
+    {"scsi_transport", gdox_test_scsi_transport},
     {"security", gdox_test_security},
     {"session", gdox_test_session},
     {"source", gdox_test_source},

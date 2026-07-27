@@ -3,7 +3,8 @@
 bool gdox_scsi_transport_is_valid(const gdox_scsi_transport *transport)
 {
     return transport != NULL && transport->context != NULL && transport->ops != NULL
-        && transport->ops->command_in != NULL && transport->ops->command_none != NULL
+        && transport->ops->command_in != NULL && transport->ops->command_out != NULL
+        && transport->ops->command_none != NULL
         && transport->ops->reset != NULL && transport->ops->close != NULL;
 }
 
@@ -54,6 +55,39 @@ bool gdox_scsi_command_in(
         cdb_bytes,
         output,
         output_bytes,
+        timeout_ms,
+        transferred,
+        error
+    );
+}
+
+bool gdox_scsi_command_out(
+    gdox_scsi_transport *transport,
+    const char *name,
+    const uint8_t *cdb,
+    size_t cdb_bytes,
+    const uint8_t *input,
+    size_t input_bytes,
+    uint32_t timeout_ms,
+    size_t *transferred,
+    gdox_error *error
+)
+{
+    if (!validate_cdb(transport, name, cdb, cdb_bytes, error)
+        || input == NULL || input_bytes == 0U || transferred == NULL) {
+        if (!gdox_error_is_set(error)) {
+            gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "data-out input and transfer count are required");
+        }
+        return false;
+    }
+    *transferred = 0U;
+    return transport->ops->command_out(
+        transport->context,
+        name,
+        cdb,
+        cdb_bytes,
+        input,
+        input_bytes,
         timeout_ms,
         transferred,
         error

@@ -1,5 +1,6 @@
 #include "platform/usb_bot.h"
 
+#include "gdox/optical.h"
 #include "platform/portable_sync.h"
 
 #include <stddef.h>
@@ -14,9 +15,21 @@
 typedef struct GdoxMacScsiDevice GdoxMacScsiDevice;
 
 int gdox_macos_scsi_start_mount_guard(char *error, size_t error_capacity);
-int gdox_macos_scsi_release_system_media(char *error, size_t error_capacity);
-int gdox_macos_scsi_observe(int *drive_present, int *media_present);
+int gdox_macos_scsi_release_system_media(
+    uint16_t vendor_id,
+    uint16_t product_id,
+    char *error,
+    size_t error_capacity
+);
+int gdox_macos_scsi_observe(
+    uint16_t vendor_id,
+    uint16_t product_id,
+    int *drive_present,
+    int *media_present
+);
 int gdox_macos_scsi_open(
+    uint16_t vendor_id,
+    uint16_t product_id,
     GdoxMacScsiDevice **output,
     char *error,
     size_t error_capacity
@@ -26,6 +39,19 @@ int gdox_macos_scsi_command_in(
     const uint8_t *cdb,
     size_t cdb_length,
     uint8_t *data,
+    size_t data_length,
+    uint32_t timeout_ms,
+    uint8_t *sense,
+    size_t sense_capacity,
+    size_t *transferred,
+    char *error,
+    size_t error_capacity
+);
+int gdox_macos_scsi_command_out(
+    GdoxMacScsiDevice *device,
+    const uint8_t *cdb,
+    size_t cdb_length,
+    const uint8_t *data,
     size_t data_length,
     uint32_t timeout_ms,
     uint8_t *sense,
@@ -102,6 +128,41 @@ static bool macos_command_in(
     return true;
 }
 
+static bool macos_command_out(
+    void *raw_context,
+    const char *name,
+    const uint8_t *cdb,
+    size_t cdb_bytes,
+    const uint8_t *input,
+    size_t input_bytes,
+    uint32_t timeout_ms,
+    size_t *transferred,
+    gdox_error *error
+)
+{
+    gdox_macos_scsi_context *context = raw_context;
+    uint8_t sense[18] = {0};
+    char detail[GDOX_MACOS_ERROR_CAPACITY] = {0};
+    const int status = gdox_macos_scsi_command_out(
+        context->device,
+        cdb,
+        cdb_bytes,
+        input,
+        input_bytes,
+        timeout_ms,
+        sense,
+        sizeof(sense),
+        transferred,
+        detail,
+        sizeof(detail)
+    );
+    if (status != 0) {
+        set_native_error(error, name, detail);
+        return false;
+    }
+    return true;
+}
+
 static bool macos_command_none(
     void *raw_context,
     const char *name,
@@ -154,12 +215,23 @@ static bool macos_close(void *raw_context, gdox_error *error)
 
 static const gdox_scsi_transport_ops macos_ops = {
     macos_command_in,
+    macos_command_out,
     macos_command_none,
     macos_reset,
     macos_close,
 };
 
+static bool supported_identifiers(uint16_t vendor_id, uint16_t product_id)
+{
+    return (vendor_id == GDOX_GP63_USB_VENDOR_ID
+            && product_id == GDOX_GP63_USB_PRODUCT_ID)
+        || (vendor_id == GDOX_GP08_USB_VENDOR_ID
+            && product_id == GDOX_GP08_USB_PRODUCT_ID);
+}
+
 static bool open_native_device(
+    uint16_t vendor_id,
+    uint16_t product_id,
     GdoxMacScsiDevice **device,
     gdox_error *error
 )
@@ -170,6 +242,8 @@ static bool open_native_device(
     for (attempt = 0U; attempt < GDOX_MACOS_OPEN_ATTEMPTS; ++attempt) {
         char detail[GDOX_MACOS_ERROR_CAPACITY] = {0};
         const int status = gdox_macos_scsi_open(
+            vendor_id,
+            product_id,
             device,
             detail,
             sizeof(detail)
@@ -180,6 +254,8 @@ static bool open_native_device(
         if (status == GDOX_MACOS_OPEN_MOUNT_BUSY && !released_system_media) {
             char release_detail[GDOX_MACOS_ERROR_CAPACITY] = {0};
             if (gdox_macos_scsi_release_system_media(
+                    vendor_id,
+                    product_id,
                     release_detail,
                     sizeof(release_detail)
                 ) != 0) {
@@ -227,12 +303,11 @@ bool gdox_usb_bot_open(
     }
     transport->context = NULL;
     transport->ops = NULL;
-    if (vendor_id != UINT16_C(0x0e8d)
-        || product_id != UINT16_C(0x1887)) {
+    if (!supported_identifiers(vendor_id, product_id)) {
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
-            "macOS transport only supports the validated GP63 optical mechanism"
+            "macOS transport does not support this USB optical mechanism"
         );
         return false;
     }
@@ -245,7 +320,12 @@ bool gdox_usb_bot_open(
         gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate macOS optical transport");
         return false;
     }
-    if (!open_native_device(&context->device, error)) {
+    if (!open_native_device(
+            vendor_id,
+            product_id,
+            &context->device,
+            error
+        )) {
         free(context);
         return false;
     }
@@ -274,16 +354,20 @@ bool gdox_usb_bot_present(
         return false;
     }
     *drive_present = false;
-    if (vendor_id != UINT16_C(0x0e8d)
-        || product_id != UINT16_C(0x1887)) {
+    if (!supported_identifiers(vendor_id, product_id)) {
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
-            "macOS observer only supports the validated GP63 optical mechanism"
+            "macOS observer does not support this USB optical mechanism"
         );
         return false;
     }
-    (void)gdox_macos_scsi_observe(&observed_drive, &observed_media);
+    (void)gdox_macos_scsi_observe(
+        vendor_id,
+        product_id,
+        &observed_drive,
+        &observed_media
+    );
     *drive_present = observed_drive != 0;
     return true;
 }
@@ -313,16 +397,20 @@ bool gdox_usb_bot_observe(
     *drive_present = false;
     *media_status_known = false;
     *media_present = false;
-    if (vendor_id != UINT16_C(0x0e8d)
-        || product_id != UINT16_C(0x1887)) {
+    if (!supported_identifiers(vendor_id, product_id)) {
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
-            "macOS observer only supports the validated GP63 optical mechanism"
+            "macOS observer does not support this USB optical mechanism"
         );
         return false;
     }
-    (void)gdox_macos_scsi_observe(&observed_drive, &observed_media);
+    (void)gdox_macos_scsi_observe(
+        vendor_id,
+        product_id,
+        &observed_drive,
+        &observed_media
+    );
     *drive_present = observed_drive != 0;
     *media_status_known = *drive_present;
     *media_present = observed_media != 0;

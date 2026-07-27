@@ -11,3 +11,7 @@ SUBSYSTEM=="bsg", ATTRS{type}=="5", TAG+="uaccess", MODE="0660"
 # This bypasses Linux's unprivileged vendor-opcode filter without running the
 # player or emulator as root.
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="1887", TAG+="uaccess", MODE="0660"
+
+# The exact GP08NU10 JE01 backend uses SCSI READ/WRITE BUFFER through its
+# Prolific PL-2507 bridge for validated, volatile RAM state only.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="152e", ATTR{idProduct}=="2507", TAG+="uaccess", MODE="0660"

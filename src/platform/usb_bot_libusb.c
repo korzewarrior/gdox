@@ -489,6 +489,80 @@ static bool usb_command_in(
     return true;
 }
 
+static bool usb_command_out(
+    void *context,
+    const char *name,
+    const uint8_t *cdb,
+    size_t cdb_bytes,
+    const uint8_t *input,
+    size_t input_bytes,
+    uint32_t timeout_ms,
+    size_t *transferred,
+    gdox_error *error
+)
+{
+    gdox_usb_bot_context *usb = context;
+    uint32_t tag;
+    int sent = 0;
+    int result;
+    uint32_t residue = 0U;
+    char operation[GDOX_ERROR_MESSAGE_CAPACITY];
+
+    if (input_bytes > GDOX_USB_MAX_DATA_BYTES) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_PROTOCOL,
+            "USB data-out transfer exceeds 262,144 bytes"
+        );
+        return false;
+    }
+    if (!send_cbw(
+            usb,
+            name,
+            cdb,
+            cdb_bytes,
+            (uint32_t)input_bytes,
+            false,
+            timeout_ms,
+            &tag,
+            error
+        )) {
+        return false;
+    }
+    result = libusb_bulk_transfer(
+        usb->handle,
+        GDOX_USB_BULK_OUT,
+        (uint8_t *)input,
+        (int)input_bytes,
+        &sent,
+        timeout_ms
+    );
+    if (result == LIBUSB_ERROR_PIPE) {
+        result = libusb_clear_halt(usb->handle, GDOX_USB_BULK_OUT);
+        if (result != LIBUSB_SUCCESS) {
+            set_usb_error(error, "clear failed USB data-out phase", result);
+            return false;
+        }
+        sent = 0;
+    } else if (result != LIBUSB_SUCCESS) {
+        gdox_error ignored;
+        (void)reset_bot(usb, &ignored);
+        (void)snprintf(operation, sizeof(operation), "send %s data", name);
+        set_usb_error(error, operation, result);
+        return false;
+    }
+    if (!receive_csw(usb, name, tag, timeout_ms, &residue, error)) {
+        return false;
+    }
+    if (residue > input_bytes) {
+        *transferred = 0U;
+    } else {
+        const size_t accepted = input_bytes - residue;
+        *transferred = (size_t)sent < accepted ? (size_t)sent : accepted;
+    }
+    return true;
+}
+
 static bool usb_command_none(
     void *context,
     const char *name,
@@ -610,6 +684,7 @@ static bool usb_close(void *context, gdox_error *error)
 
 static const gdox_scsi_transport_ops usb_ops = {
     usb_command_in,
+    usb_command_out,
     usb_command_none,
     reset_bot,
     usb_close,

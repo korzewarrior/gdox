@@ -4,6 +4,7 @@
 #include "gdox/error.h"
 #include "gdox/media.h"
 #include "gdox/nbd.h"
+#include "gdox/optical.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -18,6 +19,7 @@ typedef struct gdox_runtime_media_info {
 } gdox_runtime_media_info;
 
 bool gdox_runtime_media_open_physical(
+    gdox_optical_drive drive,
     gdox_nbd_export **exported,
     gdox_runtime_media_info *info,
     gdox_error *error

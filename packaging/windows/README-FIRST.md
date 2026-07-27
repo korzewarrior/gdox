@@ -2,7 +2,7 @@
 
 1. open `gdox.exe`.
 2. add your MCPX rom and xbox bios on sources.
-3. connect the `HL-DT-ST GP63EX70 RF02`.
+3. connect a supported optical drive.
 4. insert an original xbox disc.
 5. choose start xemu.
 

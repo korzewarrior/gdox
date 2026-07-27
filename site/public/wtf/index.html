@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>wtf — gdox</title>
+  <meta name="description" content="How GDOX reads, plays, and preserves an original Xbox disc.">
+  <meta name="theme-color" content="#07140b">
+  <link rel="canonical" href="https://gdox.korze.org/wtf/">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="preload" href="/assets/fonts/chakra-petch-v13-latin-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/assets/style.css?v={{STYLE_VERSION}}">
+</head>
+<body>
+  <a class="skip-link" href="#main">skip to content</a>
+
+  <main id="main">
+    <nav aria-label="breadcrumb">
+      <h1><a href="/">gdox</a> / <span aria-current="page">wtf</span></h1>
+    </nav>
+    <section>
+      <h2>wtf</h2>
+      <p>gdox connects a supported dvd drive to xemu. when xemu requests part of the game, gdox reads that part directly from the disc.</p>
+      <p>the disc stays in the drive for the entire session. nothing is copied or installed first. the verified gp63 path uses a reversible change in the drive's volatile state; it does not flash firmware or physically modify the reader.</p>
+    </section>
+
+    <section>
+      <h2>analogy</h2>
+      <p>think of the disc as a book with most of its page numbers hidden from a normal dvd drive. gdox makes the full page range available for the session. xemu asks for a page, gdox reads that page from the physical disc, and returns it. the whole book is never photocopied, and nothing is written in it.</p>
+    </section>
+
+    <section>
+      <h2>visibility</h2>
+      <figure class="disc-analogy">
+        <img src="/assets/disc-address-space.webp" width="1440" height="960" alt="A circular stone floor divided into sections, with the same surface crossing areas of light and shadow.">
+        <figcaption>imagine the round floor is the disc. each tile is a small piece of data. the lit tiles are what a normal dvd drive can see. the tiles in shadow are still there, but hidden.</figcaption>
+      </figure>
+      <p>gdox lets the drive see the whole floor for the session. it then reads only the tiles xemu asks for. it does not copy or change the disc.</p>
+    </section>
+
+    <section>
+      <details class="technical">
+        <summary>how it works</summary>
+
+        <h3>data path</h3>
+        <p>desktop: xemu read → localhost NBD → compact virtual disc → SCSI sector read → optical drive.</p>
+        <p>android: xemu read → in-process block driver → compact virtual disc → SCSI sector read → optical drive.</p>
+
+        <h3>drive interface</h3>
+        <p>an optical drive is a block device. data is addressed as fixed-size logical sectors rather than files. gdox issues SCSI/MMC commands through the operating system's SCSI passthrough interface or through USB Mass Storage Bulk-Only Transport. reader backends hide those transport differences and provide the same random-access sector interface to the rest of the application.</p>
+        <p>code: <a href="https://github.com/korzewarrior/gdox/blob/main/src/platform/scsi_transport.c" rel="external">scsi_transport.c</a>, <a href="https://github.com/korzewarrior/gdox/blob/main/src/platform/usb_bot_libusb.c" rel="external">usb_bot_libusb.c</a>.</p>
+
+        <h3>disc layout</h3>
+        <p>an original xbox disc contains more than the dvd-compatible area exposed by a normal drive. a supported reader backend makes the complete logical address space available, either through compatible reader firmware or a reversible change in volatile drive state. the operation is read-only: gdox does not write to the disc or flash the drive.</p>
+        <p>code: <a href="https://github.com/korzewarrior/gdox/blob/main/src/platform/mt1887_source.c" rel="external">mt1887_source.c</a>. the addresses and values are in <code>apply_xgd</code>, <code>read_xdata</code>, and <code>write_xdata</code>.</p>
+
+        <h3>partition mapping</h3>
+        <p>gdox finds and reads the game partition's XDVDFS filesystem, then builds a conventional compact disc layout in memory. directory sectors are generated for that virtual layout. file sectors are mapped back to their physical locations and read from the original disc when xemu requests them. files are not extracted. compatibility changes, when required, exist only in the virtual view.</p>
+        <p>code: <a href="https://github.com/korzewarrior/gdox/blob/main/src/core/xdvdfs.c" rel="external">xdvdfs.c</a>, <a href="https://github.com/korzewarrior/gdox/blob/main/src/core/compact.c" rel="external">compact.c</a>.</p>
+
+        <h3>read requests</h3>
+        <p>gdox validates each byte range and resolves it to virtual metadata or physical file sectors. desktop file-sector requests go to the optical source directly. android combines nearby small requests through one forward-only 256 KiB memory window. that window is never written to storage and disappears when the session ends. there is no full-disc background reader or image fallback, so unused parts of the disc are never copied.</p>
+
+        <h3>virtual dvd drive</h3>
+        <p>the partition is exported by a small read-only fixed-newstyle Network Block Device server bound to localhost. xemu's QEMU core connects directly to that private NBD export and treats it as a dvd drive. NBD is used only as local block-device transport; no kernel NBD device, filesystem mount, or temporary disc image is created.</p>
+        <p>code: <a href="https://github.com/korzewarrior/gdox/blob/main/src/platform/nbd_tcp.c" rel="external">nbd_tcp.c</a>.</p>
+
+        <h3>shutdown</h3>
+        <p>when xemu exits, the disc is ejected, or the drive disconnects, the virtual disc closes, volatile memory is discarded, and the reader backend restores any temporary drive state it still controls.</p>
+
+        <h3>preservation</h3>
+        <p>a playable xiso rebuilds the game filesystem into a smaller image for emulators. full-disc mode writes the much larger accessible disc layout and keeps hashes, a manifest, logs, and drive evidence beside it. gdox reports security evidence and unreadable ranges separately: file size alone does not make an image redump-complete, and a stock reader cannot manufacture signed challenge data that the disc or drive did not return.</p>
+        <p>code: <a href="https://github.com/korzewarrior/gdox/blob/main/src/core/preserve.c" rel="external">preserve.c</a>.</p>
+
+        <h3>software stack</h3>
+        <ul>
+          <li>C17 for the core, reader backends, parser, virtual-disc mapper, preservation engine, and NBD server</li>
+          <li>C++20 for the desktop app, with raylib, Dear ImGui, and rlImGui for the interface</li>
+          <li>libusb, native macos USB transport, USB Bulk-Only Transport, and SCSI/MMC for drive communication</li>
+          <li>XDVDFS for partition and title metadata</li>
+          <li>a read-only loopback NBD export on desktop and an in-process QEMU block driver on android</li>
+          <li>xemu/QEMU for xbox emulation</li>
+        </ul>
+      </details>
+    </section>
+
+    <section>
+      <details class="technical">
+        <summary>technical details</summary>
+
+        <h3>address spaces and read path</h3>
+        <p>live playback uses three sector spaces. every sector is 2,048 bytes.</p>
+        <div class="technical-table-wrap">
+          <table class="technical-table">
+            <thead>
+              <tr>
+                <th scope="col">space</th>
+                <th scope="col">sector zero</th>
+                <th scope="col">consumer</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>physical XGD</td>
+                <td>physical LBA 0 exposed by the optical drive</td>
+                <td>reader backend</td>
+              </tr>
+              <tr>
+                <td>partition-relative XDVDFS</td>
+                <td>the validated game-partition base</td>
+                <td>filesystem, patch, and compacting layers</td>
+              </tr>
+              <tr>
+                <td>compact XISO</td>
+                <td>sector 0 of the synthesized emulator view</td>
+                <td>xemu</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>the source stack is <code>physical source → partition source → patched source → compact-XISO source → random-access virtual disc</code>. an emulator read is translated backward through that stack. generated metadata and alignment sectors are returned from memory; file data becomes a physical <code>READ(12)</code>. playback does not create a complete game image.</p>
+
+        <h3>verified optical target</h3>
+        <div class="technical-table-wrap">
+          <table class="technical-table">
+            <tbody>
+              <tr>
+                <th scope="row">vendor</th>
+                <td><code>HL-DT-ST</code></td>
+              </tr>
+              <tr>
+                <th scope="row">product</th>
+                <td><code>DVDRAM GP63EX70</code></td>
+              </tr>
+              <tr>
+                <th scope="row">revision</th>
+                <td><code>RF02</code></td>
+              </tr>
+              <tr>
+                <th scope="row">USB ID</th>
+                <td><code>0e8d:1887</code></td>
+              </tr>
+              <tr>
+                <th scope="row">controller</th>
+                <td>MediaTek MT1887</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>the XDATA addresses and byte values below are specific to the observed MT1887/RF02 layout. matching the enclosure, product family, controller family, or USB ID alone is insufficient. <code>INQUIRY</code> must return all three exact identity strings.</p>
+        <p>the drive receives SCSI/MMC commands through libusb USB Mass Storage Bulk-Only Transport on Linux, a <code>UsbManager</code>-authorized file descriptor wrapped by libusb on android, SCSI pass-through through the optical class driver on windows, or IOKit SCSI task transport on macos. each adapter terminates at the same bounded random-access sector-source interface.</p>
+
+        <h3>stock disc view</h3>
+        <p><code>READ CAPACITY(10)</code> initially reports last LBA <code>6991</code> and block size <code>2048</code>: 6,992 sectors, or 14,319,616 bytes. the common XGD1 game-partition base is physical LBA <code>198144</code>, outside that reported range.</p>
+        <p><code>READ DVD STRUCTURE</code> opcode <code>0xAD</code>, format <code>0x00</code>, returns a four-byte header followed by PFI. complete-response bytes <code>17..19</code> are the PFI layer-zero endpoint. initialization requires the stock value <code>03 1A AF</code> before any XDATA write.</p>
+
+        <h3>volatile MT1887 state</h3>
+        <p>RF02 vendor opcode <code>0xF1</code> provides XDATA access. a read uses subcommand <code>0x02</code>, a big-endian 16-bit address in CDB bytes <code>4..5</code>, data-in length four, and returns the value in response byte <code>3</code>. a write uses subcommand <code>0x01</code>, the same address fields, the value in CDB byte <code>9</code>, and no data phase.</p>
+        <p>gdox changes six bytes in volatile controller XDATA:</p>
+        <div class="technical-table-wrap">
+          <table class="technical-table">
+            <thead>
+              <tr>
+                <th scope="col">field</th>
+                <th scope="col">address</th>
+                <th scope="col">stock</th>
+                <th scope="col">XGD</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>capacity</td>
+                <td><code>0x8538</code></td>
+                <td><code>03</code></td>
+                <td><code>3D</code></td>
+              </tr>
+              <tr>
+                <td>capacity</td>
+                <td><code>0x8539</code></td>
+                <td><code>1B</code></td>
+                <td><code>4D</code></td>
+              </tr>
+              <tr>
+                <td>capacity</td>
+                <td><code>0x853A</code></td>
+                <td><code>4F</code></td>
+                <td><code>4F</code></td>
+              </tr>
+              <tr>
+                <td>layer geometry</td>
+                <td><code>0x8BE2</code></td>
+                <td><code>03</code></td>
+                <td><code>20</code></td>
+              </tr>
+              <tr>
+                <td>layer geometry</td>
+                <td><code>0x8BE3</code></td>
+                <td><code>1A</code></td>
+                <td><code>33</code></td>
+              </tr>
+              <tr>
+                <td>layer geometry</td>
+                <td><code>0x8BE4</code></td>
+                <td><code>AF</code></td>
+                <td><code>AF</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>the capacity values satisfy <code>0x031B4F - 0x30000 = 6991</code> in stock state and <code>0x3D4D4F - 0x30000 = 3820879</code> in XGD state. after the write, gdox requires <code>READ CAPACITY(10)</code> to report last LBA <code>3820879</code>, 3,820,880 sectors, 2,048 bytes per sector, and 7,825,162,240 total bytes.</p>
+        <p>these writes target controller working memory, not the disc or firmware flash. a disconnect or power cycle clears them.</p>
+
+        <h3>fail-closed activation</h3>
+        <ol>
+          <li>open the platform transport and issue <code>INQUIRY</code></li>
+          <li>require vendor <code>HL-DT-ST</code>, product <code>DVDRAM GP63EX70</code>, and revision <code>RF02</code></li>
+          <li>wait for <code>TEST UNIT READY</code></li>
+          <li>read PFI and require <code>03 1A AF</code> at complete-response bytes <code>17..19</code></li>
+          <li>retain the 2,048-byte PFI payload and attempt to retain the DMI payload from format <code>0x04</code></li>
+          <li>read the capacity and geometry XDATA triplets</li>
+          <li>require every byte to equal either its known stock value or its known XGD value</li>
+          <li>restore and verify stock state if the six bytes form a known partial transition</li>
+          <li>write the complete XGD capacity and geometry values</li>
+          <li>read both triplets back and require an exact XGD match</li>
+          <li>issue <code>READ CAPACITY(10)</code> and require 3,820,880 × 2,048 bytes</li>
+          <li>optionally issue <code>SET CD SPEED</code>; rejection of this command is non-fatal</li>
+          <li>read physical LBA <code>198176</code> and require the leading <code>MICROSOFT*XBOX*MEDIA</code> marker</li>
+        </ol>
+        <p>a byte outside the known stock/XGD pairs causes immediate refusal. gdox does not infer a repair for an unknown SRAM state. an initialization failure after mutation enters the stock-restoration path before the transport is closed.</p>
+
+        <h3>restoration and read recovery</h3>
+        <p>normal close writes stock geometry, then stock capacity, reads both triplets back, and requires last LBA <code>6991</code> with 2,048-byte blocks. if the first restoration attempt fails, two further attempts reset the transport and wait 100 ms then 200 ms. failure after all three attempts is returned explicitly; reconnecting the drive clears the volatile state independently.</p>
+        <p>each failing source read has a fixed 20-second recovery budget in addition to its configured retry count. recovery can reset the transport, request sense, issue <code>START STOP UNIT</code>, wait for readiness, verify or reapply the XGD state, reapply the requested speed, and retry. cancellation and removal terminate recovery. if a multi-sector request still fails, gdox retries individual sectors to report the first unreadable physical LBA.</p>
+
+        <h3>physical reads</h3>
+        <p>data reads use <code>READ(12)</code>, opcode <code>0xA8</code>. the backend splits source requests into at most 128 blocks per command: 262,144 bytes. each command has a 30-second timeout. source-level bounds checks reject zero-length, overflowing, undersized-buffer, and out-of-range requests before transport I/O.</p>
+        <p>the backend separately counts successful physical commands, sectors, bytes, and the final LBA of the last successful command. virtual-disc read counts do not replace those physical counters.</p>
+
+        <h3>XDVDFS validation</h3>
+        <p>the drive-specific gate checks the expected descriptor at physical <code>198144 + 32</code>. the general parser validates the 20-byte marker at descriptor offsets <code>0x000</code> and <code>0x7EC</code>, then reads the root-directory sector at <code>0x014</code>, root-directory byte length at <code>0x018</code>, and filesystem timestamp at <code>0x01C</code>. the validated partition base is <code>descriptor LBA - 32</code>; later layers use that discovered base.</p>
+        <p>XDVDFS directories are binary trees encoded through left and right child offsets. traversal bounds entry offsets, table extents, file extents, names, recursion, allocation, and repeated references. current hard limits include 64 MiB per directory table, 64 MiB per inspected XBE, depth 64, 16,384 directories, and 262,144 entries. cycles, duplicate directory extents, truncated entries, and extents outside the source are rejected.</p>
+
+        <h3>partition and patch wrappers</h3>
+        <p>the partition wrapper exposes the game partition at relative sector zero:</p>
+        <p><code>physical LBA = validated partition base + partition-relative LBA</code></p>
+        <p>for the common XGD1 layout, this is <code>physical LBA = 198144 + partition-relative LBA</code>.</p>
+        <p>the patch wrapper first reads unchanged sectors from its inner source, then overlays registered byte substitutions intersecting the returned range. it has no write operation and does not alter its inner source.</p>
+
+        <h3>XBE compatibility overlay</h3>
+        <p>the scanner walks validated XDVDFS metadata, selects <code>.xbe</code> files within the size limit, requires the <code>XBEH</code> signature, and searches for the exact eight-byte sequence <code>E8 CA FD FF FF 85 C0 7D</code>. every exact match registers one partition-relative substitution: final byte <code>7D → EB</code>. this changes the short conditional jump to a short unconditional jump while retaining its existing displacement.</p>
+        <p>the substitution is applied only when a later read overlaps that byte. the physical disc, drive state, source XBE, generated directory metadata, and any persistent image remain unchanged. an XBE without the exact signature receives no substitution.</p>
+
+        <h3>compact virtual XISO</h3>
+        <p>the compact builder reserves the header through virtual sector 32 and generates a new XDVDFS descriptor containing both markers, the relocated root-directory sector and size, and the original filesystem timestamp. it traverses every validated directory table, copies its tree and name bytes, rewrites extent sector fields, and stores the rewritten table as a memory segment.</p>
+        <p>ordinary file payloads are represented by mapping records containing the compact output sector, sector count, original partition-relative source sector, and meaningful byte count. the final virtual disc contains three segment kinds:</p>
+        <ul>
+          <li>memory: generated descriptor or rewritten directory table</li>
+          <li>file: on-demand reads from an original file extent through the patched source</li>
+          <li>zero: alignment or empty-file space</li>
+        </ul>
+        <p>the output is aligned to 32 sectors. the builder sorts all segments and requires a contiguous address space with no gap, overlap, length overflow, or unexpected final sector.</p>
+
+        <h3>emulator read resolution</h3>
+        <ol>
+          <li>xemu requests a byte range from its DVD backend</li>
+          <li>desktop NBD or the android block driver converts it to a compact-XISO offset</li>
+          <li>the compact source performs a segment lookup</li>
+          <li>a memory segment returns generated bytes; a zero segment returns zeroes</li>
+          <li>a file segment maps the virtual offset to the original partition-relative file extent</li>
+          <li>the patched wrapper requests the original sectors from the partition wrapper</li>
+          <li>the partition wrapper adds the validated physical base LBA</li>
+          <li>the optical source issues one or more bounded <code>READ(12)</code> commands</li>
+          <li>registered XBE substitutions are overlaid in the returned buffer</li>
+          <li>the requested byte range returns to xemu</li>
+        </ol>
+        <p>reads are random access. no preceding sector of the file, partition, or physical disc must have been read. desktop playback has no persistent game-sector cache, background full-disc reader, temporary ISO, or image fallback. android can combine nearby forward reads in one 256 KiB RAM window; that window is not stored and ends with the session.</p>
+
+        <h3>desktop NBD export</h3>
+        <p>desktop builds expose the virtual disc through a userspace fixed-newstyle NBD server. it binds IPv4 loopback <code>127.0.0.1</code> on an operating-system-assigned port and uses 16 random bytes encoded as a 32-character export name. xemu receives <code>nbd://127.0.0.1:PORT/PRIVATE_TOKEN</code>; user-facing output redacts the token.</p>
+        <p>negotiation advertises a minimum block size of one byte, preferred size 64 KiB, maximum size 32 MiB, and read-only export flags. each read is range-checked against the virtual-disc length. invalid ranges return <code>NBD_EINVAL</code>; source failures return <code>NBD_EIO</code>. write payloads are consumed to preserve protocol framing and rejected with <code>NBD_EPERM</code>. the source abstraction itself also exposes no write operation. no kernel NBD device or filesystem mount is created.</p>
+        <p>android passes the same compact virtual-disc object directly to an in-process QEMU block driver and does not start NBD.</p>
+
+        <h3>playback and preservation outputs</h3>
+        <div class="technical-table-wrap">
+          <table class="technical-table">
+            <thead>
+              <tr>
+                <th scope="col">output</th>
+                <th scope="col">contents</th>
+                <th scope="col">claim boundary</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>live compact XISO</td>
+                <td>generated XDVDFS metadata, mapped file payloads, optional RAM-only XBE substitutions</td>
+                <td>emulator view; not a physical-disc dump</td>
+              </tr>
+              <tr>
+                <td>compact XISO file</td>
+                <td>materialized compact filesystem view</td>
+                <td>playable image; mastering layout removed</td>
+              </tr>
+              <tr>
+                <td>full-disc candidate</td>
+                <td>3,820,880 physical-address-space sectors plus available evidence and sidecars</td>
+                <td>not security-sector-complete unless authenticated SS evidence exists</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>the GP63 backend captures PFI and attempts DMI with <code>READ DVD STRUCTURE</code>. it does not expose decrypted Xbox security-sector evidence. a 7,825,162,240-byte read is therefore not, by size alone, an SS-complete archival result.</p>
+        <p>preservation writes to a <code>.part</code> output and hashes the bytes while writing. when verification is enabled, it syncs and closes that file, rereads and hashes the complete partial output, requires both hash sets to match, then commits the partial path to the requested output path. unreadable ranges are recorded. sidecars can include a manifest, log, CRC32, MD5, SHA-1, SHA-256, PFI, DMI, security evidence when present, and format-specific maps. the manifest records full-length, readback, filesystem-inventory, canonical-hash, SS-present, and SS-authenticated claims separately.</p>
+
+        <h3>mutation boundary</h3>
+        <ul>
+          <li>changed in the drive: six known bytes of volatile MT1887 XDATA for the active session</li>
+          <li>changed in gdox: generated compact metadata, extent mappings, and optional returned-byte substitutions</li>
+          <li>unchanged: disc contents, drive flash, host kernel, xemu source, source XBE bytes, and the physical mastering layout</li>
+        </ul>
+
+        <h3>implementation map</h3>
+        <ul>
+          <li><a href="https://github.com/korzewarrior/gdox/blob/main/src/platform/mt1887_source.c" rel="external">mt1887_source.c</a>: identity, PFI/DMI, XDATA transition, <code>READ(12)</code>, recovery, restoration</li>
+          <li><a href="https://github.com/korzewarrior/gdox/blob/main/src/core/xdvdfs.c" rel="external">xdvdfs.c</a>: descriptor discovery, bounded directory traversal, title metadata, XBE scan</li>
+          <li><a href="https://github.com/korzewarrior/gdox/blob/main/src/core/source.c" rel="external">source.c</a>: partition-relative and byte-patched source wrappers</li>
+          <li><a href="https://github.com/korzewarrior/gdox/blob/main/src/core/compact.c" rel="external">compact.c</a>: compact-XISO layout and segment resolution</li>
+          <li><a href="https://github.com/korzewarrior/gdox/blob/main/src/core/live.c" rel="external">live.c</a>: live source composition</li>
+          <li><a href="https://github.com/korzewarrior/gdox/blob/main/src/platform/nbd_tcp.c" rel="external">nbd_tcp.c</a>: private read-only desktop export</li>
+          <li><a href="https://github.com/korzewarrior/gdox/blob/main/android/emulator/gdox_qemu_disc.c" rel="external">gdox_qemu_disc.c</a>: in-process android block driver and volatile read-ahead</li>
+          <li><a href="https://github.com/korzewarrior/gdox/blob/main/src/core/preserve.c" rel="external">preserve.c</a>: acquisition, unreadable ranges, finalization, readback, and hashes</li>
+        </ul>
+      </details>
+    </section>
+
+    <section>
+      <details class="reading">
+        <summary>references</summary>
+        <p>these references explain why an xbox disc is not just a normal dvd with a different folder name. some are living community notes and some are historical reverse-engineering documents, so treat uncertain fields and old assumptions as exactly that.</p>
+        <ul>
+          <li>
+            <a href="https://xboxdevwiki.net/Xbox_Game_Disc" rel="external">xbox game disc — xboxdevwiki</a>
+            <span>physical layout, manufacturing data, format information, security sectors, and challenge records.</span>
+          </li>
+          <li>
+            <a href="https://xboxdevwiki.net/XDVDFS" rel="external">xdvdfs — xboxdevwiki</a>
+            <span>the game filesystem, volume descriptor, directory entries, mastering generations, padding, and security blocks.</span>
+          </li>
+          <li>
+            <a href="https://xemu.app/docs/disc-images/" rel="external">disc images — xemu</a>
+            <span>the practical difference between a playable xiso and a full redump image, plus the formats xemu accepts.</span>
+          </li>
+          <li>
+            <a href="https://wiki.redump.info/Disc_Dumping_Guide_(MPF)" rel="external">disc dumping guide — redump.info</a>
+            <span>the preservation community's current drive, dumping, repeat-verification, metadata, and submission workflow.</span>
+          </li>
+          <li>
+            <a href="https://multimedia.cx/xdvdfs.html" rel="external">xbox dvd filesystem details — xbox-linux</a>
+            <span>an early reverse-engineering document covering sector addressing, the volume descriptor, and the directory tree.</span>
+          </li>
+          <li>
+            <a href="https://multimedia.cx/xbfuse/" rel="external">xbfuse — xbox-linux</a>
+            <span>a historical read-only FUSE implementation for browsing XDVDFS images, with source and notes about ordinary-drive limitations.</span>
+          </li>
+        </ul>
+      </details>
+    </section>
+
+    <footer>
+      <nav class="footer-links" aria-label="footer">
+        <a href="https://korze.org/" rel="me">korze(warrior)</a>
+        <a href="https://github.com/korzewarrior/gdox" rel="external">github</a>
+        <a href="https://x.com/korzewarrior" rel="me external">x</a>
+        <a href="https://discord.gg/TEzuUEJk4B" rel="external">discord</a>
+      </nav>
+      <p class="disclaimer">GDOX is an independent open source project and is not affiliated with Microsoft Corporation or the xemu project. Xbox, Microsoft, xemu, and other product and company names belong to their respective owners and are used only for identification. Their use does not imply endorsement or association.</p>
+    </footer>
+  </main>
+</body>
+</html>

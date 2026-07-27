@@ -1,7 +1,7 @@
 # gdox / linux
 
 1. run `sudo ./setup-device-access.sh` once.
-2. connect the `HL-DT-ST GP63EX70 RF02`.
+2. connect a supported optical drive.
 3. run `./gdox`.
 4. add your MCPX rom and xbox bios on sources.
 5. insert an original xbox disc.

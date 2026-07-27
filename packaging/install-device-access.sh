@@ -19,13 +19,15 @@ udevadm control --reload-rules
 udevadm trigger --subsystem-match=bsg --subsystem-match=scsi_generic --subsystem-match=usb
 
 # uaccess ACLs are normally applied by logind on device add. Also grant the
-# invoking desktop user access to an already-connected MT1887 drive so no
-# unplug/replug cycle is required during setup.
+# invoking desktop user access to an already-connected supported USB drive so
+# no unplug/replug cycle is required during setup.
 desktop_user=${SUDO_USER:-}
 if [[ -n ${desktop_user} && ${desktop_user} != root ]]; then
     for device in /sys/bus/usb/devices/*; do
         [[ -r "${device}/idVendor" && -r "${device}/idProduct" ]] || continue
-        [[ $(<"${device}/idVendor") == 0e8d && $(<"${device}/idProduct") == 1887 ]] || continue
+        vendor=$(<"${device}/idVendor")
+        product=$(<"${device}/idProduct")
+        [[ ${vendor}:${product} == 0e8d:1887 || ${vendor}:${product} == 152e:2507 ]] || continue
         bus=$(<"${device}/busnum")
         number=$(<"${device}/devnum")
         node=$(printf '/dev/bus/usb/%03d/%03d' "${bus}" "${number}")

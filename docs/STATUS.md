@@ -16,20 +16,22 @@ the desktop app can play from a disc or preserved image, make a playable xiso
 or full-disc image, and keep firmware, hdd data, settings, and saves outside
 the application folder.
 
-## drive
+## drives
 
-the physical adapter currently supports only:
+the physical adapters support two exact profiles:
 
-```text
-HL-DT-ST DVDRAM GP63EX70 RF02
-USB 0e8d:1887
-```
+| identity | current validation |
+|---|---|
+| `HL-DT-ST DVDRAM GP63EX70 RF02`, USB `0e8d:1887` | live play validated |
+| `HL-DT-ST DVDRAM GP08NU10 JE01`, Prolific PL-2507 USB `152e:2507` | Eddi (`@eddifpv`) reported the find, volatile activation, and expected xbox-sector read; project-side live-play testing remains |
 
-other drives need separate adapters.
+similar retail names, firmware revisions, bridges, and internal mechanisms are
+not implied compatible. other drives need separate adapters.
 
 ## still needed
 
 - more gp63 units and more clean and scratched discs
+- project-side physical and live-play validation of the gp08 profile
 - long play sessions across protected ranges
 - repeated suspend, reset, eject, disconnect, and forced-exit testing
 - physical testing on an intel mac

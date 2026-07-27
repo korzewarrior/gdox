@@ -32,6 +32,7 @@ void gdox_test_preferences(void);
 void gdox_test_preservation_naming(void);
 void gdox_test_preserve(void);
 void gdox_test_runtime_bundle(void);
+void gdox_test_scsi_transport(void);
 void gdox_test_security(void);
 void gdox_test_session(void);
 void gdox_test_source(void);
