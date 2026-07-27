@@ -1,6 +1,6 @@
 # status
 
-gdox 0.1.0 is an active development release. a build can prove that the code
+gdox 0.1.1 is an active development release. a build can prove that the code
 runs; only a disc and drive can prove the physical path.
 
 | platform | current state |
