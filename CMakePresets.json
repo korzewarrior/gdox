@@ -1,0 +1,81 @@
+{
+  "version": 8,
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "GDOX development",
+      "generator": "Ninja",
+      "binaryDir": "${sourceParentDir}/gdox-output/build/dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTING": "ON",
+        "GDOX_BUILD_UI": "ON",
+        "GDOX_BUILD_OPTICAL": "ON",
+        "GDOX_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "core",
+      "displayName": "Portable core only",
+      "generator": "Ninja",
+      "binaryDir": "${sourceParentDir}/gdox-output/build/core",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTING": "ON",
+        "GDOX_BUILD_UI": "OFF",
+        "GDOX_BUILD_OPTICAL": "OFF",
+        "GDOX_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "GDOX release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceParentDir}/gdox-output/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON",
+        "GDOX_BUILD_UI": "ON",
+        "GDOX_BUILD_OPTICAL": "ON",
+        "GDOX_WARNINGS_AS_ERRORS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "core",
+      "configurePreset": "core"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "core",
+      "configurePreset": "core",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

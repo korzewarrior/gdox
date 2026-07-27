@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gdox.korze.org/schemas/security-map-v1.json",
+  "title": "GDOX XGD1 security map",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source",
+    "coordinate_space",
+    "authenticated",
+    "ranges"
+  ],
+  "properties": {
+    "schema": {
+      "const": "https://gdox.korze.org/schemas/security-map-v1.json"
+    },
+    "source": {
+      "enum": [
+        "authenticated-security-sector",
+        "catalog-derived",
+        "user-provided"
+      ]
+    },
+    "coordinate_space": {
+      "const": "canonical-iso-lba"
+    },
+    "authenticated": {
+      "type": "boolean"
+    },
+    "ranges": {
+      "type": "array",
+      "minItems": 16,
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/range"
+      }
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mastering_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uri"
+      }
+    },
+    "expected_hashes": {
+      "$ref": "#/$defs/hashes"
+    }
+  },
+  "$defs": {
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start_lba",
+        "end_lba"
+      ],
+      "properties": {
+        "start_lba": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3820879
+        },
+        "end_lba": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3820879
+        }
+      }
+    },
+    "hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "crc32": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{8}$"
+        },
+        "md5": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{32}$"
+        },
+        "sha1": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{40}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}

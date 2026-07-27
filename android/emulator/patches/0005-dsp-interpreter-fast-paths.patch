@@ -1,0 +1,69 @@
+diff --git a/hw/xbox/mcpx/apu/dsp/dsp_cpu.c b/hw/xbox/mcpx/apu/dsp/dsp_cpu.c
+--- a/hw/xbox/mcpx/apu/dsp/dsp_cpu.c
++++ b/hw/xbox/mcpx/apu/dsp/dsp_cpu.c
+@@ -608,10 +608,9 @@ void dsp56k_execute_instruction(dsp_core_t* dsp)
+     dsp->cur_inst_len = 1;
+     dsp->instr_cycle = 2;
+ 
+-    bool tracing = TRACE_DSP_DISASM || trace_event_get_state(TRACE_DSP56K_EXECUTE_INSTRUCTION_DISASM);
+-
+     /* Disasm current instruction ? (trace mode only) */
+-    if (tracing) {
++    if (unlikely(TRACE_DSP_DISASM ||
++                 trace_event_get_state(TRACE_DSP56K_EXECUTE_INSTRUCTION_DISASM))) {
+         disasm_return = disasm_instruction(dsp, DSP_TRACE_MODE);
+         if (disasm_return) {
+             const char *text = disasm_get_instruction_text(dsp);
+@@ -627,11 +626,11 @@ void dsp56k_execute_instruction(dsp_core_t* dsp)
+ 
+     if (dsp->cur_inst < 0x100000) {
+         const OpcodeEntry *op = dsp->pram_opcache[dsp->pc];
+-        if (op == NULL) {
++        if (unlikely(op == NULL)) {
+             op = lookup_opcode(dsp->cur_inst);
+             dsp->pram_opcache[dsp->pc] = op;
+         }
+-        if (op->emu_func) {
++        if (likely(op->emu_func != NULL)) {
+             op->emu_func(dsp);
+         } else {
+             DPRINTF("%x - %s\n", dsp->cur_inst, op->name);
+@@ -642,7 +641,7 @@ void dsp56k_execute_instruction(dsp_core_t* dsp)
+     }
+ 
+     /* Disasm current instruction ? (trace mode only) */
+-    if (tracing && disasm_return) {
++    if (unlikely(disasm_return)) {
+         if (TRACE_DSP_DISASM_REG) {
+             disasm_reg_compare(dsp);
+         }
+@@ -659,12 +658,23 @@ void dsp56k_execute_instruction(dsp_core_t* dsp)
+         }
+     }
+ 
+-    /* Process the PC */
+-    dsp_postexecute_update_pc(dsp);
+-
+-    /* Process Interrupts */
+-    dsp_postexecute_interrupts(dsp);
+-
++    /*
++     * Outside REP and DO loops, advancing the program counter is the common
++     * case and does not need the loop bookkeeping in the general path.
++     */
++    if (likely(!dsp->loop_rep &&
++               !(dsp->registers[DSP_REG_SR] & (1 << DSP_SR_LF)))) {
++        dsp->pc += dsp->cur_inst_len;
++    } else {
++        dsp_postexecute_update_pc(dsp);
++    }
++
++    /* Avoid a full interrupt scan while the pipeline is completely idle. */
++    if (unlikely(dsp->interrupt_counter > 0 ||
++                 dsp->interrupt_state != DSP_INTERRUPT_NONE ||
++                 (dsp->registers[DSP_REG_SR] & (1 << DSP_SR_T)))) {
++        dsp_postexecute_interrupts(dsp);
++    }
+ 
+     dsp->num_inst += dsp->instr_cycle;
+ 

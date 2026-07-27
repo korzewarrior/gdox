@@ -1,0 +1,51 @@
+diff --git a/android-project/app/src/main/java/org/libsdl/app/HIDDeviceManager.java b/android-project/app/src/main/java/org/libsdl/app/HIDDeviceManager.java
+index 21a1c1d18eea5886dc7698a11c394e92d2fd29b0..84ced1463c22ec5fd089256adab81d494118c9d8 100644
+--- a/android-project/app/src/main/java/org/libsdl/app/HIDDeviceManager.java
++++ b/android-project/app/src/main/java/org/libsdl/app/HIDDeviceManager.java
+@@ -192,8 +192,17 @@ public class HIDDeviceManager {
+         IntentFilter filter = new IntentFilter();
+         filter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
+         filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
+-        filter.addAction(HIDDeviceManager.ACTION_USB_PERMISSION);
+-        mContext.registerReceiver(mUsbBroadcast, filter);
++        if (Build.VERSION.SDK_INT >= 33) {
++            mContext.registerReceiver(mUsbBroadcast, filter,
++                    Context.RECEIVER_EXPORTED);
++            IntentFilter permissionFilter =
++                    new IntentFilter(HIDDeviceManager.ACTION_USB_PERMISSION);
++            mContext.registerReceiver(mUsbBroadcast, permissionFilter,
++                    Context.RECEIVER_NOT_EXPORTED);
++        } else {
++            filter.addAction(HIDDeviceManager.ACTION_USB_PERMISSION);
++            mContext.registerReceiver(mUsbBroadcast, filter);
++        }
+ 
+         for (UsbDevice usbDevice : mUsbManager.getDeviceList().values()) {
+             handleUsbDeviceAttached(usbDevice);
+@@ -404,7 +413,12 @@ public class HIDDeviceManager {
+         IntentFilter filter = new IntentFilter();
+         filter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
+         filter.addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED);
+-        mContext.registerReceiver(mBluetoothBroadcast, filter);
++        if (Build.VERSION.SDK_INT >= 33) {
++            mContext.registerReceiver(mBluetoothBroadcast, filter,
++                    Context.RECEIVER_EXPORTED);
++        } else {
++            mContext.registerReceiver(mBluetoothBroadcast, filter);
++        }
+ 
+         if (mIsChromebook) {
+             mHandler = new Handler(Looper.getMainLooper());
+diff --git a/src/audio/aaudio/SDL_aaudio.c b/src/audio/aaudio/SDL_aaudio.c
+index 93bcaf3f78caed8107740cf3e80ae5f2b162017b..1b56d802a28ddf5dc8f9805d8f7d56a0db251ee1 100644
+--- a/src/audio/aaudio/SDL_aaudio.c
++++ b/src/audio/aaudio/SDL_aaudio.c
+@@ -300,7 +300,7 @@ static void aaudio_PlayDevice(_THIS)
+ {
+     struct SDL_PrivateAudioData *private = this->hidden;
+     aaudio_result_t res;
+-    int64_t timeoutNanoseconds = 1 * 1000 * 1000; /* 8 ms */
++    int64_t timeoutNanoseconds = 8 * 1000 * 1000; /* 8 ms */
+     res = ctx.AAudioStream_write(private->stream, private->mixbuf, private->mixlen / private->frame_size, timeoutNanoseconds);
+     if (res < 0) {
+         LOGI("%s : %s", __func__, ctx.AAudio_convertResultToText(res));

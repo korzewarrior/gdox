@@ -1,0 +1,63 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-feature
+    android:name="android.hardware.usb.host"
+    android:required="true" />
+
+  <application
+    android:allowBackup="false"
+    android:appCategory="game"
+    android:icon="@mipmap/gdox_launcher"
+    android:isGame="true"
+    android:label="@string/app_name"
+    android:roundIcon="@mipmap/gdox_launcher_round"
+    android:supportsRtl="true"
+    android:theme="@style/Theme.Gdox">
+
+    <meta-data
+      android:name="org.korze.gdox.EMULATOR_ACTIVITY"
+      android:value="org.korze.gdox.android.emulator.GdoxEmulatorActivity" />
+    <meta-data
+      android:name="android.game_mode_config"
+      android:resource="@xml/game_mode_config" />
+
+    <activity
+      android:name="org.korze.gdox.android.GdoxActivity"
+      android:exported="true"
+      android:launchMode="singleTop"
+      android:screenOrientation="fullSensor">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+      <intent-filter>
+        <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+        <category android:name="android.intent.category.DEFAULT" />
+      </intent-filter>
+      <meta-data
+        android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+        android:resource="@xml/usb_device_filter" />
+    </activity>
+
+    <activity
+      android:name="org.korze.gdox.android.GdoxSettingsActivity"
+      android:exported="false"
+      android:screenOrientation="fullSensor" />
+
+    <activity
+      android:name="org.korze.gdox.android.GdoxSourcesActivity"
+      android:exported="false"
+      android:screenOrientation="fullSensor" />
+
+    <activity
+      android:name="org.korze.gdox.android.emulator.GdoxEmulatorActivity"
+      android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
+      android:exported="false"
+      android:hardwareAccelerated="true"
+      android:process=":xemu"
+      android:screenOrientation="sensorLandscape">
+      <meta-data
+        android:name="SDL_MAIN_LIBRARY"
+        android:value="xemu" />
+    </activity>
+  </application>
+</manifest>

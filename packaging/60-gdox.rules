@@ -1,0 +1,13 @@
+# Give the active desktop user access to optical SCSI-generic devices.
+# SG_IO is required because /dev/srN exposes only the stock logical-volume view.
+SUBSYSTEM=="scsi_generic", ATTRS{type}=="5", TAG+="uaccess", MODE="0660"
+
+# BSG is available from the SCSI mid-layer even when the optional sg and
+# optical block-device modules are not loaded.
+SUBSYSTEM=="bsg", ATTRS{type}=="5", TAG+="uaccess", MODE="0660"
+
+# The exact GP63 RF02 live backend uses a narrowly bounded USB BOT transport
+# for ordinary reads plus allowlisted, volatile SRAM capacity/geometry state.
+# This bypasses Linux's unprivileged vendor-opcode filter without running the
+# player or emulator as root.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="1887", TAG+="uaccess", MODE="0660"

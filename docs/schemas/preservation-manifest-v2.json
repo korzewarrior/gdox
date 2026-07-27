@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gdox.korze.org/schemas/preservation-manifest-v2.json",
+  "title": "GDOX preservation manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "created_by",
+    "created_unix_seconds",
+    "format",
+    "title",
+    "source",
+    "source_lba_offset",
+    "image",
+    "bytes",
+    "sectors",
+    "sector_size",
+    "claims",
+    "compacted",
+    "media_patches_applied",
+    "hashes",
+    "unreadable_ranges",
+    "unreadable_sectors",
+    "normalized_security_sectors",
+    "status",
+    "status_label",
+    "evidence",
+    "structures"
+  ],
+  "properties": {
+    "schema": {
+      "const": "https://gdox.korze.org/schemas/preservation-manifest-v2.json"
+    },
+    "created_by": { "type": "string" },
+    "created_unix_seconds": { "type": "integer", "minimum": 0 },
+    "format": { "enum": ["xiso", "redump"] },
+    "title": { "type": "string" },
+    "title_id": { "type": ["string", "null"] },
+    "source": { "type": "string" },
+    "source_lba_offset": { "type": "integer", "minimum": 0 },
+    "image": { "type": "string" },
+    "bytes": { "type": "integer", "minimum": 0 },
+    "sectors": { "type": "integer", "minimum": 0 },
+    "sector_size": { "const": 2048 },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "readback_verified",
+        "filesystem_inventory_verified",
+        "full_logical_length",
+        "canonical_hash_match",
+        "ss_present",
+        "ss_authenticated"
+      ],
+      "properties": {
+        "readback_verified": { "type": "boolean" },
+        "filesystem_inventory_verified": { "type": "boolean" },
+        "full_logical_length": { "type": "boolean" },
+        "canonical_hash_match": { "type": ["boolean", "null"] },
+        "ss_present": { "type": "boolean" },
+        "ss_authenticated": { "type": "boolean" }
+      }
+    },
+    "compacted": { "type": "boolean" },
+    "media_patches_applied": { "type": "integer", "minimum": 0 },
+    "hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["crc32", "md5", "sha1", "sha256"],
+      "properties": {
+        "crc32": { "type": "string" },
+        "md5": { "type": "string" },
+        "sha1": { "type": "string" },
+        "sha256": { "type": "string" }
+      }
+    },
+    "unreadable_ranges": { "type": "array" },
+    "unreadable_sectors": { "type": "integer", "minimum": 0 },
+    "normalized_security_sectors": { "type": "integer", "minimum": 0 },
+    "security_map": { "$ref": "security-map-v1.json" },
+    "status": { "enum": ["playable-xiso", "redump-candidate", "redump-evidence-complete"] },
+    "status_label": { "type": "string" },
+    "evidence": { "type": "object" },
+    "structures": { "type": "array" }
+  }
+}

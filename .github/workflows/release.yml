@@ -1,0 +1,174 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            cmake ninja-build libusb-1.0-0-dev libssl-dev libdbus-1-dev \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev
+      - name: Verify source tree
+        run: make check
+
+  unix:
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: dist/.build/x86_64-unknown-linux-gnu/gdox
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: dist/.build/x86_64-apple-darwin/gdox.app
+          - os: macos-15
+            target: aarch64-apple-darwin
+            artifact: dist/.build/aarch64-apple-darwin/gdox.app
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            cmake ninja-build libusb-1.0-0-dev libssl-dev libdbus-1-dev \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev
+      - name: Build
+        run: >-
+          python scripts/build_release.py
+          --target "${{ matrix.target }}"
+          --build-dir "dist/.build/${{ matrix.target }}"
+      - name: Package
+        run: >-
+          python scripts/package_release.py
+          --version "${{ github.ref_name }}"
+          --target "${{ matrix.target }}"
+          --artifact "${{ matrix.artifact }}"
+          --output dist/release
+      - name: Package Steam Deck build
+        if: runner.os == 'Linux'
+        run: >-
+          python scripts/package_release.py
+          --version "${{ github.ref_name }}"
+          --target x86_64-steamdeck-linux-gnu
+          --artifact "${{ matrix.artifact }}"
+          --output dist/release
+      - name: Audit release payload
+        run: python scripts/audit_release.py --path dist/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gdox-${{ matrix.target }}
+          path: |
+            dist/release/*.tar.gz
+            dist/release/*.sha256
+          if-no-files-found: error
+
+  windows:
+    needs: quality
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        shell: cmd
+        run: >-
+          scripts\build_msvc.cmd
+          "%CD%"
+          "%CD%\dist\.build\x86_64-pc-windows-msvc"
+      - name: Package
+        run: >-
+          python scripts/package_release.py
+          --version "${{ github.ref_name }}"
+          --target x86_64-pc-windows-msvc
+          --artifact dist/.build/x86_64-pc-windows-msvc/gdox.exe
+          --output dist/release
+      - name: Audit release payload
+        run: python scripts/audit_release.py --path dist/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gdox-x86_64-pc-windows-msvc
+          path: |
+            dist/release/*.zip
+            dist/release/*.sha256
+          if-no-files-found: error
+
+  source:
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package GDOX source
+        run: >-
+          python scripts/package_source.py
+          --version "${{ github.ref_name }}"
+          --output dist
+      - name: Fetch xemu corresponding source
+        run: python scripts/fetch_runtime.py source --output dist
+      - name: Audit source payload
+        run: python scripts/audit_release.py --path dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sources
+          path: |
+            dist/*-source.tar.gz
+            dist/*-source.tar.gz.sha256
+            dist/*.tar.zst
+            dist/*.tar.zst.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: [unix, windows, source]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*"
+          path: dist
+          merge-multiple: true
+      - name: Audit assembled release
+        run: python scripts/audit_release.py --path dist
+      - name: Sign release checksums
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes minisign
+          cd dist
+          find . -maxdepth 1 -type f ! -name '*.sha256' ! -name 'SHA256SUMS*' \
+            -printf '%f\n' | sort | xargs sha256sum > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          minisign -S -s "$RUNNER_TEMP/minisign.key" \
+            -x SHA256SUMS.minisig -m SHA256SUMS
+          rm "$RUNNER_TEMP/minisign.key"
+          minisign -V -p ../packaging/minisign.pub -m SHA256SUMS
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          --draft
+          --generate-notes
+          dist/*

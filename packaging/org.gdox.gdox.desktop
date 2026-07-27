@@ -1,0 +1,11 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Type=Application
+Name=GDOX
+Comment=Insert an original Xbox disc and play it
+Exec=gdox
+Icon=gdox
+StartupWMClass=gdox
+Terminal=false
+Categories=Game;Emulator;
+Keywords=Xbox;disc;xemu;emulator;

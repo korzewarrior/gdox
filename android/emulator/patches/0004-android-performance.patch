@@ -1,0 +1,243 @@
+diff --git a/hw/xbox/mcpx/apu/vp/vp.c b/hw/xbox/mcpx/apu/vp/vp.c
+index 4290424fd..4d591cd7a 100644
+--- a/hw/xbox/mcpx/apu/vp/vp.c
++++ b/hw/xbox/mcpx/apu/vp/vp.c
+@@ -660,12 +660,26 @@ const MemoryRegionOps vp_ops = {
+     .write = vp_write,
+ };
+ 
+-static hwaddr get_data_ptr(hwaddr sge_base, unsigned int max_sge, uint32_t addr)
++static bool apu_ram_range_valid(MCPXAPUState *d, hwaddr addr, size_t size)
++{
++    const uint64_t ram_size = memory_region_size(d->ram);
++    return addr <= ram_size && size <= ram_size - addr;
++}
++
++static uint32_t read_apu_u32(MCPXAPUState *d, hwaddr addr)
++{
++    if (apu_ram_range_valid(d, addr, sizeof(uint32_t))) {
++        return ldl_le_p(&d->ram_ptr[addr]);
++    }
++    return ldl_le_phys(&address_space_memory, addr);
++}
++
++static hwaddr get_data_ptr(MCPXAPUState *d, hwaddr sge_base,
++                           unsigned int max_sge, uint32_t addr)
+ {
+     unsigned int entry = addr / TARGET_PAGE_SIZE;
+     assert(entry <= max_sge);
+-    uint32_t prd_address =
+-        ldl_le_phys(&address_space_memory, sge_base + entry * 4 * 2);
++    uint32_t prd_address = read_apu_u32(d, sge_base + entry * 4 * 2);
+     // uint32_t prd_control =
+     //     ldl_le_phys(&address_space_memory, sge_base + entry * 4 * 2 + 4);
+     DPRINTF("Addr: 0x%08X, control: 0x%08X\n", prd_address, prd_control);
+@@ -1022,10 +1036,9 @@ static int voice_get_samples(MCPXAPUState *d, uint16_t v,
+                     linear_addr += ba;
+                     for (unsigned int word_index = 0;
+                          word_index < (9 * samples_per_block); word_index++) {
+-                        hwaddr addr = get_data_ptr(d->regs[NV_PAPU_VPSGEADDR],
++                        hwaddr addr = get_data_ptr(d, d->regs[NV_PAPU_VPSGEADDR],
+                                                    0xFFFFFFFF, linear_addr);
+-                        adpcm_block[word_index] =
+-                            ldl_le_phys(&address_space_memory, addr);
++                        adpcm_block[word_index] = read_apu_u32(d, addr);
+                         linear_addr += 4;
+                     }
+                 }
+@@ -1048,28 +1061,57 @@ static int voice_get_samples(MCPXAPUState *d, uint16_t v,
+                 addr = segment_offset + cbo * block_size;
+             } else {
+                 uint32_t linear_addr = ba + cbo * block_size;
+-                addr = get_data_ptr(d->regs[NV_PAPU_VPSGEADDR], 0xFFFFFFFF,
++                addr = get_data_ptr(d, d->regs[NV_PAPU_VPSGEADDR], 0xFFFFFFFF,
+                                     linear_addr);
+             }
+ 
++            unsigned int sample_bytes;
++            switch (sample_size) {
++            case NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_U8:
++                sample_bytes = 1;
++                break;
++            case NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_S16:
++                sample_bytes = 2;
++                break;
++            case NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_S24:
++            case NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_S32:
++                sample_bytes = 4;
++                break;
++            default:
++                assert(false);
++                sample_bytes = 0;
++                break;
++            }
++            const size_t sample_span =
++                (channels - 1) * container_size + sample_bytes;
++            const bool direct_ram = apu_ram_range_valid(d, addr, sample_span);
++            const uint8_t *src = direct_ram ? &d->ram_ptr[addr] : NULL;
++
+             for (unsigned int channel = 0; channel < channels; channel++) {
+                 uint32_t ival;
+                 float fval;
+                 switch (sample_size) {
+                 case NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_U8:
+-                    ival = ldub_phys(&address_space_memory, addr);
++                    ival = direct_ram ? src[0]
++                                      : ldub_phys(&address_space_memory, addr);
+                     fval = uint8_to_float(ival & 0xff);
+                     break;
+                 case NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_S16:
+-                    ival = lduw_le_phys(&address_space_memory, addr);
++                    ival = direct_ram ? lduw_le_p(src)
++                                      : lduw_le_phys(&address_space_memory,
++                                                     addr);
+                     fval = int16_to_float(ival & 0xffff);
+                     break;
+                 case NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_S24:
+-                    ival = ldl_le_phys(&address_space_memory, addr);
++                    ival = direct_ram ? ldl_le_p(src)
++                                      : ldl_le_phys(&address_space_memory,
++                                                    addr);
+                     fval = int24_to_float(ival);
+                     break;
+                 case NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_S32:
+-                    ival = ldl_le_phys(&address_space_memory, addr);
++                    ival = direct_ram ? ldl_le_p(src)
++                                      : ldl_le_phys(&address_space_memory,
++                                                    addr);
+                     fval = int32_to_float(ival);
+                     break;
+                 default:
+@@ -1078,6 +1120,9 @@ static int voice_get_samples(MCPXAPUState *d, uint16_t v,
+                 }
+                 samples[sample_count][channel] = fval;
+                 addr += container_size;
++                if (direct_ram) {
++                    src += container_size;
++                }
+             }
+         }
+ 
+diff --git a/util/qemu-timer.c b/util/qemu-timer.c
+index eb2706052..bef3b49b2 100644
+--- a/util/qemu-timer.c
++++ b/util/qemu-timer.c
+@@ -348,15 +348,43 @@ int qemu_poll_ns(GPollFD *fds, guint nfds, int64_t timeout)
+ #else
+ 
+ #ifdef XBOX
+-    /* Timers are facilitated by this function. Busy-wait if the deadline is
+-     * near, to avoid missing deadlines due to costly sleeps.
++    /*
++     * Short timer deadlines are common while emulating the Xbox. Yield for
++     * most of the interval, then spin only for the final fraction to avoid
++     * scheduler overshoot. Reading the ARM virtual counter avoids a system
++     * call in the remaining spin loop.
+      */
+-    #define XBOX_BUSYWAIT_THRESHOLD_NS 1250000
++    #define XBOX_BUSYWAIT_THRESHOLD_NS 1250000
++    #define XBOX_BUSYWAIT_TAIL_NS 150000
+     if ((0 < timeout) && (timeout < XBOX_BUSYWAIT_THRESHOLD_NS)) {
++        int64_t spin_ns = MIN(timeout, XBOX_BUSYWAIT_TAIL_NS);
++        if (timeout > spin_ns) {
++            int64_t sleep_ns = timeout - spin_ns;
++            struct timespec sleep_time = {
++                .tv_sec = sleep_ns / 1000000000LL,
++                .tv_nsec = sleep_ns % 1000000000LL,
++            };
++            nanosleep(&sleep_time, NULL);
++        }
++
++#if defined(__aarch64__)
++        uint64_t frequency;
++        uint64_t start;
++        asm volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
++        asm volatile("mrs %0, cntvct_el0" : "=r"(start));
++        uint64_t ticks =
++            (uint64_t)spin_ns * frequency / 1000000000ULL;
++        uint64_t end = start + ticks;
++        uint64_t now;
++        do {
++            asm volatile("mrs %0, cntvct_el0" : "=r"(now));
++        } while (now < end);
++#else
+         int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+-        int64_t end = now + timeout;
++        int64_t end = now + spin_ns;
+         while (now < end) {
+             now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+         }
++#endif
+         timeout = 0;
+     }
+ #endif
+diff --git a/ui/xemu.c b/ui/xemu.c
+index 0974dde4cfb1055b3d17907978c50d86f099ee50..0ca95dc5f22c66692f3666bf4a14286c7a4a8135 100644
+--- a/ui/xemu.c
++++ b/ui/xemu.c
+@@ -102,6 +102,46 @@ void xb_surface_gl_destroy_texture(DisplaySurface *surface);
+ 
+ static void sleep_ns(int64_t ns);
+ 
++#ifdef __ANDROID__
++static uint64_t android_virtual_counter(void)
++{
++    uint64_t counter;
++    asm volatile("mrs %0, cntvct_el0" : "=r"(counter));
++    return counter;
++}
++
++static uint64_t android_virtual_counter_frequency(void)
++{
++    uint64_t frequency;
++    asm volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
++    return frequency;
++}
++
++static void android_wait_until_ns(int64_t deadline)
++{
++    const int64_t spin_tail_ns = 150000;
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    int64_t remaining = deadline - now;
++
++    if (remaining > spin_tail_ns) {
++        sleep_ns(remaining - spin_tail_ns);
++        now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++        remaining = deadline - now;
++    }
++    if (remaining <= 0) {
++        return;
++    }
++
++    const uint64_t frequency = android_virtual_counter_frequency();
++    const uint64_t start = android_virtual_counter();
++    const uint64_t ticks =
++        (uint64_t)remaining * frequency / UINT64_C(1000000000);
++    const uint64_t end = start + ticks;
++    while (android_virtual_counter() < end) {
++    }
++}
++#endif
++
+ static int sdl2_num_outputs;
+ static struct sdl2_console *sdl2_console;
+ static SDL_Surface *guest_sprite_surface;
+@@ -1831,6 +1871,10 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
+     static int64_t last_update = 0;
+     int64_t deadline = last_update + 16666666;
+ 
++#ifdef __ANDROID__
++    android_wait_until_ns(deadline);
++    last_update = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++#else
+ #ifdef DEBUG_XEMU_C
+     int64_t sleep_acc = 0;
+     int64_t spin_acc = 0;
+@@ -1866,6 +1910,7 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
+             break;
+         }
+     }
++#endif
+ 
+ }
+ 

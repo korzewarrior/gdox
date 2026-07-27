@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -r /etc/os-release ] \
+    && grep -q '^VARIANT_ID=steamdeck$' /etc/os-release; then
+    export GDOX_GAMING_MODE=1
+fi
+runtime_libraries="${root}/runtime/xemu/AppDir/usr/lib"
+if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+    runtime_libraries="${root}/lib:${runtime_libraries}:${LD_LIBRARY_PATH}"
+else
+    runtime_libraries="${root}/lib:${runtime_libraries}"
+fi
+export LD_LIBRARY_PATH="${runtime_libraries}"
+exec "${root}/libexec/gdox" "$@"

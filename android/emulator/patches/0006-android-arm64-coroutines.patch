@@ -1,0 +1,175 @@
+diff --git a/util/coroutine-sigaltstack.c b/util/coroutine-sigaltstack.c
+index 037d6416c4..ec788e019b 100644
+--- a/util/coroutine-sigaltstack.c
++++ b/util/coroutine-sigaltstack.c
+@@ -33,11 +33,103 @@
+ #error "SafeStack is not compatible with code run in alternate signal stacks"
+ #endif
+ 
++#if defined(__ANDROID__) && defined(__aarch64__)
++/*
++ * Bionic protects sigjmp_buf return addresses with a per-thread pointer
++ * authentication key. QEMU coroutines can resume on a different AioContext
++ * thread, so a context saved by sigsetjmp() may not authenticate when it is
++ * restored by siglongjmp().
++ *
++ * Keep the Android coroutine context independent of thread-local PAC keys.
++ * The saved state follows AAPCS64: x19-x30, SP, and d8-d15. Mirrored SP and
++ * LR values detect accidental context corruption before control is restored.
++ */
++typedef struct {
++    uint64_t slots[24];
++} CoroutineJumpBuffer;
++
++static int coroutine_context_save(CoroutineJumpBuffer *env)
++    __attribute__((naked, returns_twice));
++static int coroutine_context_save(CoroutineJumpBuffer *env)
++{
++    __asm__ volatile(
++        "stp x19, x20, [x0, #0]\n"
++        "stp x21, x22, [x0, #16]\n"
++        "stp x23, x24, [x0, #32]\n"
++        "stp x25, x26, [x0, #48]\n"
++        "stp x27, x28, [x0, #64]\n"
++        "stp x29, x30, [x0, #80]\n"
++        "mov x1, sp\n"
++        "mvn x2, x1\n"
++        "stp x1, x2, [x0, #96]\n"
++        "mvn x2, x30\n"
++        "str x2, [x0, #112]\n"
++        "stp d8, d9, [x0, #128]\n"
++        "stp d10, d11, [x0, #144]\n"
++        "stp d12, d13, [x0, #160]\n"
++        "stp d14, d15, [x0, #176]\n"
++        "mov w0, wzr\n"
++        "ret\n");
++}
++
++static void coroutine_context_restore(CoroutineJumpBuffer *env, int value)
++    __attribute__((naked, noreturn));
++static void coroutine_context_restore(CoroutineJumpBuffer *env, int value)
++{
++    __asm__ volatile(
++        "mov x9, x0\n"
++        "mov w0, w1\n"
++        "cmp w0, #0\n"
++        "mov w10, #1\n"
++        "csel w0, w10, w0, eq\n"
++        "ldp x10, x11, [x9, #96]\n"
++        "mvn x12, x10\n"
++        "cmp x11, x12\n"
++        "b.ne 1f\n"
++        "ldr x11, [x9, #88]\n"
++        "ldr x12, [x9, #112]\n"
++        "mvn x13, x11\n"
++        "cmp x12, x13\n"
++        "b.ne 1f\n"
++        "ldp d8, d9, [x9, #128]\n"
++        "ldp d10, d11, [x9, #144]\n"
++        "ldp d12, d13, [x9, #160]\n"
++        "ldp d14, d15, [x9, #176]\n"
++        "ldp x19, x20, [x9, #0]\n"
++        "ldp x21, x22, [x9, #16]\n"
++        "ldp x23, x24, [x9, #32]\n"
++        "ldp x25, x26, [x9, #48]\n"
++        "ldp x27, x28, [x9, #64]\n"
++        "ldp x29, x30, [x9, #80]\n"
++        "mov sp, x10\n"
++        "ret\n"
++        "1:\n"
++        "brk #0x4744\n"
++        "b 1b\n");
++}
++
++#define coroutine_setjmp(env) coroutine_context_save(env)
++#define coroutine_longjmp(env, value) coroutine_context_restore(env, value)
++#else
++typedef sigjmp_buf CoroutineJumpBuffer;
++
++static inline int coroutine_setjmp(CoroutineJumpBuffer *env)
++{
++    return sigsetjmp(*env, 0);
++}
++
++static inline G_NORETURN void coroutine_longjmp(CoroutineJumpBuffer *env,
++                                                 int value)
++{
++    siglongjmp(*env, value);
++}
++#endif
++
+ typedef struct {
+     Coroutine base;
+     void *stack;
+     size_t stack_size;
+-    sigjmp_buf env;
++    CoroutineJumpBuffer env;
+ } CoroutineSigAltStack;
+ 
+ /**
+@@ -51,7 +143,7 @@ typedef struct {
+     CoroutineSigAltStack leader;
+ 
+     /** Information for the signal handler (trampoline) */
+-    sigjmp_buf tr_reenter;
++    CoroutineJumpBuffer tr_reenter;
+     volatile sig_atomic_t tr_called;
+     void *tr_handler;
+ } CoroutineThreadState;
+@@ -96,8 +188,8 @@ static void __attribute__((constructor)) coroutine_init(void)
+ static void coroutine_bootstrap(CoroutineSigAltStack *self, Coroutine *co)
+ {
+     /* Initialize longjmp environment and switch back the caller */
+-    if (!sigsetjmp(self->env, 0)) {
+-        siglongjmp(*(sigjmp_buf *)co->entry_arg, 1);
++    if (!coroutine_setjmp(&self->env)) {
++        coroutine_longjmp(co->entry_arg, 1);
+     }
+ 
+     while (true) {
+@@ -128,7 +220,7 @@ static void coroutine_trampoline(int signal)
+      * this is a signal handler and we have to do a return "soon". Then the
+      * caller can reestablish everything and do a siglongjmp here again.
+      */
+-    if (!sigsetjmp(coTS->tr_reenter, 0)) {
++    if (!coroutine_setjmp(&coTS->tr_reenter)) {
+         return;
+     }
+ 
+@@ -155,7 +247,7 @@ Coroutine *qemu_coroutine_new(void)
+     stack_t oss;
+     sigset_t sigs;
+     sigset_t osigs;
+-    sigjmp_buf old_env;
++    CoroutineJumpBuffer old_env;
+     static pthread_mutex_t sigusr2_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
+     /* The way to manipulate stack is with the sigaltstack function. We
+@@ -251,8 +343,8 @@ Coroutine *qemu_coroutine_new(void)
+      * type-conversion warnings related to the `volatile' qualifier and
+      * the fact that `jmp_buf' usually is an array type.
+      */
+-    if (!sigsetjmp(old_env, 0)) {
+-        siglongjmp(coTS->tr_reenter, 1);
++    if (!coroutine_setjmp(&old_env)) {
++        coroutine_longjmp(&coTS->tr_reenter, 1);
+     }
+ 
+     /*
+@@ -280,9 +372,9 @@ CoroutineAction qemu_coroutine_switch(Coroutine *from_, Coroutine *to_,
+ 
+     s->current = to_;
+ 
+-    ret = sigsetjmp(from->env, 0);
++    ret = coroutine_setjmp(&from->env);
+     if (ret == 0) {
+-        siglongjmp(to->env, action);
++        coroutine_longjmp(&to->env, action);
+     }
+     return ret;
+ }
+@@ -300,4 +392,3 @@ bool qemu_in_coroutine(void)
+ 
+     return s && s->current->caller;
+ }
+-

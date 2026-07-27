@@ -1,0 +1,52 @@
+{
+  "schema": "https://gdox.korze.org/schemas/xgd1-catalog-v1.json",
+  "entries": [
+    {
+      "id": "halo-usa-rev2-ms00409a",
+      "title": "Halo: Combat Evolved (USA, Rev 2)",
+      "mastering_id": "MS00409A",
+      "sectors": 3820880,
+      "pfi_crc32": "8FC52135",
+      "dmi_crc32": [
+        "8654B27E",
+        "C7377C49",
+        "FF637773"
+      ],
+      "ss_crc32": [
+        "01B3CDF5",
+        "B4B7F4FD",
+        "75E0DA30",
+        "67C12D96",
+        "0A754627",
+        "87A6FD57"
+      ],
+      "references": [
+        "https://redump.info/disc/27162/",
+        "https://forum.redump.org/topic/21835/dumping-xbox-xbox-360-security-sector-ranges/"
+      ],
+      "expected_hashes": {
+        "crc32": "013986D0",
+        "md5": "523d82be68f267579864331085a56ce8",
+        "sha1": "07326d842e324b35cbd53d4e279aa36199d736a3"
+      },
+      "ranges": [
+        { "start_lba": 291292, "end_lba": 295387 },
+        { "start_lba": 447992, "end_lba": 452087 },
+        { "start_lba": 757224, "end_lba": 761319 },
+        { "start_lba": 908256, "end_lba": 912351 },
+        { "start_lba": 1068812, "end_lba": 1072907 },
+        { "start_lba": 1217808, "end_lba": 1221903 },
+        { "start_lba": 1373826, "end_lba": 1377921 },
+        { "start_lba": 1611544, "end_lba": 1615639 },
+        { "start_lba": 2084124, "end_lba": 2088219 },
+        { "start_lba": 2379638, "end_lba": 2383733 },
+        { "start_lba": 2527654, "end_lba": 2531749 },
+        { "start_lba": 2676146, "end_lba": 2680241 },
+        { "start_lba": 2831660, "end_lba": 2835755 },
+        { "start_lba": 2989624, "end_lba": 2993719 },
+        { "start_lba": 3296914, "end_lba": 3301009 },
+        { "start_lba": 3457904, "end_lba": 3461999 }
+      ]
+    }
+  ]
+}

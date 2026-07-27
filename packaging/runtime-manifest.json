@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "xemu": {
+    "version": "0.8.136",
+    "source": {
+      "url": "https://github.com/xemu-project/xemu/releases/download/v0.8.136/xemu-0.8.136.tar.zst",
+      "sha256": "92a09305a87d7dabaecc335fa54ca888117aab10fe22af6ad73fc0d3cdd20c1f",
+      "size": 176511992,
+      "name": "xemu-0.8.136-source.tar.zst"
+    },
+    "licenses": [
+      {
+        "url": "https://raw.githubusercontent.com/xemu-project/xemu/v0.8.136/COPYING",
+        "sha256": "dd3ce02338c3a48abb6ba59b48809f7108a8bd242cb0cc8be90daafa30707c28",
+        "size": 17880,
+        "name": "COPYING"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/xemu-project/xemu/v0.8.136/COPYING.LIB",
+        "sha256": "31c90ce76b6f5aab90a205851e71d5c27e31c0aa3d7017a4383b98a6fe3f1faa",
+        "size": 26415,
+        "name": "COPYING.LIB"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/xemu-project/xemu/v0.8.136/LICENSE",
+        "sha256": "139c64b7a9ae62858ff969aae622ecfcf4f1519655bd92d2e70a1a2fb615690e",
+        "size": 1177,
+        "name": "LICENSE"
+      }
+    ],
+    "targets": {
+      "x86_64-unknown-linux-gnu": {
+        "url": "https://github.com/xemu-project/xemu/releases/download/v0.8.136/xemu-0.8.136-x86_64.AppImage",
+        "sha256": "ac77363a599109194ba2af3caa695348d199f515cf1d0fde091beb629e0c3103",
+        "size": 16402936,
+        "format": "appimage"
+      },
+      "x86_64-pc-windows-msvc": {
+        "url": "https://github.com/xemu-project/xemu/releases/download/v0.8.136/xemu-0.8.136-windows-x86_64.zip",
+        "sha256": "b25a6c24a2c2c36a0843a153cd9ee59ca6833ef87bdcd855ba0824930e4ddd1d",
+        "size": 9358209,
+        "format": "windows-zip"
+      },
+      "x86_64-apple-darwin": {
+        "url": "https://github.com/xemu-project/xemu/releases/download/v0.8.136/xemu-0.8.136-macos-universal.zip",
+        "sha256": "9b5f52240b12ff0d6ab3852b38a820dc92b99124db8a981ccf2ed2cb893f446e",
+        "size": 18526030,
+        "format": "macos-zip"
+      },
+      "aarch64-apple-darwin": {
+        "url": "https://github.com/xemu-project/xemu/releases/download/v0.8.136/xemu-0.8.136-macos-universal.zip",
+        "sha256": "9b5f52240b12ff0d6ab3852b38a820dc92b99124db8a981ccf2ed2cb893f446e",
+        "size": 18526030,
+        "format": "macos-zip"
+      }
+    }
+  },
+  "hdd": {
+    "version": "v20260516-0955",
+    "url": "https://github.com/xemu-project/xemu-dashboard/releases/download/v20260516-0955/xbox_hdd.qcow2",
+    "sha256": "00d7df7a2bc235f8801764f00b7f40e194d1e392f7a9619d6b2396c89770f6dd",
+    "size": 1638400,
+    "name": "xbox_hdd.qcow2",
+    "license": {
+      "url": "https://github.com/xemu-project/xemu-dashboard/releases/download/v20260516-0955/LICENSE",
+      "sha256": "3c4d8c95fdcd47f61e106f1e597d8c9db37a57193d0239346edcbc9f4f2334f6",
+      "size": 60240,
+      "name": "LICENSE.txt"
+    }
+  }
+}

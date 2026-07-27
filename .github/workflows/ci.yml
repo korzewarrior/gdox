@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  source-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release tooling and repository privacy
+        run: |
+          python -m py_compile scripts/*.py
+          python -m json.tool packaging/runtime-manifest.json >/dev/null
+          for schema in docs/schemas/*.json; do
+            python -m json.tool "$schema" >/dev/null
+          done
+          bash -n packaging/install-device-access.sh
+          sh -n packaging/linux/gdox packaging/linux/install.sh
+          python scripts/audit_architecture.py
+          python scripts/audit_release.py
+          git diff --check
+
+  sanitize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cmake ninja-build libssl-dev
+      - name: Build and test with ASan and UBSan
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=ON \
+            -DGDOX_BUILD_UI=OFF \
+            -DGDOX_BUILD_OPTICAL=OFF \
+            -DGDOX_WARNINGS_AS_ERRORS=ON \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            cmake ninja-build libusb-1.0-0-dev libssl-dev libdbus-1-dev \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev
+      - name: Build, test, and audit
+        run: >-
+          python scripts/build_release.py
+          --target "${{ matrix.target }}"
+          --build-dir "dist/.build/${{ matrix.target }}"
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test with MSVC
+        shell: cmd
+        run: >-
+          scripts\build_msvc.cmd
+          "%CD%"
+          "%CD%\dist\.build\x86_64-pc-windows-msvc"
+      - name: Audit executable
+        run: >-
+          python scripts/audit_release.py
+          --artifact dist/.build/x86_64-pc-windows-msvc/gdox.exe

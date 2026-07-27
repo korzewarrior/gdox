@@ -1,0 +1,6 @@
+0001-android-core.patch
+0002-gdox-android-platform.patch
+0003-android-runtime-corrections.patch
+0004-android-performance.patch
+0005-dsp-interpreter-fast-paths.patch
+0006-android-arm64-coroutines.patch

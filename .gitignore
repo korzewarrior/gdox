@@ -1,0 +1,9 @@
+/dist/
+/build/
+/CMakeFiles/
+/imgui.ini
+__pycache__/
+*.pyc
+*.iso
+*.xiso
+*.log

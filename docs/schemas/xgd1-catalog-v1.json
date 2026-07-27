@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gdox.korze.org/schemas/xgd1-catalog-v1.json",
+  "title": "GDOX offline XGD1 mastering catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "entries"
+  ],
+  "properties": {
+    "schema": {
+      "const": "https://gdox.korze.org/schemas/xgd1-catalog-v1.json"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "mastering_id",
+          "sectors",
+          "pfi_crc32",
+          "dmi_crc32",
+          "ss_crc32",
+          "references",
+          "expected_hashes",
+          "ranges"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mastering_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sectors": {
+            "const": 3820880
+          },
+          "pfi_crc32": {
+            "type": "string",
+            "pattern": "^[A-Fa-f0-9]{8}$"
+          },
+          "dmi_crc32": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Fa-f0-9]{8}$"
+            }
+          },
+          "ss_crc32": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Fa-f0-9]{8}$"
+            }
+          },
+          "references": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "format": "uri"
+            }
+          },
+          "expected_hashes": {
+            "$ref": "security-map-v1.json#/$defs/hashes"
+          },
+          "ranges": {
+            "type": "array",
+            "minItems": 16,
+            "maxItems": 16,
+            "items": {
+              "$ref": "security-map-v1.json#/$defs/range"
+            }
+          }
+        }
+      }
+    }
+  }
+}
