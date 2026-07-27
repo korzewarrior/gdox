@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -45,7 +45,7 @@ jobs:
             artifact: dist/.build/aarch64-apple-darwin/gdox.app
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -88,7 +88,7 @@ jobs:
     needs: quality
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build
         shell: cmd
         run: >-
@@ -116,7 +116,7 @@ jobs:
     needs: quality
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Package GDOX source
         run: >-
           python scripts/package_source.py
@@ -140,7 +140,7 @@ jobs:
     needs: [unix, windows, source]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           pattern: "*"
