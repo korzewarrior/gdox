@@ -181,15 +181,72 @@ li + li {
 .drive {
   scroll-margin-top: 1rem;
   padding: 1rem 0;
+  border-top: 1px solid rgb(129 145 132 / 30%);
 }
 
 .drive + .drive {
-  margin-top: 1rem;
+  margin-top: 0;
+}
+
+.drive summary {
+  font-size: 0.9rem;
+}
+
+.drive-overview {
+  display: grid;
+  grid-template-columns: 10rem minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.drive-product {
+  margin: 0;
+  background: #fff;
+}
+
+.drive-product a,
+.drive-product img {
+  display: block;
+}
+
+.drive-product img {
+  width: 100%;
+  height: auto;
+}
+
+.drive-facts {
+  margin: 0;
+}
+
+.drive-facts div {
+  display: grid;
+  grid-template-columns: 4.6rem minmax(0, 1fr);
+  gap: 0.6rem;
+  padding: 0.2rem 0;
+}
+
+.drive-facts dt {
+  color: var(--muted);
+}
+
+.drive-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.drive-links,
+.drive-note {
+  color: var(--muted);
+}
+
+.drive-links {
+  margin-bottom: 0;
 }
 
 .contributor-credit {
   display: grid;
-  grid-template-columns: 5.4rem 1fr;
+  grid-template-columns: 9.5rem 1fr;
   gap: 1rem;
   align-items: start;
   margin: 0.9rem 0;
@@ -197,8 +254,10 @@ li + li {
 
 .contributor-credit img {
   display: block;
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   height: auto;
+  max-height: 9.5rem;
 }
 
 .contributor-credit figcaption {
@@ -298,5 +357,21 @@ footer {
 
   main {
     padding: 2rem 0;
+  }
+
+  .drive-overview {
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+  }
+
+  .drive-facts div {
+    display: block;
+  }
+
+  .contributor-credit {
+    grid-template-columns: 6.6rem 1fr;
+  }
+
+  .contributor-credit img {
+    max-height: 6.6rem;
   }
 }

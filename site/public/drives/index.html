@@ -19,41 +19,82 @@
     <nav aria-label="breadcrumb">
       <h1><a href="/">gdox</a> / <span aria-current="page">drives</span></h1>
     </nav>
-    <p>direct-disc access currently supports three exact stock-drive profiles. their temporary access modes do not flash firmware or physically modify the drive.</p>
+    <p>three exact stock-drive profiles. expand a model before buying.</p>
+    <p>all profiles are volatile and fail closed: no firmware flash or physical modification.</p>
     <p>updated <time datetime="2026-07-29">2026-07-29</time></p>
 
     <section>
       <h2>compatible hardware</h2>
-      <article class="drive" id="hl-dt-st-gp63ex70-rf02">
-        <h3>HL-DT-ST DVDRAM GP63EX70</h3>
-        <p>compatible</p>
-        <p>stock firmware RF02</p>
-        <p>use the stock drive and firmware. no drive flashing or hardware modification is required.</p>
-        <p>platforms: linux / steam deck / macos / windows</p>
-        <p><a href="https://www.amazon.com/Ultra-Portable-Writer-M-DISCTM-Support/dp/B0BH6YR17K" rel="external">order from amazon</a> / <a href="https://www.ebay.com/sch/i.html?_nkw=LG+EX70+Ultra+Slim+Portable+DVD+Writer" rel="external">search ebay</a> — check for the GP63EX70 model and RF02 firmware; not affiliate links.</p>
-      </article>
-      <article class="drive" id="hl-dt-st-gp65nb60-pb00">
-        <h3>HL-DT-ST DVDRAM GP65NB60</h3>
-        <p>compatible on windows 11 with the stock optical driver</p>
-        <p>stock firmware PB00 / USB 0e8d:1887</p>
-        <p>activation, xbox-sector reads, live play, and complete restoration were validated with this exact identity. PB01 and other firmware revisions are not supported.</p>
+      <details class="drive" id="hl-dt-st-gp63ex70-rf02">
+        <summary>GP63EX70 / RF02</summary>
+        <div class="drive-overview">
+          <figure class="drive-product">
+            <a href="https://www.lg.com/us/burners-drives/lg-gp63ex70-external-dvd-drive" rel="external">
+              <img src="/assets/drive-gp63ex70.jpg" width="450" height="450" loading="lazy" alt="LG GP63EX70 external DVD drive">
+            </a>
+          </figure>
+          <div>
+            <dl class="drive-facts">
+              <div><dt>identity</dt><dd><code>HL-DT-ST DVDRAM GP63EX70</code></dd></div>
+              <div><dt>firmware</dt><dd><code>RF02</code></dd></div>
+              <div><dt>usb</dt><dd><code>0e8d:1887</code></dd></div>
+              <div><dt>validated</dt><dd>live play / linux, steam deck, macos, windows</dd></div>
+            </dl>
+            <p class="drive-links"><a href="https://www.lg.com/us/burners-drives/lg-gp63ex70-external-dvd-drive" rel="external">LG</a> / <a href="https://www.ebay.com/sch/i.html?_nkw=LG+GP63EX70+RF02" rel="external">eBay</a></p>
+          </div>
+        </div>
+        <figure class="contributor-credit">
+          <img src="/assets/korze-korzewarrior.png" width="268" height="158" alt="korze(warrior)'s profile image">
+          <figcaption>developed and validated by korze(warrior) (@korzewarrior).</figcaption>
+        </figure>
+      </details>
+      <details class="drive" id="hl-dt-st-gp65nb60-pb00">
+        <summary>GP65NB60 / PB00</summary>
+        <div class="drive-overview">
+          <figure class="drive-product">
+            <a href="https://www.lg.com/us/burners-drives/lg-gp65nb60-ultra-slim-external-dvd-drive" rel="external">
+              <img src="/assets/drive-gp65nb60.jpg" width="450" height="450" loading="lazy" alt="LG GP65NB60 external DVD drive">
+            </a>
+          </figure>
+          <div>
+            <dl class="drive-facts">
+              <div><dt>identity</dt><dd><code>HL-DT-ST DVDRAM GP65NB60</code></dd></div>
+              <div><dt>firmware</dt><dd><code>PB00</code></dd></div>
+              <div><dt>usb</dt><dd><code>0e8d:1887</code></dd></div>
+              <div><dt>validated</dt><dd>live play + restore / windows 11</dd></div>
+            </dl>
+            <p class="drive-links"><a href="https://www.lg.com/us/burners-drives/lg-gp65nb60-ultra-slim-external-dvd-drive" rel="external">LG</a> / <a href="https://www.ebay.com/sch/i.html?_nkw=LG+GP65NB60+PB00" rel="external">eBay</a></p>
+          </div>
+        </div>
         <figure class="contributor-credit">
           <img src="/assets/the-legendary-gojira-skullcandy977.png" width="210" height="155" alt="The Legendary Gojira's profile image">
-          <figcaption>credit to The Legendary Gojira (@skullcandy977) for the hardware reports, repeated build testing, and live drive access that identified the PB00 volatile-memory layout and verified high-LBA XDVDFS reads from Godzilla: Destroy All Monsters Melee.</figcaption>
+          <figcaption>credit to The Legendary Gojira (@skullcandy977) for the reports, repeated tests, and live access that enabled the PB00 profile.</figcaption>
         </figure>
-        <p>no firmware is flashed. gdox verifies the PB00-specific volatile state before writing, restores it after reading, and rejects unknown values.</p>
-      </article>
-      <article class="drive" id="hl-dt-st-gp08nu10-je01">
-        <h3>HL-DT-ST DVDRAM GP08NU10</h3>
-        <p>supported profile</p>
-        <p>LG GP08 external USB DVD drive</p>
-        <p>firmware JE01 / Prolific PL-2507 USB 152e:2507</p>
+      </details>
+      <details class="drive" id="hl-dt-st-gp08nu10-je01">
+        <summary>GP08NU10 / JE01</summary>
+        <div class="drive-overview">
+          <figure class="drive-product">
+            <a href="https://www.lg.com/ae/data-storage/lg-GP08NU10" rel="external">
+              <img src="/assets/drive-gp08nu10.jpg" width="450" height="370" loading="lazy" alt="LG GP08NU10 external DVD drive">
+            </a>
+          </figure>
+          <div>
+            <dl class="drive-facts">
+              <div><dt>identity</dt><dd><code>HL-DT-ST DVDRAM GP08NU10</code></dd></div>
+              <div><dt>firmware</dt><dd><code>JE01</code></dd></div>
+              <div><dt>usb</dt><dd><code>152e:2507</code> / PL-2507</dd></div>
+              <div><dt>validated</dt><dd>activation + xbox-sector read / community</dd></div>
+            </dl>
+            <p class="drive-links"><a href="https://www.lg.com/ae/data-storage/lg-GP08NU10" rel="external">LG</a> / <a href="https://www.ebay.com/sch/i.html?_nkw=LG+GP08NU10+JE01" rel="external">eBay</a></p>
+          </div>
+        </div>
         <figure class="contributor-credit">
           <img src="/assets/eddi-eddifpv.png" width="151" height="210" alt="Eddi's profile image">
-          <figcaption>credit to Eddi (@eddifpv) for the find and community test that reached temporary activation and the expected xbox-sector signature with this exact identity. project-side live-play and platform validation are still in progress.</figcaption>
+          <figcaption>credit to Eddi (@eddifpv) for the find and community validation. project-side live play remains pending.</figcaption>
         </figure>
-        <p>no firmware is flashed. gdox checks the exact usb and scsi identity and the known stock memory state, restores the original values after reading, and rejects anything that differs. a power cycle also clears the temporary state.</p>
-      </article>
+      </details>
+      <p class="drive-note">verify the identity, firmware, and usb values before buying. links are not affiliate links.</p>
     </section>
 
     <section>
