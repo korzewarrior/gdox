@@ -49,7 +49,7 @@ boundaries, and fail-closed validation for disc geometry and device identity.
 ## Release builds
 
 ```sh
-python scripts/build_linux_packages.py --version 0.1.1
+python scripts/build_linux_packages.py --version 0.1.2
 python scripts/build_release.py --target aarch64-apple-darwin
 ```
 

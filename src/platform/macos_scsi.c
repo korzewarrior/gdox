@@ -1,4 +1,5 @@
-#include "gdox/optical.h"
+#include "platform/usb_bot.h"
+#include "platform/usb_bot_identity.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <DiskArbitration/DiskArbitration.h>
@@ -30,6 +31,7 @@ typedef struct {
 typedef enum {
     kGdoxMacDriveUnknown = 0,
     kGdoxMacDriveGp63,
+    kGdoxMacDriveGp65,
     kGdoxMacDriveGp08,
 } GdoxMacDriveIdentity;
 
@@ -54,22 +56,28 @@ static void set_error(char *output, size_t capacity, const char *message)
     }
 }
 
-static int dictionary_string_equals(
+static int dictionary_string_copy(
     CFDictionaryRef dictionary,
     CFStringRef key,
-    CFStringRef expected)
+    char *output,
+    size_t output_capacity)
 {
     CFTypeRef value = CFDictionaryGetValue(dictionary, key);
     return value != NULL
         && CFGetTypeID(value) == CFStringGetTypeID()
-        && CFStringCompare((CFStringRef)value, expected, 0) == kCFCompareEqualTo;
+        && CFStringGetCString(
+            (CFStringRef)value,
+            output,
+            (CFIndex)output_capacity,
+            kCFStringEncodingUTF8);
 }
 
-static int service_dictionary_string_equals(
+static int service_dictionary_string_copy(
     io_service_t service,
     CFStringRef dictionary_key,
     CFStringRef value_key,
-    CFStringRef expected)
+    char *output,
+    size_t output_capacity)
 {
     CFTypeRef properties = IORegistryEntryCreateCFProperty(
         service,
@@ -80,18 +88,19 @@ static int service_dictionary_string_equals(
         if (properties != NULL) CFRelease(properties);
         return 0;
     }
-    int matches = dictionary_string_equals(
+    int copied = dictionary_string_copy(
         (CFDictionaryRef)properties,
         value_key,
-        expected);
+        output,
+        output_capacity);
     CFRelease(properties);
-    return matches;
+    return copied;
 }
 
-static int service_ancestor_number_equals(
+static int service_ancestor_number(
     io_service_t service,
     CFStringRef key,
-    int expected)
+    int *output)
 {
     CFTypeRef value = IORegistryEntrySearchCFProperty(
         service,
@@ -103,77 +112,107 @@ static int service_ancestor_number_equals(
         if (value != NULL) CFRelease(value);
         return 0;
     }
-    int actual = 0;
-    CFNumberGetValue((CFNumberRef)value, kCFNumberIntType, &actual);
+    int copied = CFNumberGetValue(
+        (CFNumberRef)value,
+        kCFNumberIntType,
+        output);
     CFRelease(value);
-    return actual == expected;
+    return copied;
 }
 
 static GdoxMacDriveIdentity requested_identity(
-    uint16_t vendor_id,
-    uint16_t product_id)
+    int requested)
 {
-    if (vendor_id == GDOX_GP63_USB_VENDOR_ID
-        && product_id == GDOX_GP63_USB_PRODUCT_ID) {
+    if (requested == GDOX_USB_BOT_GP63) {
         return kGdoxMacDriveGp63;
     }
-    if (vendor_id == GDOX_GP08_USB_VENDOR_ID
-        && product_id == GDOX_GP08_USB_PRODUCT_ID) {
+    if (requested == GDOX_USB_BOT_GP65) {
+        return kGdoxMacDriveGp65;
+    }
+    if (requested == GDOX_USB_BOT_GP08) {
         return kGdoxMacDriveGp08;
     }
     return kGdoxMacDriveUnknown;
+}
+
+static int usb_identity(
+    GdoxMacDriveIdentity identity,
+    gdox_usb_bot_identity *output)
+{
+    if (identity == kGdoxMacDriveGp63) {
+        *output = GDOX_USB_BOT_GP63;
+        return 1;
+    }
+    if (identity == kGdoxMacDriveGp65) {
+        *output = GDOX_USB_BOT_GP65;
+        return 1;
+    }
+    if (identity == kGdoxMacDriveGp08) {
+        *output = GDOX_USB_BOT_GP08;
+        return 1;
+    }
+    return 0;
 }
 
 static int service_is_supported_drive(
     io_service_t service,
     GdoxMacDriveIdentity identity)
 {
-    int vendor_id;
-    int product_id;
-    CFStringRef model;
-    CFStringRef revision;
+    gdox_usb_bot_identity requested;
+    int vendor_id = 0;
+    int product_id = 0;
+    char vendor[32];
+    char model[32];
+    char revision[32];
+    char interconnect[32];
+    gdox_usb_bot_observed_identity observed;
 
-    if (identity == kGdoxMacDriveGp63) {
-        vendor_id = GDOX_GP63_USB_VENDOR_ID;
-        product_id = GDOX_GP63_USB_PRODUCT_ID;
-        model = CFSTR("DVDRAM GP63EX70");
-        revision = CFSTR("RF02");
-    } else if (identity == kGdoxMacDriveGp08) {
-        vendor_id = GDOX_GP08_USB_VENDOR_ID;
-        product_id = GDOX_GP08_USB_PRODUCT_ID;
-        model = CFSTR(GDOX_GP08_SCSI_MODEL);
-        revision = CFSTR(GDOX_GP08_SCSI_REVISION);
-    } else {
+    if (!usb_identity(identity, &requested)
+        || !service_ancestor_number(
+            service,
+            CFSTR("idVendor"),
+            &vendor_id)
+        || !service_ancestor_number(
+            service,
+            CFSTR("idProduct"),
+            &product_id)
+        || vendor_id < 0 || vendor_id > UINT16_MAX
+        || product_id < 0 || product_id > UINT16_MAX
+        || !service_dictionary_string_copy(
+            service,
+            CFSTR("Device Characteristics"),
+            CFSTR("Vendor Name"),
+            vendor,
+            sizeof(vendor))
+        || !service_dictionary_string_copy(
+            service,
+            CFSTR("Device Characteristics"),
+            CFSTR("Product Name"),
+            model,
+            sizeof(model))
+        || !service_dictionary_string_copy(
+            service,
+            CFSTR("Device Characteristics"),
+            CFSTR("Product Revision Level"),
+            revision,
+            sizeof(revision))
+        || !service_dictionary_string_copy(
+            service,
+            CFSTR("Protocol Characteristics"),
+            CFSTR("Physical Interconnect"),
+            interconnect,
+            sizeof(interconnect))) {
         return 0;
     }
-    return service_ancestor_number_equals(
-               service,
-               CFSTR("idVendor"),
-               vendor_id)
-        && service_ancestor_number_equals(
-               service,
-               CFSTR("idProduct"),
-               product_id)
-        && service_dictionary_string_equals(
-               service,
-               CFSTR("Device Characteristics"),
-               CFSTR("Vendor Name"),
-               CFSTR("HL-DT-ST"))
-        && service_dictionary_string_equals(
-               service,
-               CFSTR("Device Characteristics"),
-               CFSTR("Product Name"),
-               model)
-        && service_dictionary_string_equals(
-               service,
-               CFSTR("Device Characteristics"),
-               CFSTR("Product Revision Level"),
-               revision)
-        && service_dictionary_string_equals(
-               service,
-               CFSTR("Protocol Characteristics"),
-               CFSTR("Physical Interconnect"),
-               CFSTR("USB"));
+    observed = (gdox_usb_bot_observed_identity){
+        (uint16_t)vendor_id,
+        (uint16_t)product_id,
+        vendor,
+        model,
+        revision,
+    };
+    return strcmp(interconnect, "USB") == 0
+        && gdox_usb_bot_identity_matches(requested, &observed);
 }
 
 static io_service_t find_supported_drive(GdoxMacDriveIdentity identity)
@@ -226,13 +265,12 @@ static io_service_t find_supported_media(GdoxMacDriveIdentity identity)
 }
 
 int gdox_macos_scsi_observe(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    int requested,
     int *drive_present,
     int *media_present)
 {
     GdoxMacDriveIdentity identity =
-        requested_identity(vendor_id, product_id);
+        requested_identity(requested);
     io_service_t drive;
     io_service_t media;
 
@@ -335,6 +373,7 @@ static int disk_is_supported_drive(DADiskRef disk)
     if (drive == IO_OBJECT_NULL) return 0;
     matches =
         service_is_supported_drive(drive, kGdoxMacDriveGp63)
+        || service_is_supported_drive(drive, kGdoxMacDriveGp65)
         || service_is_supported_drive(drive, kGdoxMacDriveGp08);
     IOObjectRelease(drive);
     return matches;
@@ -427,13 +466,12 @@ static void unmount_complete(
 }
 
 int gdox_macos_scsi_release_system_media(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    int requested,
     char *error,
     size_t error_capacity)
 {
     GdoxMacDriveIdentity identity =
-        requested_identity(vendor_id, product_id);
+        requested_identity(requested);
     if (identity == kGdoxMacDriveUnknown) {
         set_error(error, error_capacity, "the requested optical service is unsupported");
         return 1;
@@ -504,15 +542,14 @@ int gdox_macos_scsi_release_system_media(
 }
 
 int gdox_macos_scsi_inquiry(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    int requested,
     uint8_t *output,
     size_t output_length,
     char *error,
     size_t error_capacity)
 {
     GdoxMacDriveIdentity identity =
-        requested_identity(vendor_id, product_id);
+        requested_identity(requested);
     if (identity == kGdoxMacDriveUnknown) {
         set_error(error, error_capacity, "the requested optical service is unsupported");
         return 1;
@@ -560,14 +597,13 @@ int gdox_macos_scsi_inquiry(
 }
 
 int gdox_macos_scsi_media_present(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    int requested,
     int *present,
     char *error,
     size_t error_capacity)
 {
     GdoxMacDriveIdentity identity =
-        requested_identity(vendor_id, product_id);
+        requested_identity(requested);
     if (identity == kGdoxMacDriveUnknown) {
         set_error(error, error_capacity, "the requested optical service is unsupported");
         return 1;
@@ -626,14 +662,13 @@ int gdox_macos_scsi_media_present(
 }
 
 int gdox_macos_scsi_open(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    int requested,
     GdoxMacScsiDevice **output,
     char *error,
     size_t error_capacity)
 {
     GdoxMacDriveIdentity identity =
-        requested_identity(vendor_id, product_id);
+        requested_identity(requested);
     if (identity == kGdoxMacDriveUnknown) {
         set_error(error, error_capacity, "the requested optical service is unsupported");
         return 1;

@@ -3,6 +3,7 @@
 #include "gdox/optical.h"
 
 #include "platform/mt1887_source.h"
+#include "platform/mt1887_profile.h"
 #include "platform/portable_sync.h"
 #include "platform/scsi_transport.h"
 #include "platform/usb_bot.h"
@@ -30,10 +31,8 @@
  */
 #define GDOX_MT_RECOVERY_BUDGET_MS UINT32_C(20000)
 
-static const uint16_t capacity_addresses[3] = {0x8538U, 0x8539U, 0x853aU};
 static const uint8_t stock_capacity[3] = {0x03U, 0x1bU, 0x4fU};
 static const uint8_t xgd_capacity[3] = {0x3dU, 0x4dU, 0x4fU};
-static const uint16_t geometry_addresses[3] = {0x8be2U, 0x8be3U, 0x8be4U};
 static const uint8_t stock_geometry[3] = {0x03U, 0x1aU, 0xafU};
 static const uint8_t xgd_geometry[3] = {0x20U, 0x33U, 0xafU};
 static const uint8_t xdvdfs_magic[20] = {
@@ -43,6 +42,7 @@ static const uint8_t xdvdfs_magic[20] = {
 
 typedef struct gdox_mt1887_context {
     gdox_scsi_transport transport;
+    const gdox_mt1887_profile *profile;
     gdox_mutex mutex;
     gdox_disc_evidence evidence;
     atomic_uint_fast64_t read_commands;
@@ -51,8 +51,9 @@ typedef struct gdox_mt1887_context {
     atomic_uint_fast64_t last_read_lba;
     atomic_bool abort;
     uint16_t read_speed_kbps;
+    uint32_t max_read_blocks;
     uint8_t retries;
-    bool active;
+    bool restoration_required;
 } gdox_mt1887_context;
 
 typedef struct gdox_optical_identity {
@@ -139,13 +140,6 @@ static bool inquiry(
     copy_ascii_field(identity->model, sizeof(identity->model), response + 16U, 16U);
     copy_ascii_field(identity->revision, sizeof(identity->revision), response + 32U, 4U);
     return true;
-}
-
-static bool identity_is_validated(const gdox_optical_identity *identity)
-{
-    return strcmp(identity->vendor, "HL-DT-ST") == 0
-        && strcmp(identity->model, "DVDRAM GP63EX70") == 0
-        && strcmp(identity->revision, "RF02") == 0;
 }
 
 static bool test_unit_ready_with_timeout(
@@ -456,23 +450,48 @@ static bool write_triplet(
     return true;
 }
 
-static bool is_known_partial(
-    const uint8_t observed[3],
-    const uint8_t stock[3],
-    const uint8_t live[3]
+static bool read_state(
+    gdox_scsi_transport *transport,
+    const gdox_mt1887_profile *profile,
+    const atomic_bool *abort,
+    gdox_mt1887_state *state,
+    gdox_error *error
 )
 {
-    size_t index;
-    for (index = 0U; index < 3U; ++index) {
-        if (observed[index] != stock[index] && observed[index] != live[index]) {
-            return false;
-        }
-    }
-    return true;
+    memset(state, 0, sizeof(*state));
+    return read_triplet(
+            transport,
+            abort,
+            profile->capacity_addresses,
+            state->capacity,
+            error
+        )
+        && read_triplet(
+            transport,
+            abort,
+            profile->geometry_addresses,
+            state->geometry,
+            error
+        )
+        && (!profile->auxiliary_present
+            || read_triplet(
+                transport,
+                abort,
+                profile->auxiliary_addresses,
+                state->auxiliary,
+                error
+            ))
+        && read_capacity(
+            transport,
+            &state->last_lba,
+            &state->block_size,
+            error
+        );
 }
 
 static bool restore_stock(
     gdox_scsi_transport *transport,
+    const gdox_mt1887_profile *profile,
     const atomic_bool *abort,
     gdox_error *error
 )
@@ -480,15 +499,12 @@ static bool restore_stock(
     gdox_error first_error;
     gdox_error current;
     bool failed = false;
-    uint8_t capacity[3];
-    uint8_t geometry[3];
-    uint32_t last_lba;
-    uint32_t block_size;
+    gdox_mt1887_state state;
 
     gdox_error_clear(&first_error);
     if (!write_triplet(
             transport,
-            geometry_addresses,
+            profile->geometry_addresses,
             stock_geometry,
             true,
             &current
@@ -498,8 +514,19 @@ static bool restore_stock(
     }
     if (!write_triplet(
             transport,
-            capacity_addresses,
+            profile->capacity_addresses,
             stock_capacity,
+            true,
+            &current
+        ) && !failed) {
+        first_error = current;
+        failed = true;
+    }
+    if (profile->auxiliary_present
+        && !write_triplet(
+            transport,
+            profile->auxiliary_addresses,
+            profile->auxiliary,
             true,
             &current
         ) && !failed) {
@@ -510,15 +537,11 @@ static bool restore_stock(
         *error = first_error;
         return false;
     }
-    if (!read_triplet(transport, abort, capacity_addresses, capacity, error)
-        || !read_triplet(transport, abort, geometry_addresses, geometry, error)
-        || !read_capacity(transport, &last_lba, &block_size, error)) {
+    if (!read_state(transport, profile, abort, &state, error)) {
         return false;
     }
-    if (memcmp(capacity, stock_capacity, sizeof(capacity)) != 0
-        || memcmp(geometry, stock_geometry, sizeof(geometry)) != 0
-        || last_lba != 6991U || block_size != GDOX_LOGICAL_SECTOR_BYTES) {
-        gdox_error_set(error, GDOX_ERROR_TRANSPORT, "stock GP63 SRAM state did not verify");
+    if (!gdox_mt1887_state_is_stock(profile, &state)) {
+        gdox_error_set(error, GDOX_ERROR_TRANSPORT, "stock MT1887 SRAM state did not verify");
         return false;
     }
     return true;
@@ -526,13 +549,14 @@ static bool restore_stock(
 
 static bool restore_stock_after_streaming(
     gdox_scsi_transport *transport,
+    const gdox_mt1887_profile *profile,
     gdox_error *error
 )
 {
     gdox_error last;
     uint32_t attempt;
 
-    if (restore_stock(transport, NULL, &last)) {
+    if (restore_stock(transport, profile, NULL, &last)) {
         return true;
     }
     for (attempt = 0U; attempt < 2U; ++attempt) {
@@ -540,78 +564,84 @@ static bool restore_stock_after_streaming(
 
         (void)gdox_scsi_transport_reset(transport, &ignored);
         gdox_sleep_ms(UINT32_C(100) * (attempt + 1U));
-        if (restore_stock(transport, NULL, &last)) {
+        if (restore_stock(transport, profile, NULL, &last)) {
             return true;
         }
     }
-    *error = last;
+    gdox_error_set(
+        error,
+        GDOX_ERROR_TRANSPORT,
+        "could not restore optical SRAM; power-cycle the drive"
+    );
     return false;
 }
 
 static bool recover_known_partial(
     gdox_scsi_transport *transport,
+    const gdox_mt1887_profile *profile,
     const atomic_bool *abort,
+    bool *restoration_required,
     gdox_error *error
 )
 {
-    uint8_t capacity[3];
-    uint8_t geometry[3];
+    gdox_mt1887_state state;
 
-    if (!read_triplet(transport, abort, capacity_addresses, capacity, error)
-        || !read_triplet(transport, abort, geometry_addresses, geometry, error)) {
+    if (!read_state(transport, profile, abort, &state, error)) {
         return false;
     }
-    if (!is_known_partial(capacity, stock_capacity, xgd_capacity)
-        || !is_known_partial(geometry, stock_geometry, xgd_geometry)) {
+    if (!gdox_mt1887_state_is_known(profile, &state)) {
         gdox_error_set(
             error,
             GDOX_ERROR_TRANSPORT,
-            "refusing GP63 session because volatile SRAM has an unknown state"
+            "refusing MT1887 session because volatile SRAM has an unknown state"
         );
         return false;
     }
-    if (memcmp(capacity, stock_capacity, sizeof(capacity)) != 0
-        || memcmp(geometry, stock_geometry, sizeof(geometry)) != 0) {
-        return restore_stock(transport, abort, error);
+    if (state.block_size != GDOX_LOGICAL_SECTOR_BYTES) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_SOURCE,
+            "refusing MT1887 recovery because the logical block size is not 2048 bytes"
+        );
+        return false;
+    }
+    if (!gdox_mt1887_state_is_stock(profile, &state)) {
+        if (restoration_required != NULL) {
+            *restoration_required = true;
+        }
+        return restore_stock(transport, profile, abort, error);
     }
     return true;
 }
 
 static bool apply_xgd(
     gdox_scsi_transport *transport,
+    const gdox_mt1887_profile *profile,
     const atomic_bool *abort,
     gdox_error *error
 )
 {
-    uint8_t capacity[3];
-    uint8_t geometry[3];
-    uint32_t last_lba;
-    uint32_t block_size;
+    gdox_mt1887_state state;
 
     if (!write_triplet(
             transport,
-            capacity_addresses,
+            profile->capacity_addresses,
             xgd_capacity,
             false,
             error
         )
         || !write_triplet(
             transport,
-            geometry_addresses,
+            profile->geometry_addresses,
             xgd_geometry,
             false,
             error
         )
-        || !read_triplet(transport, abort, capacity_addresses, capacity, error)
-        || !read_triplet(transport, abort, geometry_addresses, geometry, error)
-        || !read_capacity(transport, &last_lba, &block_size, error)) {
+        || !read_state(transport, profile, abort, &state, error)) {
         return false;
     }
-    if (memcmp(capacity, xgd_capacity, sizeof(capacity)) != 0
-        || memcmp(geometry, xgd_geometry, sizeof(geometry)) != 0
-        || (uint64_t)last_lba + 1U != GDOX_XGD1_TOTAL_SECTORS
-        || block_size != GDOX_LOGICAL_SECTOR_BYTES) {
-        gdox_error_set(error, GDOX_ERROR_TRANSPORT, "live GP63 SRAM state did not verify");
+    if (!gdox_mt1887_state_is_live(profile, &state)) {
+        gdox_error_set(error, GDOX_ERROR_TRANSPORT, "live MT1887 SRAM state did not verify");
         return false;
     }
     return true;
@@ -619,32 +649,29 @@ static bool apply_xgd(
 
 static bool ensure_xgd(
     gdox_scsi_transport *transport,
+    const gdox_mt1887_profile *profile,
     const atomic_bool *abort,
     gdox_error *error
 )
 {
-    uint8_t capacity[3];
-    uint8_t geometry[3];
-    uint32_t last_lba;
-    uint32_t block_size;
+    gdox_mt1887_state state;
+    const bool state_read =
+        read_state(transport, profile, abort, &state, error);
 
-    if (read_triplet(transport, abort, capacity_addresses, capacity, error)
-        && read_triplet(transport, abort, geometry_addresses, geometry, error)
-        && memcmp(capacity, xgd_capacity, sizeof(capacity)) == 0
-        && memcmp(geometry, xgd_geometry, sizeof(geometry)) == 0
-        && read_capacity(transport, &last_lba, &block_size, error)
-        && (uint64_t)last_lba + 1U == GDOX_XGD1_TOTAL_SECTORS
-        && block_size == GDOX_LOGICAL_SECTOR_BYTES) {
-        return true;
+    if (state_read) {
+        if (gdox_mt1887_state_is_live(profile, &state)) {
+            return true;
+        }
+    } else {
+        if (error->code == GDOX_ERROR_CANCELLED
+            || error->code == GDOX_ERROR_NOT_FOUND) {
+            return false;
+        }
     }
-    if (error->code == GDOX_ERROR_CANCELLED
-        || error->code == GDOX_ERROR_NOT_FOUND) {
+    if (!recover_known_partial(transport, profile, abort, NULL, error)) {
         return false;
     }
-    if (!recover_known_partial(transport, abort, error)) {
-        return false;
-    }
-    return apply_xgd(transport, abort, error);
+    return apply_xgd(transport, profile, abort, error);
 }
 
 static bool recover_optical(
@@ -657,6 +684,7 @@ static bool recover_optical(
     uint32_t attempt;
     gdox_error last;
 
+    gdox_error_clear(error);
     gdox_error_clear(&last);
     if (ladder_aborted(abort, error)) {
         return false;
@@ -777,8 +805,14 @@ static bool read_range_with_recovery(
             );
             (void)fflush(stderr);
             gdox_error recovery;
+            gdox_error_clear(&recovery);
             if (!recover_optical(&context->transport, &context->abort, &recovery)
-                || !ensure_xgd(&context->transport, &context->abort, &recovery)) {
+                || !ensure_xgd(
+                    &context->transport,
+                    context->profile,
+                    &context->abort,
+                    &recovery
+                )) {
                 last = recovery;
                 if (recovery.code == GDOX_ERROR_NOT_FOUND
                     || recovery.code == GDOX_ERROR_CANCELLED) {
@@ -889,7 +923,9 @@ static bool mt_read(
     recovery_deadline_ms = gdox_monotonic_ms() + GDOX_MT_RECOVERY_BUDGET_MS;
     while (remaining != 0U) {
         const uint32_t chunk =
-            remaining < GDOX_MT_MAX_READ_BLOCKS ? remaining : GDOX_MT_MAX_READ_BLOCKS;
+            remaining < context->max_read_blocks
+                ? remaining
+                : context->max_read_blocks;
         if (!read_chunk(
                 context,
                 recovery_deadline_ms,
@@ -980,13 +1016,14 @@ static bool mt_close(void *raw_context, gdox_error *error)
 
     gdox_error_clear(&restore_error);
     if (gdox_mutex_lock(&context->mutex)) {
-        if (context->active) {
+        if (context->restoration_required) {
             restored = restore_stock_after_streaming(
                 &context->transport,
+                context->profile,
                 &restore_error
             );
             if (restored) {
-                context->active = false;
+                context->restoration_required = false;
             }
         }
         gdox_mutex_unlock(&context->mutex);
@@ -1032,8 +1069,21 @@ static bool open_discovered_gp63(
 {
     (void)context;
     return gdox_usb_bot_open(
-        GDOX_GP63_USB_VENDOR_ID,
-        GDOX_GP63_USB_PRODUCT_ID,
+        GDOX_USB_BOT_GP63,
+        transport,
+        error
+    );
+}
+
+static bool open_discovered_gp65(
+    void *context,
+    gdox_scsi_transport *transport,
+    gdox_error *error
+)
+{
+    (void)context;
+    return gdox_usb_bot_open(
+        GDOX_USB_BOT_GP65,
         transport,
         error
     );
@@ -1042,8 +1092,10 @@ static bool open_discovered_gp63(
 static bool open_validated_transport(
     gdox_mt1887_transport_opener opener,
     void *opener_context,
+    gdox_usb_bot_identity expected_identity,
     gdox_scsi_transport *transport,
     gdox_optical_identity *identity,
+    const gdox_mt1887_profile **profile,
     gdox_error *error
 )
 {
@@ -1063,12 +1115,18 @@ static bool open_validated_transport(
         }
         gdox_sleep_ms(UINT32_C(100));
     }
-    if (!identity_is_validated(identity)) {
+    *profile = gdox_mt1887_profile_find(
+        expected_identity,
+        identity->vendor,
+        identity->model,
+        identity->revision
+    );
+    if (*profile == NULL) {
         gdox_scsi_transport_destroy(transport);
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
-            "USB device is not the validated HL-DT-ST GP63EX70 RF02 mechanism"
+            "USB device does not match the selected validated optical profile"
         );
         return false;
     }
@@ -1090,8 +1148,7 @@ bool gdox_optical_observe_gp63(
         return false;
     }
     return gdox_usb_bot_observe(
-        GDOX_GP63_USB_VENDOR_ID,
-        GDOX_GP63_USB_PRODUCT_ID,
+        GDOX_USB_BOT_GP63,
         &presence->drive_present,
         &presence->media_status_known,
         &presence->media_present,
@@ -1105,8 +1162,42 @@ bool gdox_optical_gp63_connected(
 )
 {
     return gdox_usb_bot_present(
-        GDOX_GP63_USB_VENDOR_ID,
-        GDOX_GP63_USB_PRODUCT_ID,
+        GDOX_USB_BOT_GP63,
+        connected,
+        error
+    );
+}
+
+bool gdox_optical_observe_gp65(
+    gdox_optical_presence *presence,
+    gdox_error *error
+)
+{
+    gdox_error_clear(error);
+    if (presence == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "optical presence output is required"
+        );
+        return false;
+    }
+    return gdox_usb_bot_observe(
+        GDOX_USB_BOT_GP65,
+        &presence->drive_present,
+        &presence->media_status_known,
+        &presence->media_present,
+        error
+    );
+}
+
+bool gdox_optical_gp65_connected(
+    bool *connected,
+    gdox_error *error
+)
+{
+    return gdox_usb_bot_present(
+        GDOX_USB_BOT_GP65,
         connected,
         error
     );
@@ -1115,6 +1206,7 @@ bool gdox_optical_gp63_connected(
 bool gdox_mt1887_source_open(
     gdox_mt1887_transport_opener opener,
     void *opener_context,
+    gdox_usb_bot_identity expected_identity,
     uint16_t read_speed_kbps,
     uint8_t read_retries,
     uint32_t ready_timeout_ms,
@@ -1133,7 +1225,10 @@ bool gdox_mt1887_source_open(
     uint8_t descriptor[GDOX_LOGICAL_SECTOR_BYTES];
 
     gdox_error_clear(error);
-    if (opener == NULL || source == NULL || gdox_source_is_valid(source)) {
+    if (opener == NULL
+        || (expected_identity != GDOX_USB_BOT_GP63
+            && expected_identity != GDOX_USB_BOT_GP65)
+        || source == NULL || gdox_source_is_valid(source)) {
         gdox_error_set(
             error,
             GDOX_ERROR_INVALID_ARGUMENT,
@@ -1143,7 +1238,7 @@ bool gdox_mt1887_source_open(
     }
     context = calloc(1U, sizeof(*context));
     if (context == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate GP63 source");
+        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate MT1887 source");
         return false;
     }
     atomic_init(&context->read_commands, UINT64_C(0));
@@ -1154,20 +1249,29 @@ bool gdox_mt1887_source_open(
     context->read_speed_kbps = read_speed_kbps;
     if (!gdox_mutex_init(&context->mutex)) {
         free(context);
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not initialize GP63 source lock");
+        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not initialize MT1887 source lock");
         return false;
     }
     if (!open_validated_transport(
             opener,
             opener_context,
+            expected_identity,
             &context->transport,
             &identity,
+            &context->profile,
             error
         )) {
         gdox_mutex_destroy(&context->mutex);
         free(context);
         return false;
     }
+#if defined(_WIN32)
+    context->max_read_blocks =
+        gdox_mt1887_max_read_blocks(context->profile, true);
+#else
+    context->max_read_blocks =
+        gdox_mt1887_max_read_blocks(context->profile, false);
+#endif
     gdox_error_clear(&operation_error);
     attempts = ready_timeout_ms / UINT32_C(500) + 1U;
     for (attempt = 0U; attempt < attempts; ++attempt) {
@@ -1236,19 +1340,45 @@ bool gdox_mt1887_source_open(
             "This drive does not expose decrypted security-sector evidence."
         );
     }
-    if (!recover_known_partial(&context->transport, &context->abort, error)) {
+    if (!recover_known_partial(
+            &context->transport,
+            context->profile,
+            &context->abort,
+            &context->restoration_required,
+            error
+        )) {
+        if (context->restoration_required) {
+            operation_error = *error;
+            if (restore_stock_after_streaming(
+                    &context->transport,
+                    context->profile,
+                    error
+                )) {
+                *error = operation_error;
+            }
+        }
         gdox_scsi_transport_destroy(&context->transport);
         gdox_mutex_destroy(&context->mutex);
         free(context);
         return false;
     }
-    if (!apply_xgd(&context->transport, &context->abort, error)) {
+    context->restoration_required = true;
+    if (!apply_xgd(
+            &context->transport,
+            context->profile,
+            &context->abort,
+            error
+        )) {
         operation_error = *error;
-        if (!restore_stock(&context->transport, NULL, error)) {
+        if (!restore_stock_after_streaming(
+                &context->transport,
+                context->profile,
+                error
+            )) {
             gdox_error_set(
                 error,
                 GDOX_ERROR_TRANSPORT,
-                "live-XGD initialization failed and SRAM restoration also failed; reconnect the drive"
+                "live-XGD initialization failed and SRAM restoration also failed; power-cycle the drive"
             );
         } else {
             *error = operation_error;
@@ -1258,7 +1388,6 @@ bool gdox_mt1887_source_open(
         free(context);
         return false;
     }
-    context->active = true;
     /*
      * SET CD SPEED applies to DVD reads as well. The platform adapter chooses
      * a rate appropriate to its power and throughput constraints. A drive may
@@ -1301,13 +1430,17 @@ bool gdox_mt1887_source_open(
                 "live XGD view did not contain an XDVDFS descriptor"
             );
         }
-        if (!restore_stock(&context->transport, NULL, error)) {
+        if (!restore_stock_after_streaming(
+                &context->transport,
+                context->profile,
+                error
+            )) {
             gdox_scsi_transport_destroy(&context->transport);
             gdox_mutex_destroy(&context->mutex);
             free(context);
             return false;
         }
-        context->active = false;
+        context->restoration_required = false;
         gdox_scsi_transport_destroy(&context->transport);
         gdox_mutex_destroy(&context->mutex);
         free(context);
@@ -1330,6 +1463,7 @@ bool gdox_optical_open_gp63(
     return gdox_mt1887_source_open(
         open_discovered_gp63,
         NULL,
+        GDOX_USB_BOT_GP63,
         GDOX_MT_MAXIMUM_READ_SPEED,
         read_retries,
         ready_timeout_ms,
@@ -1338,10 +1472,34 @@ bool gdox_optical_open_gp63(
     );
 }
 
-bool gdox_optical_eject_gp63(gdox_error *error)
+bool gdox_optical_open_gp65(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_error *error
+)
+{
+    return gdox_mt1887_source_open(
+        open_discovered_gp65,
+        NULL,
+        GDOX_USB_BOT_GP65,
+        GDOX_MT_MAXIMUM_READ_SPEED,
+        read_retries,
+        ready_timeout_ms,
+        source,
+        error
+    );
+}
+
+static bool eject_profile(
+    gdox_mt1887_transport_opener opener,
+    gdox_usb_bot_identity expected_identity,
+    gdox_error *error
+)
 {
     gdox_scsi_transport transport = {0};
     gdox_optical_identity identity;
+    const gdox_mt1887_profile *profile;
     static const uint8_t allow_removal[6] = {0x1eU, 0U, 0U, 0U, 0U, 0U};
     static const uint8_t eject[6] = {0x1bU, 0U, 0U, 0U, 0x02U, 0U};
     gdox_error ignored;
@@ -1349,10 +1507,12 @@ bool gdox_optical_eject_gp63(gdox_error *error)
     bool success;
 
     if (!open_validated_transport(
-            open_discovered_gp63,
+            opener,
             NULL,
+            expected_identity,
             &transport,
             &identity,
+            &profile,
             error
         )) {
         return false;
@@ -1378,4 +1538,22 @@ bool gdox_optical_eject_gp63(gdox_error *error)
         success = false;
     }
     return success;
+}
+
+bool gdox_optical_eject_gp63(gdox_error *error)
+{
+    return eject_profile(
+        open_discovered_gp63,
+        GDOX_USB_BOT_GP63,
+        error
+    );
+}
+
+bool gdox_optical_eject_gp65(gdox_error *error)
+{
+    return eject_profile(
+        open_discovered_gp65,
+        GDOX_USB_BOT_GP65,
+        error
+    );
 }

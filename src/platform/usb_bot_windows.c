@@ -1,8 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include "platform/usb_bot.h"
-
-#include "gdox/optical.h"
+#include "platform/usb_bot_identity.h"
 
 #include <windows.h>
 #include <cfgmgr32.h>
@@ -29,35 +28,11 @@ typedef struct gdox_windows_scsi_packet {
     UCHAR sense[GDOX_WINDOWS_SENSE_BYTES];
 } gdox_windows_scsi_packet;
 
-typedef struct gdox_windows_drive_identity {
-    uint16_t usb_vendor_id;
-    uint16_t usb_product_id;
-    const char *scsi_vendor;
-    const char *scsi_model;
-    const char *scsi_revision;
-} gdox_windows_drive_identity;
-
 static const GUID gdox_cdrom_interface = {
     0x53f56308U,
     0xb6bfU,
     0x11d0U,
     {0x94U, 0xf2U, 0x00U, 0xa0U, 0xc9U, 0x1eU, 0xfbU, 0x8bU},
-};
-
-static const gdox_windows_drive_identity gp63_identity = {
-    GDOX_GP63_USB_VENDOR_ID,
-    GDOX_GP63_USB_PRODUCT_ID,
-    "HL-DT-ST",
-    "DVDRAM GP63EX70",
-    "RF02",
-};
-
-static const gdox_windows_drive_identity gp08_identity = {
-    GDOX_GP08_USB_VENDOR_ID,
-    GDOX_GP08_USB_PRODUCT_ID,
-    GDOX_GP08_SCSI_VENDOR,
-    GDOX_GP08_SCSI_MODEL,
-    GDOX_GP08_SCSI_REVISION,
 };
 
 static void set_windows_transport_error(
@@ -305,21 +280,21 @@ static const gdox_scsi_transport_ops windows_ops = {
     windows_close,
 };
 
-static bool descriptor_string_matches(
+static bool descriptor_string_copy(
     const uint8_t *descriptor,
     size_t descriptor_bytes,
     DWORD offset,
-    const char *expected
+    char *output,
+    size_t output_bytes
 )
 {
     const char *value;
     const char *terminator;
     size_t value_bytes;
-    const size_t expected_bytes = strlen(expected);
     const size_t remaining =
         offset < descriptor_bytes ? descriptor_bytes - offset : 0U;
 
-    if (offset == 0U || remaining == 0U) {
+    if (offset == 0U || remaining == 0U || output_bytes == 0U) {
         return false;
     }
     value = (const char *)descriptor + offset;
@@ -331,15 +306,21 @@ static bool descriptor_string_matches(
     while (value_bytes > 0U && value[value_bytes - 1U] == ' ') {
         --value_bytes;
     }
-    return value_bytes == expected_bytes
-        && memcmp(value, expected, expected_bytes) == 0;
+    if (value_bytes >= output_bytes) {
+        return false;
+    }
+    memcpy(output, value, value_bytes);
+    output[value_bytes] = '\0';
+    return true;
 }
 
 static bool device_identity_matches(
     HANDLE device,
-    const gdox_windows_drive_identity *identity
+    gdox_usb_bot_identity requested
 )
 {
+    const gdox_usb_bot_identity_spec *expected =
+        gdox_usb_bot_identity_get(requested);
     STORAGE_PROPERTY_QUERY query = {
         StorageDeviceProperty,
         PropertyStandardQuery,
@@ -349,8 +330,13 @@ static bool device_identity_matches(
     DWORD returned = 0U;
     const STORAGE_DEVICE_DESCRIPTOR *descriptor =
         (const STORAGE_DEVICE_DESCRIPTOR *)buffer;
+    char vendor[32];
+    char model[32];
+    char revision[32];
+    gdox_usb_bot_observed_identity observed;
 
-    return DeviceIoControl(
+    if (expected == NULL
+        || !DeviceIoControl(
             device,
             IOCTL_STORAGE_QUERY_PROPERTY,
             &query,
@@ -360,41 +346,61 @@ static bool device_identity_matches(
             &returned,
             NULL
         )
-        && returned >= sizeof(*descriptor)
-        && descriptor_string_matches(
+        || returned < sizeof(*descriptor)
+        || !descriptor_string_copy(
             buffer,
             returned,
             descriptor->VendorIdOffset,
-            identity->scsi_vendor
+            vendor,
+            sizeof(vendor)
         )
-        && descriptor_string_matches(
+        || !descriptor_string_copy(
             buffer,
             returned,
             descriptor->ProductIdOffset,
-            identity->scsi_model
+            model,
+            sizeof(model)
         )
-        && descriptor_string_matches(
+        || !descriptor_string_copy(
             buffer,
             returned,
             descriptor->ProductRevisionOffset,
-            identity->scsi_revision
-        );
+            revision,
+            sizeof(revision)
+        )) {
+        return false;
+    }
+    observed = (gdox_usb_bot_observed_identity){
+        expected->vendor_id,
+        expected->product_id,
+        vendor,
+        model,
+        revision,
+    };
+    return gdox_usb_bot_identity_matches(requested, &observed);
 }
 
 static bool device_usb_identity_matches(
     DEVINST device,
-    const gdox_windows_drive_identity *identity
+    gdox_usb_bot_identity requested
 )
 {
+    const gdox_usb_bot_identity_spec *identity =
+        gdox_usb_bot_identity_get(requested);
     wchar_t prefix[32];
-    const int written = swprintf(
+    int written;
+    size_t prefix_length;
+
+    if (identity == NULL) {
+        return false;
+    }
+    written = swprintf(
         prefix,
         sizeof(prefix) / sizeof(prefix[0]),
         L"USB\\VID_%04X&PID_%04X",
-        (unsigned int)identity->usb_vendor_id,
-        (unsigned int)identity->usb_product_id
+        (unsigned int)identity->vendor_id,
+        (unsigned int)identity->product_id
     );
-    size_t prefix_length;
 
     if (written < 0) {
         return false;
@@ -423,7 +429,7 @@ static bool device_usb_identity_matches(
 }
 
 static HANDLE open_validated_device(
-    const gdox_windows_drive_identity *identity,
+    gdox_usb_bot_identity requested,
     DWORD access
 )
 {
@@ -483,7 +489,7 @@ static HANDLE open_validated_device(
             )
             || !device_usb_identity_matches(
                 device_info.DevInst,
-                identity
+                requested
             )) {
             free(detail);
             continue;
@@ -501,7 +507,7 @@ static HANDLE open_validated_device(
         if (device == INVALID_HANDLE_VALUE) {
             continue;
         }
-        if (device_identity_matches(device, identity)) {
+        if (device_identity_matches(device, requested)) {
             result = device;
             break;
         }
@@ -511,32 +517,13 @@ static HANDLE open_validated_device(
     return result;
 }
 
-static const gdox_windows_drive_identity *find_identity(
-    uint16_t vendor_id,
-    uint16_t product_id
-)
-{
-    if (vendor_id == gp63_identity.usb_vendor_id
-        && product_id == gp63_identity.usb_product_id) {
-        return &gp63_identity;
-    }
-    if (vendor_id == gp08_identity.usb_vendor_id
-        && product_id == gp08_identity.usb_product_id) {
-        return &gp08_identity;
-    }
-    return NULL;
-}
-
 bool gdox_usb_bot_open(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity requested_identity,
     gdox_scsi_transport *transport,
     gdox_error *error
 )
 {
     gdox_windows_scsi_context *context;
-    const gdox_windows_drive_identity *identity =
-        find_identity(vendor_id, product_id);
     HANDLE device;
 
     gdox_error_clear(error);
@@ -548,7 +535,7 @@ bool gdox_usb_bot_open(
         );
         return false;
     }
-    if (identity == NULL) {
+    if (gdox_usb_bot_identity_get(requested_identity) == NULL) {
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
@@ -557,7 +544,7 @@ bool gdox_usb_bot_open(
         return false;
     }
     device = open_validated_device(
-        identity,
+        requested_identity,
         GENERIC_READ | GENERIC_WRITE
     );
     if (device == INVALID_HANDLE_VALUE) {
@@ -585,14 +572,11 @@ bool gdox_usb_bot_open(
 }
 
 bool gdox_usb_bot_present(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity requested_identity,
     bool *drive_present,
     gdox_error *error
 )
 {
-    const gdox_windows_drive_identity *identity =
-        find_identity(vendor_id, product_id);
     HANDLE device;
 
     gdox_error_clear(error);
@@ -605,7 +589,7 @@ bool gdox_usb_bot_present(
         return false;
     }
     *drive_present = false;
-    if (identity == NULL) {
+    if (gdox_usb_bot_identity_get(requested_identity) == NULL) {
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
@@ -613,7 +597,7 @@ bool gdox_usb_bot_present(
         );
         return false;
     }
-    device = open_validated_device(identity, 0U);
+    device = open_validated_device(requested_identity, 0U);
     if (device != INVALID_HANDLE_VALUE) {
         *drive_present = true;
         (void)CloseHandle(device);
@@ -622,8 +606,7 @@ bool gdox_usb_bot_present(
 }
 
 bool gdox_usb_bot_observe(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity requested_identity,
     bool *drive_present,
     bool *media_status_known,
     bool *media_present,
@@ -631,8 +614,6 @@ bool gdox_usb_bot_observe(
 )
 {
     static const uint8_t ready_cdb[6] = {0};
-    const gdox_windows_drive_identity *identity =
-        find_identity(vendor_id, product_id);
     HANDLE device;
     gdox_windows_scsi_packet result = {0};
     gdox_error ignored;
@@ -650,7 +631,7 @@ bool gdox_usb_bot_observe(
     *drive_present = false;
     *media_status_known = false;
     *media_present = false;
-    if (identity == NULL) {
+    if (gdox_usb_bot_identity_get(requested_identity) == NULL) {
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
@@ -659,7 +640,7 @@ bool gdox_usb_bot_observe(
         return false;
     }
     device = open_validated_device(
-        identity,
+        requested_identity,
         GENERIC_READ | GENERIC_WRITE
     );
     if (device == INVALID_HANDLE_VALUE) {
@@ -694,14 +675,12 @@ bool gdox_usb_bot_observe(
 }
 
 bool gdox_usb_bot_restore_kernel_driver(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     bool *reattached,
     gdox_error *error
 )
 {
-    (void)vendor_id;
-    (void)product_id;
+    (void)identity;
     gdox_error_clear(error);
     if (reattached == NULL) {
         gdox_error_set(

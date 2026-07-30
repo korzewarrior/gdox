@@ -6,9 +6,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef enum gdox_usb_bot_identity {
+    GDOX_USB_BOT_GP63,
+    GDOX_USB_BOT_GP65,
+    GDOX_USB_BOT_GP08,
+} gdox_usb_bot_identity;
+
 bool gdox_usb_bot_open(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     gdox_scsi_transport *transport,
     gdox_error *error
 );
@@ -47,22 +52,19 @@ bool gdox_usb_bot_prepare_handoff(
 );
 #endif
 bool gdox_usb_bot_present(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     bool *drive_present,
     gdox_error *error
 );
 bool gdox_usb_bot_observe(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     bool *drive_present,
     bool *media_status_known,
     bool *media_present,
     gdox_error *error
 );
 bool gdox_usb_bot_restore_kernel_driver(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     bool *reattached,
     gdox_error *error
 );

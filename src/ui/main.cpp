@@ -4,12 +4,46 @@
 #include "rlImGui.h"
 #include "imgui.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
 namespace {
 
 constexpr Color background = {14, 16, 18, 255};
+constexpr int desktop_width = 880;
+constexpr int desktop_height = 680;
+constexpr int desktop_min_width = 680;
+constexpr int desktop_min_height = 560;
+
+float desktop_interface_scale()
+{
+    const Vector2 dpi = GetWindowScaleDPI();
+    float scale = std::max(dpi.x, dpi.y);
+    const int monitor = GetCurrentMonitor();
+    const int monitor_width = GetMonitorWidth(monitor);
+    const int monitor_height = GetMonitorHeight(monitor);
+    if (monitor_width >= 3200 && monitor_height >= 1800) {
+        scale = std::max(scale, 1.35F);
+    }
+    const float fit = std::min(
+        static_cast<float>(monitor_width) * 0.90F
+            / static_cast<float>(desktop_width),
+        static_cast<float>(monitor_height) * 0.85F
+            / static_cast<float>(desktop_height)
+    );
+    scale = std::min(scale, std::max(1.0F, fit));
+    if (scale < 1.20F) {
+        return 1.0F;
+    }
+    return std::clamp(scale, 1.0F, 1.35F);
+}
+
+int scaled_size(int size, float scale)
+{
+    return static_cast<int>(std::lround(static_cast<float>(size) * scale));
+}
 
 bool gaming_mode()
 {
@@ -73,10 +107,22 @@ int main()
         FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_MSAA_4X_HINT;
     if (deck) {
         flags |= FLAG_WINDOW_UNDECORATED;
+    } else {
+        flags |= FLAG_WINDOW_HIGHDPI;
     }
     SetConfigFlags(flags);
-    InitWindow(deck ? 1280 : 880, deck ? 800 : 680, "GDOX");
-    SetWindowMinSize(680, 560);
+    InitWindow(deck ? 1280 : desktop_width, deck ? 800 : desktop_height, "GDOX");
+    const float interface_scale = deck ? 1.0F : desktop_interface_scale();
+    if (!deck && interface_scale > 1.0F) {
+        SetWindowSize(
+            scaled_size(desktop_width, interface_scale),
+            scaled_size(desktop_height, interface_scale)
+        );
+    }
+    SetWindowMinSize(
+        scaled_size(desktop_min_width, interface_scale),
+        scaled_size(desktop_min_height, interface_scale)
+    );
     if (deck) {
         SetExitKey(KEY_NULL);
     }
@@ -91,11 +137,13 @@ int main()
     io.ConfigNavCursorVisibleAlways = deck;
     io.ConfigNavEscapeClearFocusItem = !deck;
     gdox::ui::initialize_presentation();
-    if (deck) {
+    if (deck || interface_scale > 1.0F) {
         ImGuiStyle &style = ImGui::GetStyle();
-        style.ScaleAllSizes(1.18F);
-        style.FontScaleMain = 1.20F;
-        ImGui::SetNavCursorVisible(true);
+        style.ScaleAllSizes(deck ? 1.18F : interface_scale);
+        style.FontScaleMain = deck ? 1.20F : interface_scale;
+        if (deck) {
+            ImGui::SetNavCursorVisible(true);
+        }
     }
 
     while (!quit_requested) {

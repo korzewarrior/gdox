@@ -6,10 +6,10 @@ SUBSYSTEM=="scsi_generic", ATTRS{type}=="5", TAG+="uaccess", MODE="0660"
 # optical block-device modules are not loaded.
 SUBSYSTEM=="bsg", ATTRS{type}=="5", TAG+="uaccess", MODE="0660"
 
-# The exact GP63 RF02 live backend uses a narrowly bounded USB BOT transport
-# for ordinary reads plus allowlisted, volatile SRAM capacity/geometry state.
-# This bypasses Linux's unprivileged vendor-opcode filter without running the
-# player or emulator as root.
+# The exact GP63 RF02 and GP65 PB00 live backends use a narrowly bounded USB
+# BOT transport for ordinary reads plus allowlisted, identity-specific
+# volatile SRAM state. This bypasses Linux's unprivileged vendor-opcode filter
+# without running the player or emulator as root.
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="1887", TAG+="uaccess", MODE="0660"
 
 # The exact GP08NU10 JE01 backend uses SCSI READ/WRITE BUFFER through its

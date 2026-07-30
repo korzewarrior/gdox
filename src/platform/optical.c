@@ -6,7 +6,11 @@ const char *gdox_optical_drive_name(gdox_optical_drive drive)
 {
     switch (drive) {
         case GDOX_OPTICAL_DRIVE_GP63:
-            return "HL-DT-ST DVDRAM GP63EX70 RF02";
+            return GDOX_GP63_SCSI_VENDOR " " GDOX_GP63_SCSI_MODEL " "
+                GDOX_GP63_SCSI_REVISION;
+        case GDOX_OPTICAL_DRIVE_GP65:
+            return GDOX_GP65_SCSI_VENDOR " " GDOX_GP65_SCSI_MODEL " "
+                GDOX_GP65_SCSI_REVISION;
         case GDOX_OPTICAL_DRIVE_GP08:
             return GDOX_GP08_SCSI_VENDOR " " GDOX_GP08_SCSI_MODEL " "
                 GDOX_GP08_SCSI_REVISION;
@@ -22,10 +26,13 @@ bool gdox_optical_observe(
 )
 {
     gdox_optical_presence gp63 = {0};
+    gdox_optical_presence gp65 = {0};
     gdox_optical_presence gp08 = {0};
     gdox_error gp63_error;
+    gdox_error gp65_error;
     gdox_error gp08_error;
     bool gp63_observed;
+    bool gp65_observed;
     bool gp08_observed;
 
     gdox_error_clear(error);
@@ -39,6 +46,7 @@ bool gdox_optical_observe(
     }
     memset(presence, 0, sizeof(*presence));
     gp63_observed = gdox_optical_observe_gp63(&gp63, &gp63_error);
+    gp65_observed = gdox_optical_observe_gp65(&gp65, &gp65_error);
     gp08_observed = gdox_optical_observe_gp08(&gp08, &gp08_error);
     if (!gp63_observed && gp63_error.code != GDOX_ERROR_UNSUPPORTED) {
         *error = gp63_error;
@@ -48,13 +56,21 @@ bool gdox_optical_observe(
         *error = gp08_error;
         return false;
     }
-    if (!gp63_observed && !gp08_observed) {
-        *error = gp63_error.code != GDOX_ERROR_UNSUPPORTED
-            ? gp63_error
-            : gp08_error;
+    if (!gp65_observed && gp65_error.code != GDOX_ERROR_UNSUPPORTED) {
+        *error = gp65_error;
         return false;
     }
-    if (gp63.drive_present && gp08.drive_present) {
+    if (!gp63_observed && !gp65_observed && !gp08_observed) {
+        *error = gp63_error.code != GDOX_ERROR_UNSUPPORTED
+            ? gp63_error
+            : gp65_error.code != GDOX_ERROR_UNSUPPORTED
+                ? gp65_error
+                : gp08_error;
+        return false;
+    }
+    if ((unsigned int)gp63.drive_present
+            + (unsigned int)gp65.drive_present
+            + (unsigned int)gp08.drive_present > 1U) {
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
@@ -65,6 +81,9 @@ bool gdox_optical_observe(
     if (gp63.drive_present) {
         *presence = gp63;
         presence->drive = GDOX_OPTICAL_DRIVE_GP63;
+    } else if (gp65.drive_present) {
+        *presence = gp65;
+        presence->drive = GDOX_OPTICAL_DRIVE_GP65;
     } else if (gp08.drive_present) {
         *presence = gp08;
         presence->drive = GDOX_OPTICAL_DRIVE_GP08;
@@ -81,6 +100,8 @@ bool gdox_optical_connected(
     switch (drive) {
         case GDOX_OPTICAL_DRIVE_GP63:
             return gdox_optical_gp63_connected(connected, error);
+        case GDOX_OPTICAL_DRIVE_GP65:
+            return gdox_optical_gp65_connected(connected, error);
         case GDOX_OPTICAL_DRIVE_GP08:
             return gdox_optical_gp08_connected(connected, error);
         case GDOX_OPTICAL_DRIVE_NONE:
@@ -105,6 +126,13 @@ bool gdox_optical_open(
     switch (drive) {
         case GDOX_OPTICAL_DRIVE_GP63:
             return gdox_optical_open_gp63(
+                read_retries,
+                ready_timeout_ms,
+                source,
+                error
+            );
+        case GDOX_OPTICAL_DRIVE_GP65:
+            return gdox_optical_open_gp65(
                 read_retries,
                 ready_timeout_ms,
                 source,
@@ -136,6 +164,8 @@ bool gdox_optical_eject(
     switch (drive) {
         case GDOX_OPTICAL_DRIVE_GP63:
             return gdox_optical_eject_gp63(error);
+        case GDOX_OPTICAL_DRIVE_GP65:
+            return gdox_optical_eject_gp65(error);
         case GDOX_OPTICAL_DRIVE_GP08:
             return gdox_optical_eject_gp08(error);
         case GDOX_OPTICAL_DRIVE_NONE:

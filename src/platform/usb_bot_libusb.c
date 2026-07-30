@@ -3,6 +3,7 @@
 #endif
 
 #include "platform/usb_bot.h"
+#include "platform/usb_bot_identity.h"
 
 #include "portable_sync.h"
 
@@ -41,14 +42,28 @@ typedef struct gdox_usb_bot_context {
     uint32_t tag;
     bool claimed;
 #if defined(__linux__) && !defined(__ANDROID__)
-    uint16_t vendor_id;
-    uint16_t product_id;
+    gdox_usb_bot_identity identity;
+    gdox_usb_bot_location location;
+    bool location_valid;
 #endif
 #if defined(__ANDROID__)
     bool reset_on_close;
     bool reattach_on_close;
 #endif
 } gdox_usb_bot_context;
+
+#if defined(__linux__) && !defined(__ANDROID__)
+static bool open_matching_identity(
+    gdox_usb_bot_context *usb,
+    gdox_usb_bot_identity identity,
+    gdox_error *error
+);
+static bool linux_identity_location(
+    gdox_usb_bot_identity identity,
+    uint8_t *bus,
+    uint8_t *address
+);
+#endif
 
 static void put_le_u32(uint8_t *output, uint32_t value)
 {
@@ -144,6 +159,7 @@ static bool reset_claimed_bot(
     return true;
 }
 
+#if !defined(__linux__) || defined(__ANDROID__)
 static bool claim_bot_interface(
     gdox_usb_bot_context *usb,
     gdox_error *error
@@ -170,8 +186,54 @@ static bool claim_bot_interface(
     usb->tag = 1U;
     return true;
 }
+#endif
 
 #if defined(__linux__) && !defined(__ANDROID__)
+static bool claim_bot_interface_for_identity(
+    gdox_usb_bot_context *usb,
+    gdox_error *error
+)
+{
+    int result;
+
+    result = libusb_set_auto_detach_kernel_driver(usb->handle, 1);
+    if (result != LIBUSB_SUCCESS && result != LIBUSB_ERROR_NOT_SUPPORTED) {
+        set_usb_error(error, "enable automatic USB driver handoff", result);
+        return false;
+    }
+    result = libusb_claim_interface(usb->handle, GDOX_USB_INTERFACE);
+    if (result != LIBUSB_SUCCESS) {
+        set_usb_error(error, "claim USB mass-storage interface", result);
+        return false;
+    }
+    usb->claimed = true;
+    usb->tag = 1U;
+    return true;
+}
+
+static bool claim_unbound_bot_interface(
+    gdox_usb_bot_context *usb,
+    gdox_error *error
+)
+{
+    const int result = libusb_claim_interface(
+        usb->handle,
+        GDOX_USB_INTERFACE
+    );
+
+    if (result != LIBUSB_SUCCESS) {
+        set_usb_error(
+            error,
+            "claim unbound USB mass-storage interface",
+            result
+        );
+        return false;
+    }
+    usb->claimed = true;
+    usb->tag = 1U;
+    return true;
+}
+
 static void discard_usb_handle(gdox_usb_bot_context *usb)
 {
     if (usb->handle == NULL) {
@@ -197,29 +259,13 @@ static bool reopen_bot_interface(
     gdox_error_clear(&last);
     discard_usb_handle(usb);
     for (attempt = 0U; attempt < GDOX_USB_REOPEN_ATTEMPTS; ++attempt) {
-        usb->handle = libusb_open_device_with_vid_pid(
-            usb->library,
-            usb->vendor_id,
-            usb->product_id
-        );
-        if (usb->handle != NULL) {
-            if (claim_bot_interface(usb, &last)) {
-                (void)fprintf(
-                    stderr,
-                    "GDOX: reclaimed USB optical interface after device reset\n"
-                );
-                (void)fflush(stderr);
-                return true;
-            }
-            libusb_close(usb->handle);
-            usb->handle = NULL;
-            usb->claimed = false;
-        } else {
-            gdox_error_set(
-                &last,
-                GDOX_ERROR_NOT_FOUND,
-                "supported USB optical drive is unavailable after device reset"
+        if (open_matching_identity(usb, usb->identity, &last)) {
+            (void)fprintf(
+                stderr,
+                "GDOX: reclaimed USB optical interface after device reset\n"
             );
+            (void)fflush(stderr);
+            return true;
         }
         if (attempt + 1U < GDOX_USB_REOPEN_ATTEMPTS) {
             gdox_sleep_ms(GDOX_USB_REOPEN_DELAY_MS);
@@ -691,6 +737,200 @@ static const gdox_scsi_transport_ops usb_ops = {
 };
 
 #if defined(__linux__) && !defined(__ANDROID__)
+static bool inquiry_field_copy(
+    const uint8_t *field,
+    size_t field_bytes,
+    char *output,
+    size_t output_bytes
+)
+{
+    size_t begin = 0U;
+    size_t end = field_bytes;
+
+    while (begin < end && (field[begin] == 0U || field[begin] == ' ')) {
+        ++begin;
+    }
+    while (end > begin
+        && (field[end - 1U] == 0U || field[end - 1U] == ' ')) {
+        --end;
+    }
+    if (end - begin >= output_bytes) {
+        return false;
+    }
+    memcpy(output, field + begin, end - begin);
+    output[end - begin] = '\0';
+    return true;
+}
+
+static bool usb_device_location(
+    libusb_device *device,
+    gdox_usb_bot_location *location
+)
+{
+    int port_count;
+
+    memset(location, 0, sizeof(*location));
+    location->bus = libusb_get_bus_number(device);
+    location->address = libusb_get_device_address(device);
+    port_count = libusb_get_port_numbers(
+        device,
+        location->ports,
+        sizeof(location->ports)
+    );
+    if (port_count < 0) {
+        return location->bus != 0U && location->address != 0U;
+    }
+    location->port_count = (size_t)port_count;
+    return location->bus != 0U
+        && (location->address != 0U || location->port_count != 0U);
+}
+
+static bool claimed_candidate_matches(
+    gdox_usb_bot_context *usb,
+    gdox_usb_bot_identity requested,
+    const gdox_usb_bot_location *expected_location,
+    const gdox_usb_bot_location *observed_location,
+    gdox_error *error
+)
+{
+    static const uint8_t cdb[6] = {0x12U, 0U, 0U, 0U, 96U, 0U};
+    uint8_t response[96] = {0};
+    size_t transferred = 0U;
+    struct libusb_device_descriptor descriptor;
+    char vendor[9];
+    char model[17];
+    char revision[5];
+    gdox_usb_bot_observed_identity observed;
+
+    if (libusb_get_device_descriptor(
+            libusb_get_device(usb->handle),
+            &descriptor
+        ) != LIBUSB_SUCCESS
+        || !usb_command_in(
+            usb,
+            "INQUIRY",
+            cdb,
+            sizeof(cdb),
+            response,
+            sizeof(response),
+            UINT32_C(5000),
+            &transferred,
+            error
+        )
+        || transferred < 36U
+        || !inquiry_field_copy(response + 8U, 8U, vendor, sizeof(vendor))
+        || !inquiry_field_copy(response + 16U, 16U, model, sizeof(model))
+        || !inquiry_field_copy(
+            response + 32U,
+            4U,
+            revision,
+            sizeof(revision)
+        )) {
+        return false;
+    }
+    observed = (gdox_usb_bot_observed_identity){
+        descriptor.idVendor,
+        descriptor.idProduct,
+        vendor,
+        model,
+        revision,
+    };
+    return gdox_usb_bot_candidate_matches(
+        requested,
+        expected_location,
+        &observed,
+        observed_location
+    );
+}
+
+static bool open_matching_identity(
+    gdox_usb_bot_context *usb,
+    gdox_usb_bot_identity requested,
+    gdox_error *error
+)
+{
+    const gdox_usb_bot_identity_spec *identity =
+        gdox_usb_bot_identity_get(requested);
+    libusb_device **devices = NULL;
+    ssize_t device_count;
+    ssize_t index;
+    gdox_usb_bot_location expected_location;
+
+    if (identity == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_UNSUPPORTED,
+            "libusb transport does not support this optical mechanism"
+        );
+        return false;
+    }
+    if (usb->location_valid) {
+        expected_location = usb->location;
+    } else {
+        memset(&expected_location, 0, sizeof(expected_location));
+        if (!linux_identity_location(
+                requested,
+                &expected_location.bus,
+                &expected_location.address
+            )) {
+            gdox_error_set(
+                error,
+                GDOX_ERROR_NOT_FOUND,
+                "selected USB optical drive was not found"
+            );
+            return false;
+        }
+    }
+    device_count = libusb_get_device_list(usb->library, &devices);
+    if (device_count < 0) {
+        set_usb_error(error, "enumerate USB optical drives", (int)device_count);
+        return false;
+    }
+    for (index = 0; index < device_count; ++index) {
+        struct libusb_device_descriptor descriptor;
+        gdox_usb_bot_location observed_location;
+        gdox_error candidate_error;
+
+        gdox_error_clear(&candidate_error);
+        if (!usb_device_location(devices[index], &observed_location)
+            || !gdox_usb_bot_location_matches(
+                &expected_location,
+                &observed_location
+            )
+            || libusb_get_device_descriptor(devices[index], &descriptor)
+                != LIBUSB_SUCCESS
+            || descriptor.idVendor != identity->vendor_id
+            || descriptor.idProduct != identity->product_id
+            || libusb_open(devices[index], &usb->handle) != LIBUSB_SUCCESS) {
+            continue;
+        }
+        if (claim_bot_interface_for_identity(usb, &candidate_error)
+            && claimed_candidate_matches(
+                usb,
+                requested,
+                &expected_location,
+                &observed_location,
+                &candidate_error
+            )
+            && reset_claimed_bot(usb, &candidate_error)) {
+            usb->identity = requested;
+            usb->location = observed_location;
+            usb->location_valid = true;
+            libusb_free_device_list(devices, 1);
+            return true;
+        }
+        discard_usb_handle(usb);
+        break;
+    }
+    libusb_free_device_list(devices, 1);
+    gdox_error_set(
+        error,
+        GDOX_ERROR_NOT_FOUND,
+        "selected USB optical drive was not found"
+    );
+    return false;
+}
+
 static bool read_hex_identifier(const char *path, unsigned int *value)
 {
     FILE *input = fopen(path, "r");
@@ -703,6 +943,31 @@ static bool read_hex_identifier(const char *path, unsigned int *value)
         if (fgets(text, sizeof(text), input) != NULL) {
             errno = 0;
             parsed = strtoul(text, &end, 16);
+            read = end != text
+                && errno == 0
+                && parsed <= UINT_MAX
+                && (*end == '\0' || (*end == '\n' && end[1] == '\0'));
+            if (read) {
+                *value = (unsigned int)parsed;
+            }
+        }
+        (void)fclose(input);
+    }
+    return read;
+}
+
+static bool read_decimal_identifier(const char *path, unsigned int *value)
+{
+    FILE *input = fopen(path, "r");
+    char text[32];
+    char *end = NULL;
+    unsigned long parsed = 0U;
+    bool read = false;
+
+    if (input != NULL) {
+        if (fgets(text, sizeof(text), input) != NULL) {
+            errno = 0;
+            parsed = strtoul(text, &end, 10);
             read = end != text
                 && errno == 0
                 && parsed <= UINT_MAX
@@ -734,20 +999,53 @@ static bool append_path(
     return true;
 }
 
-static bool block_device_matches_usb(
+static bool read_text(const char *path, char *output, size_t capacity)
+{
+    FILE *input = fopen(path, "r");
+    size_t length;
+
+    if (input == NULL || capacity == 0U
+        || fgets(output, (int)capacity, input) == NULL) {
+        if (input != NULL) {
+            (void)fclose(input);
+        }
+        return false;
+    }
+    (void)fclose(input);
+    length = strlen(output);
+    while (length > 0U
+        && (output[length - 1U] == '\n'
+            || output[length - 1U] == '\r'
+            || output[length - 1U] == ' ')) {
+        output[--length] = '\0';
+    }
+    return true;
+}
+
+static bool block_device_matches_identity(
     const char *block_name,
-    uint16_t vendor_id,
-    uint16_t product_id
+    gdox_usb_bot_identity requested
 )
 {
+    const gdox_usb_bot_identity_spec *identity =
+        gdox_usb_bot_identity_get(requested);
     char link_path[PATH_MAX];
     char device_path[PATH_MAX];
     char vendor_path[PATH_MAX];
     char product_path[PATH_MAX];
+    char scsi_vendor_path[PATH_MAX];
+    char model_path[PATH_MAX];
+    char revision_path[PATH_MAX];
+    char scsi_vendor[32];
+    char model[32];
+    char revision[32];
     unsigned int observed_vendor;
     unsigned int observed_product;
     char *separator;
 
+    if (identity == NULL) {
+        return false;
+    }
     (void)snprintf(
         link_path,
         sizeof(link_path),
@@ -755,6 +1053,29 @@ static bool block_device_matches_usb(
         block_name
     );
     if (realpath(link_path, device_path) == NULL) {
+        return false;
+    }
+    if (!append_path(
+            scsi_vendor_path,
+            sizeof(scsi_vendor_path),
+            device_path,
+            "/vendor"
+        )
+        || !append_path(
+            model_path,
+            sizeof(model_path),
+            device_path,
+            "/model"
+        )
+        || !append_path(
+            revision_path,
+            sizeof(revision_path),
+            device_path,
+            "/rev"
+        )
+        || !read_text(scsi_vendor_path, scsi_vendor, sizeof(scsi_vendor))
+        || !read_text(model_path, model, sizeof(model))
+        || !read_text(revision_path, revision, sizeof(revision))) {
         return false;
     }
     do {
@@ -772,8 +1093,16 @@ static bool block_device_matches_usb(
             )
             && read_hex_identifier(vendor_path, &observed_vendor)
             && read_hex_identifier(product_path, &observed_product)) {
-            return observed_vendor == vendor_id
-                && observed_product == product_id;
+            const gdox_usb_bot_observed_identity observed = {
+                (uint16_t)observed_vendor,
+                (uint16_t)observed_product,
+                scsi_vendor,
+                model,
+                revision,
+            };
+            return observed_vendor <= UINT16_MAX
+                && observed_product <= UINT16_MAX
+                && gdox_usb_bot_identity_matches(requested, &observed);
         }
         separator = strrchr(device_path, '/');
         if (separator == NULL || separator == device_path) {
@@ -784,9 +1113,81 @@ static bool block_device_matches_usb(
     return false;
 }
 
+static bool linux_identity_location(
+    gdox_usb_bot_identity identity,
+    uint8_t *bus,
+    uint8_t *address
+)
+{
+    DIR *blocks = opendir("/sys/class/block");
+    struct dirent *entry;
+    bool found = false;
+
+    if (blocks == NULL || bus == NULL || address == NULL) {
+        if (blocks != NULL) {
+            (void)closedir(blocks);
+        }
+        return false;
+    }
+    while ((entry = readdir(blocks)) != NULL) {
+        char link_path[PATH_MAX];
+        char device_path[PATH_MAX];
+
+        if (strncmp(entry->d_name, "sr", 2U) != 0
+            || !block_device_matches_identity(entry->d_name, identity)) {
+            continue;
+        }
+        (void)snprintf(
+            link_path,
+            sizeof(link_path),
+            "/sys/class/block/%s/device",
+            entry->d_name
+        );
+        if (realpath(link_path, device_path) == NULL) {
+            continue;
+        }
+        do {
+            char bus_path[PATH_MAX];
+            char address_path[PATH_MAX];
+            unsigned int observed_bus;
+            unsigned int observed_address;
+            char *separator;
+
+            if (append_path(
+                    bus_path,
+                    sizeof(bus_path),
+                    device_path,
+                    "/busnum"
+                )
+                && append_path(
+                    address_path,
+                    sizeof(address_path),
+                    device_path,
+                    "/devnum"
+                )
+                && read_decimal_identifier(bus_path, &observed_bus)
+                && read_decimal_identifier(address_path, &observed_address)
+                && observed_bus <= UINT8_MAX
+                && observed_address <= UINT8_MAX) {
+                *bus = (uint8_t)observed_bus;
+                *address = (uint8_t)observed_address;
+                found = true;
+                break;
+            }
+            separator = strrchr(device_path, '/');
+            if (separator == NULL || separator == device_path) {
+                break;
+            }
+            *separator = '\0';
+        } while (device_path[0] != '\0');
+        break;
+    }
+    (void)closedir(blocks);
+    return found;
+}
+
 static void observe_linux_media(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     bool *media_status_known,
     bool *media_present
 )
@@ -803,10 +1204,9 @@ static void observe_linux_media(
         int status;
 
         if (strncmp(entry->d_name, "sr", 2U) != 0
-            || !block_device_matches_usb(
+            || !block_device_matches_identity(
                 entry->d_name,
-                vendor_id,
-                product_id
+                identity
             )) {
             continue;
         }
@@ -838,28 +1238,58 @@ static void observe_linux_media(
 #endif
 
 bool gdox_usb_bot_present(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     bool *drive_present,
     gdox_error *error
 )
 {
+    const gdox_usb_bot_identity_spec *selected =
+        gdox_usb_bot_identity_get(identity);
+#if defined(__linux__) && !defined(__ANDROID__)
+    DIR *blocks;
+    struct dirent *entry;
+#else
     libusb_context *library = NULL;
     libusb_device **devices = NULL;
     ssize_t device_count;
     ssize_t index;
     int result;
+#endif
 
     gdox_error_clear(error);
-    if (drive_present == NULL) {
+    if (drive_present == NULL || selected == NULL) {
         gdox_error_set(
             error,
-            GDOX_ERROR_INVALID_ARGUMENT,
-            "optical presence output is required"
+            drive_present == NULL
+                ? GDOX_ERROR_INVALID_ARGUMENT
+                : GDOX_ERROR_UNSUPPORTED,
+            drive_present == NULL
+                ? "optical presence output is required"
+                : "libusb observer does not support this optical mechanism"
         );
         return false;
     }
     *drive_present = false;
+#if defined(__linux__) && !defined(__ANDROID__)
+    blocks = opendir("/sys/class/block");
+    if (blocks == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_TRANSPORT,
+            "could not enumerate Linux optical drives"
+        );
+        return false;
+    }
+    while ((entry = readdir(blocks)) != NULL) {
+        if (strncmp(entry->d_name, "sr", 2U) == 0
+            && block_device_matches_identity(entry->d_name, identity)) {
+            *drive_present = true;
+            break;
+        }
+    }
+    (void)closedir(blocks);
+    return true;
+#else
     result = libusb_init(&library);
     if (result != LIBUSB_SUCCESS) {
         set_usb_error(error, "initialize passive USB observer", result);
@@ -880,8 +1310,8 @@ bool gdox_usb_bot_present(
 
         result = libusb_get_device_descriptor(devices[index], &descriptor);
         if (result == LIBUSB_SUCCESS
-            && descriptor.idVendor == vendor_id
-            && descriptor.idProduct == product_id) {
+            && descriptor.idVendor == selected->vendor_id
+            && descriptor.idProduct == selected->product_id) {
             *drive_present = true;
             break;
         }
@@ -889,11 +1319,11 @@ bool gdox_usb_bot_present(
     libusb_free_device_list(devices, 1);
     libusb_exit(library);
     return true;
+#endif
 }
 
 bool gdox_usb_bot_observe(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     bool *drive_present,
     bool *media_status_known,
     bool *media_present,
@@ -914,8 +1344,7 @@ bool gdox_usb_bot_observe(
     *media_status_known = false;
     *media_present = false;
     if (!gdox_usb_bot_present(
-            vendor_id,
-            product_id,
+            identity,
             drive_present,
             error
         )) {
@@ -924,8 +1353,7 @@ bool gdox_usb_bot_observe(
 #if defined(__linux__) && !defined(__ANDROID__)
     if (*drive_present) {
         observe_linux_media(
-            vendor_id,
-            product_id,
+            identity,
             media_status_known,
             media_present
         );
@@ -935,21 +1363,27 @@ bool gdox_usb_bot_observe(
 }
 
 bool gdox_usb_bot_open(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     gdox_scsi_transport *transport,
     gdox_error *error
 )
 {
     gdox_usb_bot_context *usb;
+    const gdox_usb_bot_identity_spec *selected =
+        gdox_usb_bot_identity_get(identity);
     int result;
 
     gdox_error_clear(error);
-    if (transport == NULL || gdox_scsi_transport_is_valid(transport)) {
+    if (transport == NULL || gdox_scsi_transport_is_valid(transport)
+        || selected == NULL) {
         gdox_error_set(
             error,
-            GDOX_ERROR_INVALID_ARGUMENT,
-            "an empty transport output is required"
+            transport == NULL || gdox_scsi_transport_is_valid(transport)
+                ? GDOX_ERROR_INVALID_ARGUMENT
+                : GDOX_ERROR_UNSUPPORTED,
+            transport == NULL || gdox_scsi_transport_is_valid(transport)
+                ? "an empty transport output is required"
+                : "libusb transport does not support this optical mechanism"
         );
         return false;
     }
@@ -965,10 +1399,17 @@ bool gdox_usb_bot_open(
         return false;
     }
 #if defined(__linux__) && !defined(__ANDROID__)
-    usb->vendor_id = vendor_id;
-    usb->product_id = product_id;
-#endif
-    usb->handle = libusb_open_device_with_vid_pid(usb->library, vendor_id, product_id);
+    if (!open_matching_identity(usb, identity, error)) {
+        libusb_exit(usb->library);
+        free(usb);
+        return false;
+    }
+#else
+    usb->handle = libusb_open_device_with_vid_pid(
+        usb->library,
+        selected->vendor_id,
+        selected->product_id
+    );
     if (usb->handle == NULL) {
         libusb_exit(usb->library);
         free(usb);
@@ -981,6 +1422,7 @@ bool gdox_usb_bot_open(
         free(usb);
         return false;
     }
+#endif
     transport->context = usb;
     transport->ops = &usb_ops;
     return true;
@@ -1139,19 +1581,134 @@ bool gdox_usb_bot_prepare_handoff(
 }
 #endif
 
-bool gdox_usb_bot_restore_kernel_driver(
-    uint16_t vendor_id,
-    uint16_t product_id,
+#if defined(__linux__) && !defined(__ANDROID__)
+static bool restore_exact_linux_candidate(
+    libusb_context *library,
+    libusb_device *device,
+    gdox_usb_bot_identity requested,
+    bool identity_already_verified,
+    bool *identified,
     bool *reattached,
     gdox_error *error
 )
 {
+    gdox_usb_bot_context probe = {0};
+    gdox_error probe_error;
+    int active;
+    int release_result;
+    int attach_result;
+
+    *identified = identity_already_verified;
+    probe.library = library;
+    if (libusb_open(device, &probe.handle) != LIBUSB_SUCCESS) {
+        return true;
+    }
+    active = libusb_kernel_driver_active(
+        probe.handle,
+        GDOX_USB_INTERFACE
+    );
+    if (active == 1) {
+        libusb_close(probe.handle);
+        return true;
+    }
+    if (active < 0 && active != LIBUSB_ERROR_NOT_SUPPORTED) {
+        libusb_close(probe.handle);
+        set_usb_error(
+            error,
+            "query USB mass-storage kernel driver",
+            active
+        );
+        return false;
+    }
+    *identified = false;
+    gdox_error_clear(&probe_error);
+    if (!claim_unbound_bot_interface(&probe, &probe_error)
+        || !claimed_candidate_matches(
+            &probe,
+            requested,
+            NULL,
+            NULL,
+            &probe_error
+        )) {
+        if (probe.claimed) {
+            release_result = libusb_release_interface(
+                probe.handle,
+                GDOX_USB_INTERFACE
+            );
+            probe.claimed = false;
+            if (release_result != LIBUSB_SUCCESS) {
+                libusb_close(probe.handle);
+                set_usb_error(
+                    error,
+                    "release unmatched USB optical interface",
+                    release_result
+                );
+                return false;
+            }
+        }
+        libusb_close(probe.handle);
+        return true;
+    }
+    *identified = true;
+    release_result = libusb_release_interface(
+        probe.handle,
+        GDOX_USB_INTERFACE
+    );
+    probe.claimed = false;
+    if (release_result != LIBUSB_SUCCESS) {
+        libusb_close(probe.handle);
+        set_usb_error(
+            error,
+            "release exact USB optical interface",
+            release_result
+        );
+        return false;
+    }
+    attach_result = libusb_attach_kernel_driver(
+        probe.handle,
+        GDOX_USB_INTERFACE
+    );
+    if (attach_result == LIBUSB_SUCCESS) {
+        *reattached = true;
+    } else if (attach_result != LIBUSB_ERROR_NOT_FOUND
+        && attach_result != LIBUSB_ERROR_NOT_SUPPORTED
+        && attach_result != LIBUSB_ERROR_BUSY) {
+        libusb_close(probe.handle);
+        set_usb_error(
+            error,
+            "reattach USB mass-storage kernel driver",
+            attach_result
+        );
+        return false;
+    }
+    libusb_close(probe.handle);
+    return true;
+}
+#endif
+
+bool gdox_usb_bot_restore_kernel_driver(
+    gdox_usb_bot_identity identity,
+    bool *reattached,
+    gdox_error *error
+)
+{
+    const gdox_usb_bot_identity_spec *selected =
+        gdox_usb_bot_identity_get(identity);
     libusb_context *library = NULL;
-    libusb_device_handle *handle;
+#if !defined(__linux__) || defined(__ANDROID__)
+    libusb_device_handle *handle = NULL;
+#endif
+#if defined(__linux__) && !defined(__ANDROID__)
+    libusb_device **devices = NULL;
+    ssize_t device_count;
+    ssize_t index;
+    gdox_usb_bot_location expected_location = {0};
+    bool location_verified;
+#endif
     int result;
 
     gdox_error_clear(error);
-    if (reattached == NULL) {
+    if (reattached == NULL || selected == NULL) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "reattachment output is required");
         return false;
     }
@@ -1161,35 +1718,70 @@ bool gdox_usb_bot_restore_kernel_driver(
         set_usb_error(error, "initialize libusb", result);
         return false;
     }
-    handle = libusb_open_device_with_vid_pid(library, vendor_id, product_id);
+#if defined(__linux__) && !defined(__ANDROID__)
+    location_verified = linux_identity_location(
+        identity,
+        &expected_location.bus,
+        &expected_location.address
+    );
+    device_count = libusb_get_device_list(library, &devices);
+    if (device_count < 0) {
+        libusb_exit(library);
+        set_usb_error(
+            error,
+            "enumerate USB optical drives",
+            (int)device_count
+        );
+        return false;
+    }
+    for (index = 0; index < device_count; ++index) {
+        struct libusb_device_descriptor descriptor;
+        gdox_usb_bot_location observed_location;
+        bool identified = false;
+
+        if (libusb_get_device_descriptor(devices[index], &descriptor)
+                != LIBUSB_SUCCESS
+            || descriptor.idVendor != selected->vendor_id
+            || descriptor.idProduct != selected->product_id
+            || !usb_device_location(devices[index], &observed_location)
+            || (location_verified
+                && !gdox_usb_bot_location_matches(
+                    &expected_location,
+                    &observed_location
+                ))) {
+            continue;
+        }
+        if (!restore_exact_linux_candidate(
+                library,
+                devices[index],
+                identity,
+                location_verified,
+                &identified,
+                reattached,
+                error
+            )) {
+            libusb_free_device_list(devices, 1);
+            libusb_exit(library);
+            return false;
+        }
+        if (identified) {
+            break;
+        }
+    }
+    libusb_free_device_list(devices, 1);
+#else
+    handle = libusb_open_device_with_vid_pid(
+        library,
+        selected->vendor_id,
+        selected->product_id
+    );
     if (handle == NULL) {
         libusb_exit(library);
         return true;
     }
-#if defined(__linux__) && !defined(__ANDROID__)
-    result = libusb_kernel_driver_active(handle, GDOX_USB_INTERFACE);
-    if (result == 0) {
-        result = libusb_attach_kernel_driver(handle, GDOX_USB_INTERFACE);
-        if (result == LIBUSB_SUCCESS) {
-            *reattached = true;
-        } else if (result != LIBUSB_ERROR_NOT_FOUND
-            && result != LIBUSB_ERROR_NOT_SUPPORTED
-            && result != LIBUSB_ERROR_BUSY) {
-            libusb_close(handle);
-            libusb_exit(library);
-            set_usb_error(error, "reattach USB mass-storage kernel driver", result);
-            return false;
-        }
-    } else if (result < 0 && result != LIBUSB_ERROR_NOT_SUPPORTED) {
-        libusb_close(handle);
-        libusb_exit(library);
-        set_usb_error(error, "query USB mass-storage kernel driver", result);
-        return false;
-    }
-#else
     (void)result;
-#endif
     libusb_close(handle);
+#endif
     libusb_exit(library);
     return true;
 }

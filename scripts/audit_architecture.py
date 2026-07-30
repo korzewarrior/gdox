@@ -82,6 +82,32 @@ def main() -> int:
     if re.search(r"\bandroid/", desktop_graph):
         failures.append("desktop CMake graph directly references Android sources")
 
+    libusb_transport = (ROOT / "src/platform/usb_bot_libusb.c").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "gdox_usb_bot_candidate_matches(",
+        "usb->location_valid",
+        "claim_unbound_bot_interface(",
+        "restore_exact_linux_candidate(",
+    ):
+        if required not in libusb_transport:
+            failures.append(
+                "Linux shared-USB-ID recovery is missing exact identity selection"
+            )
+
+    macos_transport = (ROOT / "src/platform/macos_scsi.c").read_text(
+        encoding="utf-8"
+    )
+    if "gdox_usb_bot_identity_matches(requested, &observed)" not in macos_transport:
+        failures.append("macOS shared-USB-ID selection bypasses the exact matcher")
+
+    windows_transport = (ROOT / "src/platform/usb_bot_windows.c").read_text(
+        encoding="utf-8"
+    )
+    if "gdox_usb_bot_identity_matches(requested, &observed)" not in windows_transport:
+        failures.append("Windows shared-USB-ID selection bypasses the exact matcher")
+
     android_graph = (ROOT / "android/native/CMakeLists.txt").read_text(
         encoding="utf-8"
     )
@@ -90,6 +116,10 @@ def main() -> int:
             failures.append(
                 f"Android build does not consume the shared {source_set} set"
             )
+    if "src/platform/mt1887_profile.c" not in android_graph:
+        failures.append("Android MT1887 source omits the identity profile")
+    if "src/platform/usb_bot_identity.c" not in android_graph:
+        failures.append("Android USB transport omits the shared identity matcher")
 
     if failures:
         for failure in failures:

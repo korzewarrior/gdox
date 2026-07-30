@@ -49,6 +49,7 @@ static bool open_android_source(
     return gdox_mt1887_source_open(
         open_android_transport,
         &file_descriptor,
+        GDOX_USB_BOT_GP63,
         GDOX_ANDROID_READ_SPEED_KBPS,
         read_retries,
         ready_timeout_ms,

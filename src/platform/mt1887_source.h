@@ -4,6 +4,7 @@
 #include "gdox/error.h"
 #include "gdox/source.h"
 #include "platform/scsi_transport.h"
+#include "platform/usb_bot.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -22,6 +23,7 @@ typedef bool (*gdox_mt1887_transport_opener)(
 bool gdox_mt1887_source_open(
     gdox_mt1887_transport_opener opener,
     void *opener_context,
+    gdox_usb_bot_identity identity,
     uint16_t read_speed_kbps,
     uint8_t read_retries,
     uint32_t ready_timeout_ms,

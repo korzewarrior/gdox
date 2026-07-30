@@ -22,7 +22,7 @@
     <section>
       <h2>wtf</h2>
       <p>gdox connects a supported dvd drive to xemu. when xemu requests part of the game, gdox reads that part directly from the disc.</p>
-      <p>the disc stays in the drive for the entire session. nothing is copied or installed first. the verified gp63 path uses a reversible change in the drive's volatile state; it does not flash firmware or physically modify the reader.</p>
+      <p>the disc stays in the drive for the entire session. nothing is copied or installed first. the validated mt1887 paths use an exact-profile reversible change in the drive's volatile state; they do not flash firmware or physically modify the reader.</p>
     </section>
 
     <section>
@@ -121,34 +121,34 @@
         </div>
         <p>the source stack is <code>physical source → partition source → patched source → compact-XISO source → random-access virtual disc</code>. an emulator read is translated backward through that stack. generated metadata and alignment sectors are returned from memory; file data becomes a physical <code>READ(12)</code>. playback does not create a complete game image.</p>
 
-        <h3>verified optical target</h3>
+        <h3>verified mt1887 targets</h3>
         <div class="technical-table-wrap">
           <table class="technical-table">
+            <thead>
+              <tr>
+                <th scope="col">product</th>
+                <th scope="col">revision</th>
+                <th scope="col">USB ID</th>
+                <th scope="col">physical validation</th>
+              </tr>
+            </thead>
             <tbody>
               <tr>
-                <th scope="row">vendor</th>
-                <td><code>HL-DT-ST</code></td>
-              </tr>
-              <tr>
-                <th scope="row">product</th>
                 <td><code>DVDRAM GP63EX70</code></td>
-              </tr>
-              <tr>
-                <th scope="row">revision</th>
                 <td><code>RF02</code></td>
-              </tr>
-              <tr>
-                <th scope="row">USB ID</th>
                 <td><code>0e8d:1887</code></td>
+                <td>linux / steam deck / macos / windows</td>
               </tr>
               <tr>
-                <th scope="row">controller</th>
-                <td>MediaTek MT1887</td>
+                <td><code>DVDRAM GP65NB60</code></td>
+                <td><code>PB00</code></td>
+                <td><code>0e8d:1887</code></td>
+                <td>windows 11</td>
               </tr>
             </tbody>
           </table>
         </div>
-        <p>the XDATA addresses and byte values below are specific to the observed MT1887/RF02 layout. matching the enclosure, product family, controller family, or USB ID alone is insufficient. <code>INQUIRY</code> must return all three exact identity strings.</p>
+        <p>both targets report vendor <code>HL-DT-ST</code> and use a MediaTek MT1887 controller. matching the enclosure, product family, controller family, or shared USB ID alone is insufficient. <code>INQUIRY</code> must return all three exact identity strings before gdox selects an XDATA profile.</p>
         <p>the drive receives SCSI/MMC commands through libusb USB Mass Storage Bulk-Only Transport on Linux, a <code>UsbManager</code>-authorized file descriptor wrapped by libusb on android, SCSI pass-through through the optical class driver on windows, or IOKit SCSI task transport on macos. each adapter terminates at the same bounded random-access sector-source interface.</p>
 
         <h3>stock disc view</h3>
@@ -156,8 +156,8 @@
         <p><code>READ DVD STRUCTURE</code> opcode <code>0xAD</code>, format <code>0x00</code>, returns a four-byte header followed by PFI. complete-response bytes <code>17..19</code> are the PFI layer-zero endpoint. initialization requires the stock value <code>03 1A AF</code> before any XDATA write.</p>
 
         <h3>volatile MT1887 state</h3>
-        <p>RF02 vendor opcode <code>0xF1</code> provides XDATA access. a read uses subcommand <code>0x02</code>, a big-endian 16-bit address in CDB bytes <code>4..5</code>, data-in length four, and returns the value in response byte <code>3</code>. a write uses subcommand <code>0x01</code>, the same address fields, the value in CDB byte <code>9</code>, and no data phase.</p>
-        <p>gdox changes six bytes in volatile controller XDATA:</p>
+        <p>MT1887 vendor opcode <code>0xF1</code> provides XDATA access. a read uses subcommand <code>0x02</code>, a big-endian 16-bit address in CDB bytes <code>4..5</code>, data-in length four, and returns the value in response byte <code>3</code>. a write uses subcommand <code>0x01</code>, the same address fields, the value in CDB byte <code>9</code>, and no data phase.</p>
+        <p>the GP63 RF02 profile changes these six bytes in volatile controller XDATA:</p>
         <div class="technical-table-wrap">
           <table class="technical-table">
             <thead>
@@ -208,19 +208,20 @@
             </tbody>
           </table>
         </div>
+        <p>the GP65 PB00 profile uses capacity address <code>0x8A37</code> with the same stock and XGD triplets and geometry address <code>0x8BE2</code> with the same stock and XGD triplets. it also requires auxiliary address <code>0x8538</code> to contain <code>64 00 64</code>. that auxiliary field is not PB00 capacity and is never activated with GP63 values.</p>
         <p>the capacity values satisfy <code>0x031B4F - 0x30000 = 6991</code> in stock state and <code>0x3D4D4F - 0x30000 = 3820879</code> in XGD state. after the write, gdox requires <code>READ CAPACITY(10)</code> to report last LBA <code>3820879</code>, 3,820,880 sectors, 2,048 bytes per sector, and 7,825,162,240 total bytes.</p>
-        <p>these writes target controller working memory, not the disc or firmware flash. a disconnect or power cycle clears them.</p>
+        <p>these writes target controller working memory, not the disc or firmware flash. normal shutdown restores them; removing drive power clears them independently.</p>
 
         <h3>fail-closed activation</h3>
         <ol>
           <li>open the platform transport and issue <code>INQUIRY</code></li>
-          <li>require vendor <code>HL-DT-ST</code>, product <code>DVDRAM GP63EX70</code>, and revision <code>RF02</code></li>
+          <li>require vendor <code>HL-DT-ST</code> and one complete supported product/revision/USB identity</li>
           <li>wait for <code>TEST UNIT READY</code></li>
           <li>read PFI and require <code>03 1A AF</code> at complete-response bytes <code>17..19</code></li>
           <li>retain the 2,048-byte PFI payload and attempt to retain the DMI payload from format <code>0x04</code></li>
-          <li>read the capacity and geometry XDATA triplets</li>
-          <li>require every byte to equal either its known stock value or its known XGD value</li>
-          <li>restore and verify stock state if the six bytes form a known partial transition</li>
+          <li>read the profile's capacity, geometry, and optional auxiliary XDATA triplets</li>
+          <li>require every byte to equal an exact profile-allowed value</li>
+          <li>restore and verify stock state if the fields form a known partial transition</li>
           <li>write the complete XGD capacity and geometry values</li>
           <li>read both triplets back and require an exact XGD match</li>
           <li>issue <code>READ CAPACITY(10)</code> and require 3,820,880 × 2,048 bytes</li>
@@ -230,11 +231,11 @@
         <p>a byte outside the known stock/XGD pairs causes immediate refusal. gdox does not infer a repair for an unknown SRAM state. an initialization failure after mutation enters the stock-restoration path before the transport is closed.</p>
 
         <h3>restoration and read recovery</h3>
-        <p>normal close writes stock geometry, then stock capacity, reads both triplets back, and requires last LBA <code>6991</code> with 2,048-byte blocks. if the first restoration attempt fails, two further attempts reset the transport and wait 100 ms then 200 ms. failure after all three attempts is returned explicitly; reconnecting the drive clears the volatile state independently.</p>
+        <p>normal close writes stock geometry, then stock capacity, then any profile-defined auxiliary field; it reads all fields back and requires last LBA <code>6991</code> with 2,048-byte blocks. if the first restoration attempt fails, two further attempts reset the transport and wait 100 ms then 200 ms. failure after all three attempts is returned explicitly and requires a drive power cycle.</p>
         <p>each failing source read has a fixed 20-second recovery budget in addition to its configured retry count. recovery can reset the transport, request sense, issue <code>START STOP UNIT</code>, wait for readiness, verify or reapply the XGD state, reapply the requested speed, and retry. cancellation and removal terminate recovery. if a multi-sector request still fails, gdox retries individual sectors to report the first unreadable physical LBA.</p>
 
         <h3>physical reads</h3>
-        <p>data reads use <code>READ(12)</code>, opcode <code>0xA8</code>. the backend splits source requests into at most 128 blocks per command: 262,144 bytes. each command has a 30-second timeout. source-level bounds checks reject zero-length, overflowing, undersized-buffer, and out-of-range requests before transport I/O.</p>
+        <p>data reads use <code>READ(12)</code>, opcode <code>0xA8</code>. GP63 source requests use at most 128 blocks per command. GP65 PB00 requests on windows use at most the physically validated 32 blocks, or 64 KiB. each command has a 30-second timeout. source-level bounds checks reject zero-length, overflowing, undersized-buffer, and out-of-range requests before transport I/O.</p>
         <p>the backend separately counts successful physical commands, sectors, bytes, and the final LBA of the last successful command. virtual-disc read counts do not replace those physical counters.</p>
 
         <h3>XDVDFS validation</h3>
@@ -310,12 +311,12 @@
             </tbody>
           </table>
         </div>
-        <p>the GP63 backend captures PFI and attempts DMI with <code>READ DVD STRUCTURE</code>. it does not expose decrypted Xbox security-sector evidence. a 7,825,162,240-byte read is therefore not, by size alone, an SS-complete archival result.</p>
+        <p>the MT1887 backend captures PFI and attempts DMI with <code>READ DVD STRUCTURE</code>. it does not expose decrypted Xbox security-sector evidence. a 7,825,162,240-byte read is therefore not, by size alone, an SS-complete archival result.</p>
         <p>preservation writes to a <code>.part</code> output and hashes the bytes while writing. when verification is enabled, it syncs and closes that file, rereads and hashes the complete partial output, requires both hash sets to match, then commits the partial path to the requested output path. unreadable ranges are recorded. sidecars can include a manifest, log, CRC32, MD5, SHA-1, SHA-256, PFI, DMI, security evidence when present, and format-specific maps. the manifest records full-length, readback, filesystem-inventory, canonical-hash, SS-present, and SS-authenticated claims separately.</p>
 
         <h3>mutation boundary</h3>
         <ul>
-          <li>changed in the drive: six known bytes of volatile MT1887 XDATA for the active session</li>
+          <li>changed in the drive: exact-profile capacity and geometry bytes in volatile MT1887 XDATA for the active session; PB00 recovery may also restore a known legacy auxiliary state</li>
           <li>changed in gdox: generated compact metadata, extent mappings, and optional returned-byte substitutions</li>
           <li>unchanged: disc contents, drive flash, host kernel, xemu source, source XBE bytes, and the physical mastering layout</li>
         </ul>

@@ -61,6 +61,60 @@ foreach(group IN LISTS GDOX_TEST_GROUPS)
 endforeach()
 
 if(GDOX_BUILD_OPTICAL)
+    add_executable(
+        gdox_mt1887_profile_tests
+        tests/test_mt1887_profile.c
+    )
+    target_include_directories(
+        gdox_mt1887_profile_tests
+        PRIVATE
+            tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(gdox_mt1887_profile_tests PRIVATE gdox::optical)
+    gdox_enable_c_warnings(gdox_mt1887_profile_tests)
+    add_test(
+        NAME optical.mt1887_profile
+        COMMAND gdox_mt1887_profile_tests
+    )
+
+    add_executable(
+        gdox_mt1887_source_tests
+        tests/test_mt1887_source.c
+    )
+    target_include_directories(
+        gdox_mt1887_source_tests
+        PRIVATE
+            tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(gdox_mt1887_source_tests PRIVATE gdox::optical)
+    gdox_enable_c_warnings(gdox_mt1887_source_tests)
+    add_test(
+        NAME optical.mt1887_source
+        COMMAND gdox_mt1887_source_tests
+    )
+
+    add_executable(
+        gdox_usb_bot_identity_tests
+        tests/test_usb_bot_identity.c
+    )
+    target_include_directories(
+        gdox_usb_bot_identity_tests
+        PRIVATE
+            tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(
+        gdox_usb_bot_identity_tests
+        PRIVATE gdox::optical
+    )
+    gdox_enable_c_warnings(gdox_usb_bot_identity_tests)
+    add_test(
+        NAME optical.usb_bot_identity
+        COMMAND gdox_usb_bot_identity_tests
+    )
+
     add_executable(gdox_gp08_tests tests/test_gp08_source.c)
     target_include_directories(
         gdox_gp08_tests

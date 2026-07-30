@@ -11,7 +11,7 @@ make check
 Build Linux and Steam Deck in the pinned compatibility image:
 
 ```sh
-python scripts/build_linux_packages.py --version 0.1.1
+python scripts/build_linux_packages.py --version 0.1.2
 ```
 
 Build Apple targets on their native host:
@@ -37,7 +37,7 @@ generated build trees. `storeFile` must be an absolute path.
 
 ```sh
 python scripts/package_release.py \
-  --version 0.1.1 \
+  --version 0.1.2 \
   --target x86_64-unknown-linux-gnu \
   --artifact ../gdox-output/build/x86_64-unknown-linux-gnu/gdox
 ```
@@ -51,9 +51,9 @@ archive, and writes SHA-256.
 Create the source archives with:
 
 ```sh
-python scripts/package_source.py --version 0.1.1
+python scripts/package_source.py --version 0.1.2
 python scripts/fetch_runtime.py source --output ../gdox-output/release
-python scripts/package_android_source.py --version 0.1.1
+python scripts/package_android_source.py --version 0.1.2
 ```
 
 The separate xemu archive satisfies corresponding-source distribution for the
@@ -62,12 +62,11 @@ xemu and SDL2 trees plus every native source used by the APK.
 
 ## Signing
 
-Set `GDOX_CODESIGN_IDENTITY` on macOS to use a Developer ID identity. Ad-hoc
-signing is for private tests only. Production releases must be notarized and
-stapled outside the generic packager.
-
-Windows public releases require an Authenticode signing step after the audited
-MSVC build and before the final package audit.
+The automated desktop release is ad-hoc signed on macOS and unsigned on
+Windows, matching the warnings on the download pages. To publish a notarized
+macOS build, set `GDOX_CODESIGN_IDENTITY` to a Developer ID identity and
+notarize and staple it outside the generic packager. Apply Authenticode to a
+Windows build after the audited MSVC build and before the final package audit.
 
 ## Publication
 

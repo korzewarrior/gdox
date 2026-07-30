@@ -5,8 +5,10 @@ add_library(
     STATIC
         src/platform/gp08_source.c
         src/platform/mt1887_source.c
+        src/platform/mt1887_profile.c
         src/platform/optical.c
         src/platform/scsi_transport.c
+        src/platform/usb_bot_identity.c
 )
 add_library(gdox::optical ALIAS gdox_optical)
 target_include_directories(gdox_optical PRIVATE src)

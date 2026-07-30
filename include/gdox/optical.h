@@ -13,6 +13,14 @@ extern "C" {
 
 #define GDOX_GP63_USB_VENDOR_ID UINT16_C(0x0e8d)
 #define GDOX_GP63_USB_PRODUCT_ID UINT16_C(0x1887)
+#define GDOX_GP63_SCSI_VENDOR "HL-DT-ST"
+#define GDOX_GP63_SCSI_MODEL "DVDRAM GP63EX70"
+#define GDOX_GP63_SCSI_REVISION "RF02"
+#define GDOX_GP65_USB_VENDOR_ID UINT16_C(0x0e8d)
+#define GDOX_GP65_USB_PRODUCT_ID UINT16_C(0x1887)
+#define GDOX_GP65_SCSI_VENDOR "HL-DT-ST"
+#define GDOX_GP65_SCSI_MODEL "DVDRAM GP65NB60"
+#define GDOX_GP65_SCSI_REVISION "PB00"
 #define GDOX_GP08_USB_VENDOR_ID UINT16_C(0x152e)
 #define GDOX_GP08_USB_PRODUCT_ID UINT16_C(0x2507)
 #define GDOX_GP08_SCSI_VENDOR "HL-DT-ST"
@@ -24,6 +32,7 @@ typedef enum gdox_optical_drive {
     GDOX_OPTICAL_DRIVE_NONE = 0,
     GDOX_OPTICAL_DRIVE_GP63,
     GDOX_OPTICAL_DRIVE_GP08,
+    GDOX_OPTICAL_DRIVE_GP65,
 } gdox_optical_drive;
 
 typedef struct gdox_optical_presence {
@@ -70,6 +79,22 @@ bool gdox_optical_open_gp63(
     gdox_error *error
 );
 bool gdox_optical_eject_gp63(gdox_error *error);
+
+bool gdox_optical_observe_gp65(
+    gdox_optical_presence *presence,
+    gdox_error *error
+);
+bool gdox_optical_gp65_connected(
+    bool *connected,
+    gdox_error *error
+);
+bool gdox_optical_open_gp65(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_error *error
+);
+bool gdox_optical_eject_gp65(gdox_error *error);
 
 bool gdox_optical_observe_gp08(
     gdox_optical_presence *presence,

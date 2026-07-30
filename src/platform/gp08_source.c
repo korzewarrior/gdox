@@ -1123,8 +1123,7 @@ static bool open_discovered_gp08(
 {
     (void)raw_context;
     return gdox_usb_bot_open(
-        GDOX_GP08_USB_VENDOR_ID,
-        GDOX_GP08_USB_PRODUCT_ID,
+        GDOX_USB_BOT_GP08,
         transport,
         error
     );
@@ -1375,8 +1374,7 @@ bool gdox_optical_observe_gp08(
     }
     presence->drive = GDOX_OPTICAL_DRIVE_NONE;
     return gdox_usb_bot_observe(
-        GDOX_GP08_USB_VENDOR_ID,
-        GDOX_GP08_USB_PRODUCT_ID,
+        GDOX_USB_BOT_GP08,
         &presence->drive_present,
         &presence->media_status_known,
         &presence->media_present,
@@ -1390,8 +1388,7 @@ bool gdox_optical_gp08_connected(
 )
 {
     return gdox_usb_bot_present(
-        GDOX_GP08_USB_VENDOR_ID,
-        GDOX_GP08_USB_PRODUCT_ID,
+        GDOX_USB_BOT_GP08,
         connected,
         error
     );

@@ -63,8 +63,10 @@ add_library(
         ${GDOX_LIVE_DISC_SOURCES}
         ${GDOX_HDD_CACHE_SOURCES}
         "${GDOX_ROOT}/src/platform/mt1887_source.c"
+        "${GDOX_ROOT}/src/platform/mt1887_profile.c"
         "${GDOX_ROOT}/src/platform/random_access_file_posix.c"
         "${GDOX_ROOT}/src/platform/scsi_transport.c"
+        "${GDOX_ROOT}/src/platform/usb_bot_identity.c"
         "${GDOX_ROOT}/src/platform/usb_bot_libusb.c"
 )
 add_library(gdox::android_media ALIAS gdox_android_media)

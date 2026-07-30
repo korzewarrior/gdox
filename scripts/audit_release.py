@@ -118,7 +118,7 @@ def iter_files(root: Path):
     if root.is_file():
         yield root
         return
-    if root.resolve() == ROOT and (ROOT / ".git").is_dir():
+    if root.resolve() == ROOT and (ROOT / ".git").exists():
         result = subprocess.run(
             ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
             cwd=ROOT,

@@ -16,20 +16,17 @@ typedef struct GdoxMacScsiDevice GdoxMacScsiDevice;
 
 int gdox_macos_scsi_start_mount_guard(char *error, size_t error_capacity);
 int gdox_macos_scsi_release_system_media(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    int identity,
     char *error,
     size_t error_capacity
 );
 int gdox_macos_scsi_observe(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    int identity,
     int *drive_present,
     int *media_present
 );
 int gdox_macos_scsi_open(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    int identity,
     GdoxMacScsiDevice **output,
     char *error,
     size_t error_capacity
@@ -221,17 +218,15 @@ static const gdox_scsi_transport_ops macos_ops = {
     macos_close,
 };
 
-static bool supported_identifiers(uint16_t vendor_id, uint16_t product_id)
+static bool supported_identity(gdox_usb_bot_identity identity)
 {
-    return (vendor_id == GDOX_GP63_USB_VENDOR_ID
-            && product_id == GDOX_GP63_USB_PRODUCT_ID)
-        || (vendor_id == GDOX_GP08_USB_VENDOR_ID
-            && product_id == GDOX_GP08_USB_PRODUCT_ID);
+    return identity == GDOX_USB_BOT_GP63
+        || identity == GDOX_USB_BOT_GP65
+        || identity == GDOX_USB_BOT_GP08;
 }
 
 static bool open_native_device(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     GdoxMacScsiDevice **device,
     gdox_error *error
 )
@@ -242,8 +237,7 @@ static bool open_native_device(
     for (attempt = 0U; attempt < GDOX_MACOS_OPEN_ATTEMPTS; ++attempt) {
         char detail[GDOX_MACOS_ERROR_CAPACITY] = {0};
         const int status = gdox_macos_scsi_open(
-            vendor_id,
-            product_id,
+            (int)identity,
             device,
             detail,
             sizeof(detail)
@@ -254,8 +248,7 @@ static bool open_native_device(
         if (status == GDOX_MACOS_OPEN_MOUNT_BUSY && !released_system_media) {
             char release_detail[GDOX_MACOS_ERROR_CAPACITY] = {0};
             if (gdox_macos_scsi_release_system_media(
-                    vendor_id,
-                    product_id,
+                    (int)identity,
                     release_detail,
                     sizeof(release_detail)
                 ) != 0) {
@@ -287,8 +280,7 @@ static bool open_native_device(
 }
 
 bool gdox_usb_bot_open(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     gdox_scsi_transport *transport,
     gdox_error *error
 )
@@ -303,7 +295,7 @@ bool gdox_usb_bot_open(
     }
     transport->context = NULL;
     transport->ops = NULL;
-    if (!supported_identifiers(vendor_id, product_id)) {
+    if (!supported_identity(identity)) {
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
@@ -321,8 +313,7 @@ bool gdox_usb_bot_open(
         return false;
     }
     if (!open_native_device(
-            vendor_id,
-            product_id,
+            identity,
             &context->device,
             error
         )) {
@@ -335,8 +326,7 @@ bool gdox_usb_bot_open(
 }
 
 bool gdox_usb_bot_present(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     bool *drive_present,
     gdox_error *error
 )
@@ -354,7 +344,7 @@ bool gdox_usb_bot_present(
         return false;
     }
     *drive_present = false;
-    if (!supported_identifiers(vendor_id, product_id)) {
+    if (!supported_identity(identity)) {
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
@@ -363,8 +353,7 @@ bool gdox_usb_bot_present(
         return false;
     }
     (void)gdox_macos_scsi_observe(
-        vendor_id,
-        product_id,
+        (int)identity,
         &observed_drive,
         &observed_media
     );
@@ -373,8 +362,7 @@ bool gdox_usb_bot_present(
 }
 
 bool gdox_usb_bot_observe(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     bool *drive_present,
     bool *media_status_known,
     bool *media_present,
@@ -397,7 +385,7 @@ bool gdox_usb_bot_observe(
     *drive_present = false;
     *media_status_known = false;
     *media_present = false;
-    if (!supported_identifiers(vendor_id, product_id)) {
+    if (!supported_identity(identity)) {
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
@@ -406,8 +394,7 @@ bool gdox_usb_bot_observe(
         return false;
     }
     (void)gdox_macos_scsi_observe(
-        vendor_id,
-        product_id,
+        (int)identity,
         &observed_drive,
         &observed_media
     );
@@ -418,14 +405,12 @@ bool gdox_usb_bot_observe(
 }
 
 bool gdox_usb_bot_restore_kernel_driver(
-    uint16_t vendor_id,
-    uint16_t product_id,
+    gdox_usb_bot_identity identity,
     bool *reattached,
     gdox_error *error
 )
 {
-    (void)vendor_id;
-    (void)product_id;
+    (void)identity;
     gdox_error_clear(error);
     if (reattached == NULL) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "reattachment output is required");

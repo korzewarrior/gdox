@@ -7,11 +7,15 @@ drive adapters use narrow, validated volatile memory transactions; they do not
 flash drive firmware. Normal teardown restores the prior values, and a USB
 power cycle clears volatile state if the process is terminated unexpectedly.
 
-The GP08 adapter verifies the exact USB and SCSI identity and every expected
-stock value before activation. It runs the complete restore sequence on
-teardown and every error path, and reports when a transport failure makes a
-power cycle necessary. Capacity is activated last and restored first so a
-partial transition cannot be treated as a ready source.
+The GP65 and GP08 adapters verify the exact USB and SCSI identity and every
+expected stock value before activation. They run their complete restore
+sequences on teardown and every error path, and report when a transport
+failure makes a power cycle necessary.
+
+The GP65 profile never applies the GP63 address table. It requires the PB00
+auxiliary field to be canonical or to contain only the per-byte GP63
+stock/live values left by older Drive Reporter builds. Known combinations are
+restored to `64 00 64`; any other value is rejected without writing.
 
 Preserve is the only path that writes game data. It writes to a user-selected
 file, never to the disc or optical drive, and publishes the final name only
@@ -43,9 +47,10 @@ delivery fault.
 
 Do not assume two retail enclosures contain the same optical mechanism.
 Require the exact model, revision, and USB identity shown on Details before a
-drive adapter runs. The GP08 profile additionally requires the exact Prolific
-PL-2507 USB bridge identity. GDOX fails closed for unknown hardware or an
-unexpected stock memory state.
+drive adapter runs. GP63 and GP65 share USB `0e8d:1887`, so the complete SCSI
+identity selects the profile. The GP08 profile additionally requires the exact
+Prolific PL-2507 USB bridge identity. GDOX fails closed for unknown hardware
+or an unexpected stock memory state.
 
 ## Private data
 

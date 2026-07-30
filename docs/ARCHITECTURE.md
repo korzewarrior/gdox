@@ -110,7 +110,7 @@ Explicit media polling resumes only after xemu exits.
 - libusb Bulk-Only Transport on Linux;
 - native SCSI pass-through over the Windows optical class driver;
 - IOKit/Disk Arbitration/SCSI transport on macOS;
-- separate exact-identity GP63/MT1887 and GP08/PL-2507 optical adapters.
+- separate exact-identity GP63/GP65 MT1887 and GP08/PL-2507 optical adapters.
 
 The MT1887 mechanism accepts a transport opener and a requested speed from its
 platform adapter. Desktop discovery selects the mechanism's maximum rate;
@@ -120,7 +120,10 @@ Neither policy is compiled into the portable disc or application layers.
 Each drive adapter accepts only its validated USB identity, SCSI identity, and
 revision. Its volatile state transaction validates expected values, applies
 only the allowlisted changes, and restores the stock state during normal
-teardown and failed initialization. The GP08 adapter keeps its multi-field
+teardown and failed initialization. The MT1887 adapter selects the GP63 or
+GP65 address table only after the complete identity matches; PB00 recovery
+also verifies and canonicalizes its separate auxiliary field. The GP08
+adapter keeps its multi-field
 activation and restoration order inside its own source module, uses SCSI DATA
 OUT only for those validated volatile-memory writes, and caps READ(10) at the
 PL-2507 bridge's validated 32-sector transfer size. Adding another drive means

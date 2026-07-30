@@ -1,5 +1,19 @@
 # changes
 
+## 0.1.2
+
+- exact `HL-DT-ST DVDRAM GP65NB60 PB00` support, including guarded recovery of the
+  known auxiliary-state corruption left by older Drive Reporter builds
+- verified PB00 activation, XDVDFS reads, live play, and restoration on
+  windows with the stock optical driver
+- PB00 reads on windows are limited to the validated 32-sector transfer size
+- restrained desktop high-dpi scaling for 4k displays
+
+## 0.1.1
+
+- exact `HL-DT-ST GP08NU10 JE01` profile behind the Prolific PL-2507 USB
+  bridge, with guarded volatile activation and restoration
+
 ## 0.1.0
 
 first public development release.

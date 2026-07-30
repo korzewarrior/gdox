@@ -19,8 +19,8 @@
     <nav aria-label="breadcrumb">
       <h1><a href="/">gdox</a> / <span aria-current="page">drives</span></h1>
     </nav>
-    <p>direct-disc access currently supports two exact stock-drive profiles. their temporary access modes do not flash firmware or physically modify the drive.</p>
-    <p>updated <time datetime="2026-07-27">2026-07-27</time></p>
+    <p>direct-disc access currently supports three exact stock-drive profiles. their temporary access modes do not flash firmware or physically modify the drive.</p>
+    <p>updated <time datetime="2026-07-29">2026-07-29</time></p>
 
     <section>
       <h2>compatible hardware</h2>
@@ -31,6 +31,13 @@
         <p>use the stock drive and firmware. no drive flashing or hardware modification is required.</p>
         <p>platforms: linux / steam deck / macos / windows</p>
         <p><a href="https://www.amazon.com/Ultra-Portable-Writer-M-DISCTM-Support/dp/B0BH6YR17K" rel="external">order from amazon</a> / <a href="https://www.ebay.com/sch/i.html?_nkw=LG+EX70+Ultra+Slim+Portable+DVD+Writer" rel="external">search ebay</a> — check for the GP63EX70 model and RF02 firmware; not affiliate links.</p>
+      </article>
+      <article class="drive" id="hl-dt-st-gp65nb60-pb00">
+        <h3>HL-DT-ST DVDRAM GP65NB60</h3>
+        <p>compatible on windows 11 with the stock optical driver</p>
+        <p>stock firmware PB00 / USB 0e8d:1887</p>
+        <p>activation, xbox-sector reads, live play, and complete restoration were validated with this exact identity. PB01 and other firmware revisions are not supported.</p>
+        <p>no firmware is flashed. gdox verifies the PB00-specific volatile state before writing, restores it after reading, and rejects unknown values.</p>
       </article>
       <article class="drive" id="hl-dt-st-gp08nu10-je01">
         <h3>HL-DT-ST DVDRAM GP08NU10</h3>

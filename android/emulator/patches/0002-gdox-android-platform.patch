@@ -50,7 +50,7 @@ index 0000000000000000000000000000000000000000..95d88ef60de05b5f069b031abb6dad2f
 +    targetSdk = 36
 +
 +    versionCode = 1
-+    versionName = "0.1.1"
++    versionName = "0.1.2"
 +
 +    ndk {
 +      abiFilters += listOf("arm64-v8a")

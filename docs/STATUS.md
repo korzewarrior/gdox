@@ -1,6 +1,6 @@
 # status
 
-gdox 0.1.1 is an active development release. a build can prove that the code
+gdox 0.1.2 is an active development release. a build can prove that the code
 runs; only a disc and drive can prove the physical path.
 
 | platform | current state |
@@ -18,19 +18,22 @@ the application folder.
 
 ## drives
 
-the physical adapters support two exact profiles:
+the physical adapters support three exact profiles:
 
 | identity | current validation |
 |---|---|
 | `HL-DT-ST DVDRAM GP63EX70 RF02`, USB `0e8d:1887` | live play validated |
+| `HL-DT-ST DVDRAM GP65NB60 PB00`, USB `0e8d:1887` | live play and restoration validated on windows 11 with the stock driver |
 | `HL-DT-ST DVDRAM GP08NU10 JE01`, Prolific PL-2507 USB `152e:2507` | Eddi (`@eddifpv`) reported the find, volatile activation, and expected xbox-sector read; project-side live-play testing remains |
 
 similar retail names, firmware revisions, bridges, and internal mechanisms are
-not implied compatible. other drives need separate adapters.
+not implied compatible. `GP65NB60 PB01` is not supported. other drives need
+separate adapters.
 
 ## still needed
 
 - more gp63 units and more clean and scratched discs
+- physical gp65 testing on linux and macos
 - project-side physical and live-play validation of the gp08 profile
 - long play sessions across protected ranges
 - repeated suspend, reset, eject, disconnect, and forced-exit testing
