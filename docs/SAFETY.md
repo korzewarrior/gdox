@@ -7,8 +7,8 @@ drive adapters use narrow, validated volatile memory transactions; they do not
 flash drive firmware. Normal teardown restores the prior values, and a USB
 power cycle clears volatile state if the process is terminated unexpectedly.
 
-The GP65 and GP08 adapters verify the exact USB and SCSI identity and every
-expected stock value before activation. They run their complete restore
+The GP65, GP08, and ASUS adapters verify the exact USB and SCSI identity and
+every expected stock value before activation. They run their complete restore
 sequences on teardown and every error path, and report when a transport
 failure makes a power cycle necessary.
 
@@ -16,6 +16,12 @@ The GP65 profile never applies the GP63 address table. It requires the PB00
 auxiliary field to be canonical or to contain only the per-byte GP63
 stock/live values left by older Drive Reporter builds. Known combinations are
 restored to `64 00 64`; any other value is rejected without writing.
+
+The ASUS profile writes only its eight validated volatile fields. It verifies
+the two neighboring fixed fields before activation, writes the capacity field
+last, restores the capacity field first, and reads the complete stock state
+back after restoration. Its tray is manual-close; GDOX does not send load or
+eject commands to this drive.
 
 Preserve is the only path that writes game data. It writes to a user-selected
 file, never to the disc or optical drive, and publishes the final name only
@@ -49,8 +55,9 @@ Do not assume two retail enclosures contain the same optical mechanism.
 Require the exact model, revision, and USB identity shown on Details before a
 drive adapter runs. GP63 and GP65 share USB `0e8d:1887`, so the complete SCSI
 identity selects the profile. The GP08 profile additionally requires the exact
-Prolific PL-2507 USB bridge identity. GDOX fails closed for unknown hardware
-or an unexpected stock memory state.
+Prolific PL-2507 USB bridge identity. The ASUS profile requires USB
+`13fd:1640`, SCSI vendor `ASUS`, product `SDRW-08D1S-U`, and revision `A202`.
+GDOX fails closed for unknown hardware or an unexpected stock memory state.
 
 ## Private data
 

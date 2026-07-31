@@ -1,5 +1,15 @@
 # changes
 
+## 0.1.3
+
+- exact `ASUS SDRW-08D1S-U A202` support for original Xbox discs through the
+  stock Windows optical driver
+- verified volatile activation, high-LBA XDVDFS reads, live play, and complete
+  restoration on the tested Initio `13fd:1640` USB bridge
+- ASUS reads are limited to the validated 32-sector transfer size
+- ASUS tray handling is manual; GDOX never sends load or eject commands to this
+  mechanism
+
 ## 0.1.2
 
 - exact `HL-DT-ST DVDRAM GP65NB60 PB00` support, including guarded recovery of the

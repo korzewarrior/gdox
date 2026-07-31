@@ -3,6 +3,7 @@ find_package(PkgConfig QUIET)
 add_library(
     gdox_optical
     STATIC
+        src/platform/asus_nr09_source.c
         src/platform/gp08_source.c
         src/platform/mt1887_source.c
         src/platform/mt1887_profile.c

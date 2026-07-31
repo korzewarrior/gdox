@@ -160,6 +160,7 @@ static bool current_auto_start(gdox_runtime *runtime)
 
 void gdox_runtime_set_controls(
     gdox_runtime_snapshot *snapshot,
+    gdox_optical_drive optical_drive,
     bool has_session,
     bool emulator_running
 )
@@ -170,6 +171,7 @@ void gdox_runtime_set_controls(
     snapshot->can_close = emulator_running;
     snapshot->can_eject =
         snapshot->media_source == GDOX_MEDIA_PHYSICAL_DISC
+        && gdox_optical_drive_can_eject(optical_drive)
         && (has_session || snapshot->phase == GDOX_RUNTIME_EMPTY);
     snapshot->can_preserve =
         snapshot->media_source == GDOX_MEDIA_PHYSICAL_DISC
@@ -290,7 +292,12 @@ static void attention(
         operation,
         error->message
     );
-    gdox_runtime_set_controls(snapshot, has_session, emulator_running);
+    gdox_runtime_set_controls(
+        snapshot,
+        runtime->optical_drive,
+        has_session,
+        emulator_running
+    );
     snapshot->preservation_complete = false;
     gdox_runtime_publish(runtime, snapshot);
 }
@@ -404,7 +411,12 @@ static bool start_emulator(
             ? "Live physical-disc session is active"
             : "Read-only disc-image session is active"
     );
-    gdox_runtime_set_controls(snapshot, true, true);
+    gdox_runtime_set_controls(
+        snapshot,
+        runtime->optical_drive,
+        true,
+        true
+    );
     gdox_runtime_publish(runtime, snapshot);
     return true;
 }
@@ -437,7 +449,12 @@ static bool stop_emulator(
             ? "Disc ready"
             : "Disc image ready"
     );
-    gdox_runtime_set_controls(snapshot, true, false);
+    gdox_runtime_set_controls(
+        snapshot,
+        runtime->optical_drive,
+        true,
+        false
+    );
     gdox_runtime_publish(runtime, snapshot);
     return true;
 }
@@ -486,7 +503,12 @@ static bool close_export(
             "Select the image again to reopen it"
         );
     }
-    gdox_runtime_set_controls(snapshot, false, false);
+    gdox_runtime_set_controls(
+        snapshot,
+        runtime->optical_drive,
+        false,
+        false
+    );
     gdox_runtime_publish(runtime, snapshot);
     return true;
 }
@@ -524,7 +546,12 @@ static void publish_missing_drive(
         sizeof(snapshot->notice),
         notice
     );
-    gdox_runtime_set_controls(snapshot, false, false);
+    gdox_runtime_set_controls(
+        snapshot,
+        runtime->optical_drive,
+        false,
+        false
+    );
     snapshot->can_eject = false;
     gdox_runtime_publish(runtime, snapshot);
 }
@@ -555,7 +582,12 @@ static void publish_empty_drive(
         sizeof(snapshot->notice),
         "Drive is ready"
     );
-    gdox_runtime_set_controls(snapshot, false, false);
+    gdox_runtime_set_controls(
+        snapshot,
+        runtime->optical_drive,
+        false,
+        false
+    );
     gdox_runtime_publish(runtime, snapshot);
 }
 
@@ -588,7 +620,12 @@ static bool prepare_live_session(
         sizeof(snapshot->status),
         "Preparing live disc"
     );
-    gdox_runtime_set_controls(snapshot, false, false);
+    gdox_runtime_set_controls(
+        snapshot,
+        runtime->optical_drive,
+        false,
+        false
+    );
     gdox_runtime_publish(runtime, snapshot);
     if (!gdox_runtime_media_open_physical(
             runtime->optical_drive,
@@ -625,7 +662,12 @@ static bool prepare_live_session(
         sizeof(snapshot->notice),
         "Live physical-disc session is active"
     );
-    gdox_runtime_set_controls(snapshot, true, false);
+    gdox_runtime_set_controls(
+        snapshot,
+        runtime->optical_drive,
+        true,
+        false
+    );
     gdox_runtime_publish(runtime, snapshot);
     if ((force_launch || current_auto_start(runtime))
         && !start_emulator(runtime, snapshot, error)) {
@@ -680,7 +722,12 @@ static bool prepare_image_session(
         sizeof(snapshot->status),
         "Preparing disc image"
     );
-    gdox_runtime_set_controls(snapshot, false, false);
+    gdox_runtime_set_controls(
+        snapshot,
+        runtime->optical_drive,
+        false,
+        false
+    );
     gdox_runtime_publish(runtime, snapshot);
     if (!gdox_runtime_media_open_image(
             path,
@@ -725,7 +772,12 @@ static bool prepare_image_session(
         sizeof(snapshot->notice),
         "Read-only disc-image session is active"
     );
-    gdox_runtime_set_controls(snapshot, true, false);
+    gdox_runtime_set_controls(
+        snapshot,
+        runtime->optical_drive,
+        true,
+        false
+    );
     gdox_runtime_publish(runtime, snapshot);
     if (launch && !start_emulator(runtime, snapshot, error)) {
         attention(
@@ -773,7 +825,12 @@ static void select_physical_source(
         sizeof(snapshot->notice),
         "Physical discs are the default source"
     );
-    gdox_runtime_set_controls(snapshot, false, false);
+    gdox_runtime_set_controls(
+        snapshot,
+        runtime->optical_drive,
+        false,
+        false
+    );
     gdox_optical_monitor_retry(monitor);
     gdox_runtime_publish(runtime, snapshot);
 }
@@ -1194,7 +1251,12 @@ static void runtime_thread(void *raw_runtime)
                             exit_code
                         );
                     }
-                    gdox_runtime_set_controls(&snapshot, true, false);
+                    gdox_runtime_set_controls(
+                        &snapshot,
+                        runtime->optical_drive,
+                        true,
+                        false
+                    );
                     gdox_runtime_publish(runtime, &snapshot);
                 }
             }

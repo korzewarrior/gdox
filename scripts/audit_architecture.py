@@ -101,12 +101,37 @@ def main() -> int:
     )
     if "gdox_usb_bot_identity_matches(requested, &observed)" not in macos_transport:
         failures.append("macOS shared-USB-ID selection bypasses the exact matcher")
+    if "GDOX_USB_BOT_ASUS_NR09" not in macos_transport:
+        failures.append("macOS transport omits the ASUS A202 identity")
 
     windows_transport = (ROOT / "src/platform/usb_bot_windows.c").read_text(
         encoding="utf-8"
     )
     if "gdox_usb_bot_identity_matches(requested, &observed)" not in windows_transport:
         failures.append("Windows shared-USB-ID selection bypasses the exact matcher")
+
+    optical_graph = (ROOT / "cmake/GdoxOptical.cmake").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "src/platform/asus_nr09_source.c",
+        "src/platform/gp08_source.c",
+        "src/platform/mt1887_source.c",
+    ):
+        if required not in optical_graph:
+            failures.append(f"desktop optical graph omits {required}")
+
+    optical_registry = (ROOT / "src/platform/optical.c").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "gdox_optical_observe_asus_nr09(",
+        "gdox_optical_asus_nr09_connected(",
+        "gdox_optical_open_asus_nr09(",
+        "GDOX_OPTICAL_DRIVE_ASUS_NR09",
+    ):
+        if required not in optical_registry:
+            failures.append("desktop optical registry omits the ASUS A202 adapter")
 
     android_graph = (ROOT / "android/native/CMakeLists.txt").read_text(
         encoding="utf-8"

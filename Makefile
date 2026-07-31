@@ -26,6 +26,7 @@ check: site-check
 	sh -n packaging/linux/gdox packaging/linux/install.sh
 	python -m json.tool packaging/runtime-manifest.json >/dev/null
 	python scripts/audit_architecture.py
+	python scripts/audit_original_xbox_release.py
 	python scripts/audit_release.py
 	git diff --check
 

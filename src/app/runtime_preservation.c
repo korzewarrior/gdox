@@ -241,7 +241,8 @@ cleanup:
     snapshot->can_start = true;
     snapshot->can_restart = false;
     snapshot->can_close = false;
-    snapshot->can_eject = true;
+    snapshot->can_eject =
+        gdox_optical_drive_can_eject(runtime->optical_drive);
     snapshot->can_preserve = true;
     snapshot->can_cancel_preservation = false;
     gdox_runtime_copy_text(

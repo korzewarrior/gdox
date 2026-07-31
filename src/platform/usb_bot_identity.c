@@ -31,6 +31,15 @@ static const gdox_usb_bot_identity_spec gp08 = {
     GDOX_GP08_SCSI_REVISION,
 };
 
+static const gdox_usb_bot_identity_spec asus_nr09 = {
+    GDOX_USB_BOT_ASUS_NR09,
+    GDOX_ASUS_USB_VENDOR_ID,
+    GDOX_ASUS_USB_PRODUCT_ID,
+    GDOX_ASUS_SCSI_VENDOR,
+    GDOX_ASUS_SCSI_MODEL,
+    GDOX_ASUS_SCSI_REVISION,
+};
+
 const gdox_usb_bot_identity_spec *gdox_usb_bot_identity_get(
     gdox_usb_bot_identity identity
 )
@@ -43,6 +52,9 @@ const gdox_usb_bot_identity_spec *gdox_usb_bot_identity_get(
     }
     if (identity == GDOX_USB_BOT_GP08) {
         return &gp08;
+    }
+    if (identity == GDOX_USB_BOT_ASUS_NR09) {
+        return &asus_nr09;
     }
     return NULL;
 }

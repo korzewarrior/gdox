@@ -7,11 +7,13 @@ profile:
 
 - `HL-DT-ST DVDRAM GP63EX70 RF02` and USB `0e8d:1887`;
 - `HL-DT-ST DVDRAM GP65NB60 PB00` and USB `0e8d:1887`;
-- `HL-DT-ST DVDRAM GP08NU10 JE01` and Prolific PL-2507 USB `152e:2507`.
+- `HL-DT-ST DVDRAM GP08NU10 JE01` and Prolific PL-2507 USB `152e:2507`;
+- `ASUS SDRW-08D1S-U A202` and Initio USB `13fd:1640`.
 
 A similar retail name, firmware revision, or internal mechanism is not enough.
-`GP65NB60 PB01` is not supported. The GP65 and GP08 adapters also refuse
-activation if any expected stock memory value differs.
+`GP65NB60 PB01` is not supported. The GP65, GP08, and ASUS adapters also
+refuse activation if any expected stock memory value differs. Close the ASUS
+tray by hand; GDOX intentionally does not send a tray-load command to it.
 
 On Linux, rerun `sudo ./setup-device-access.sh`, disconnect the drive, and
 reconnect it in the active desktop session. Do not run GDOX as root.

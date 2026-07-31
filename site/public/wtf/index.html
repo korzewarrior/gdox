@@ -22,7 +22,7 @@
     <section>
       <h2>wtf</h2>
       <p>gdox connects a supported dvd drive to xemu. when xemu requests part of the game, gdox reads that part directly from the disc.</p>
-      <p>the disc stays in the drive for the entire session. nothing is copied or installed first. the validated mt1887 paths use an exact-profile reversible change in the drive's volatile state; they do not flash firmware or physically modify the reader.</p>
+      <p>the disc stays in the drive for the entire session. nothing is copied or installed first. the validated drive paths use an exact-profile reversible change in the drive's volatile state; they do not flash firmware or physically modify the reader.</p>
     </section>
 
     <section>
@@ -53,7 +53,7 @@
 
         <h3>disc layout</h3>
         <p>an original xbox disc contains more than the dvd-compatible area exposed by a normal drive. a supported reader backend makes the complete logical address space available, either through compatible reader firmware or a reversible change in volatile drive state. the operation is read-only: gdox does not write to the disc or flash the drive.</p>
-        <p>code: <a href="https://github.com/korzewarrior/gdox/blob/main/src/platform/mt1887_source.c" rel="external">mt1887_source.c</a>. the addresses and values are in <code>apply_xgd</code>, <code>read_xdata</code>, and <code>write_xdata</code>.</p>
+        <p>code: <a href="https://github.com/korzewarrior/gdox/blob/main/src/platform/mt1887_source.c" rel="external">mt1887_source.c</a>, <a href="https://github.com/korzewarrior/gdox/blob/main/src/platform/gp08_source.c" rel="external">gp08_source.c</a>, and <a href="https://github.com/korzewarrior/gdox/blob/main/src/platform/asus_nr09_source.c" rel="external">asus_nr09_source.c</a>.</p>
 
         <h3>partition mapping</h3>
         <p>gdox finds and reads the game partition's XDVDFS filesystem, then builds a conventional compact disc layout in memory. directory sectors are generated for that virtual layout. file sectors are mapped back to their physical locations and read from the original disc when xemu requests them. files are not extracted. compatibility changes, when required, exist only in the virtual view.</p>
@@ -67,7 +67,7 @@
         <p>code: <a href="https://github.com/korzewarrior/gdox/blob/main/src/platform/nbd_tcp.c" rel="external">nbd_tcp.c</a>.</p>
 
         <h3>shutdown</h3>
-        <p>when xemu exits, the disc is ejected, or the drive disconnects, the virtual disc closes, volatile memory is discarded, and the reader backend restores any temporary drive state it still controls.</p>
+        <p>when xemu exits, the session ends, or the drive disconnects, the virtual disc closes and the reader backend restores any temporary drive state it still controls. tray eject is used only on mechanisms that support it safely.</p>
 
         <h3>preservation</h3>
         <p>a playable xiso rebuilds the game filesystem into a smaller image for emulators. full-disc mode writes the much larger accessible disc layout and keeps hashes, a manifest, logs, and drive evidence beside it. gdox reports security evidence and unreadable ranges separately: file size alone does not make an image redump-complete, and a stock reader cannot manufacture signed challenge data that the disc or drive did not return.</p>
@@ -149,6 +149,33 @@
           </table>
         </div>
         <p>both targets report vendor <code>HL-DT-ST</code> and use a MediaTek MT1887 controller. matching the enclosure, product family, controller family, or shared USB ID alone is insufficient. <code>INQUIRY</code> must return all three exact identity strings before gdox selects an XDATA profile.</p>
+        <h3>other verified targets</h3>
+        <div class="technical-table-wrap">
+          <table class="technical-table">
+            <thead>
+              <tr>
+                <th scope="col">product</th>
+                <th scope="col">revision</th>
+                <th scope="col">USB ID</th>
+                <th scope="col">physical validation</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>DVDRAM GP08NU10</code></td>
+                <td><code>JE01</code></td>
+                <td><code>152e:2507</code></td>
+                <td>activation + xbox-sector read / community</td>
+              </tr>
+              <tr>
+                <td><code>ASUS SDRW-08D1S-U</code></td>
+                <td><code>A202</code></td>
+                <td><code>13fd:1640</code></td>
+                <td>live play + restore / windows 11</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
         <p>the drive receives SCSI/MMC commands through libusb USB Mass Storage Bulk-Only Transport on Linux, a <code>UsbManager</code>-authorized file descriptor wrapped by libusb on android, SCSI pass-through through the optical class driver on windows, or IOKit SCSI task transport on macos. each adapter terminates at the same bounded random-access sector-source interface.</p>
 
         <h3>stock disc view</h3>
@@ -212,7 +239,12 @@
         <p>the capacity values satisfy <code>0x031B4F - 0x30000 = 6991</code> in stock state and <code>0x3D4D4F - 0x30000 = 3820879</code> in XGD state. after the write, gdox requires <code>READ CAPACITY(10)</code> to report last LBA <code>3820879</code>, 3,820,880 sectors, 2,048 bytes per sector, and 7,825,162,240 total bytes.</p>
         <p>these writes target controller working memory, not the disc or firmware flash. normal shutdown restores them; removing drive power clears them independently.</p>
 
-        <h3>fail-closed activation</h3>
+        <h3>ASUS A202 volatile state</h3>
+        <p>the ASUS profile requires USB <code>13fd:1640</code> with SCSI identity <code>ASUS SDRW-08D1S-U A202</code>. vendor command <code>0xF1</code> reads and writes four-byte volatile fields. initialization verifies eight mutable fields, two neighboring fixed fields, the stock PFI, and last LBA <code>6991</code> before changing anything.</p>
+        <p>activation writes the seven geometry fields first and the capacity field last, then reads the complete state back. restoration writes capacity first, restores the other fields, and verifies the complete stock state. the active last LBA is <code>3820879</code>. the adapter uses at most 32 sectors per <code>READ(10)</code> and never sends load or eject commands to the manual-close tray.</p>
+        <p>the complete field map and transaction are documented in <a href="https://github.com/korzewarrior/gdox/blob/main/docs/ASUS_NR09.md" rel="external">ASUS_NR09.md</a>.</p>
+
+        <h3>fail-closed MT1887 activation</h3>
         <ol>
           <li>open the platform transport and issue <code>INQUIRY</code></li>
           <li>require vendor <code>HL-DT-ST</code> and one complete supported product/revision/USB identity</li>
@@ -235,7 +267,7 @@
         <p>each failing source read has a fixed 20-second recovery budget in addition to its configured retry count. recovery can reset the transport, request sense, issue <code>START STOP UNIT</code>, wait for readiness, verify or reapply the XGD state, reapply the requested speed, and retry. cancellation and removal terminate recovery. if a multi-sector request still fails, gdox retries individual sectors to report the first unreadable physical LBA.</p>
 
         <h3>physical reads</h3>
-        <p>data reads use <code>READ(12)</code>, opcode <code>0xA8</code>. GP63 source requests use at most 128 blocks per command. GP65 PB00 requests on windows use at most the physically validated 32 blocks, or 64 KiB. each command has a 30-second timeout. source-level bounds checks reject zero-length, overflowing, undersized-buffer, and out-of-range requests before transport I/O.</p>
+        <p>MT1887 data reads use <code>READ(12)</code>, opcode <code>0xA8</code>. GP63 source requests use at most 128 blocks per command. GP65 PB00 requests on windows use at most the physically validated 32 blocks, or 64 KiB. GP08 and ASUS requests use <code>READ(10)</code> with the same 32-block maximum. each command has a 30-second timeout. source-level bounds checks reject zero-length, overflowing, undersized-buffer, and out-of-range requests before transport I/O.</p>
         <p>the backend separately counts successful physical commands, sectors, bytes, and the final LBA of the last successful command. virtual-disc read counts do not replace those physical counters.</p>
 
         <h3>XDVDFS validation</h3>

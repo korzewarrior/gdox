@@ -11,7 +11,7 @@ make check
 Build Linux and Steam Deck in the pinned compatibility image:
 
 ```sh
-python scripts/build_linux_packages.py --version 0.1.2
+python scripts/build_linux_packages.py --version 0.1.3
 ```
 
 Build Apple targets on their native host:
@@ -37,7 +37,7 @@ generated build trees. `storeFile` must be an absolute path.
 
 ```sh
 python scripts/package_release.py \
-  --version 0.1.2 \
+  --version 0.1.3 \
   --target x86_64-unknown-linux-gnu \
   --artifact ../gdox-output/build/x86_64-unknown-linux-gnu/gdox
 ```
@@ -51,9 +51,9 @@ archive, and writes SHA-256.
 Create the source archives with:
 
 ```sh
-python scripts/package_source.py --version 0.1.2
+python scripts/package_source.py --version 0.1.3
 python scripts/fetch_runtime.py source --output ../gdox-output/release
-python scripts/package_android_source.py --version 0.1.2
+python scripts/package_android_source.py --version 0.1.3
 ```
 
 The separate xemu archive satisfies corresponding-source distribution for the

@@ -125,4 +125,24 @@ if(GDOX_BUILD_OPTICAL)
     target_link_libraries(gdox_gp08_tests PRIVATE gdox::optical)
     gdox_enable_c_warnings(gdox_gp08_tests)
     add_test(NAME optical.gp08 COMMAND gdox_gp08_tests)
+
+    add_executable(
+        gdox_asus_nr09_tests
+        tests/test_asus_nr09_source.c
+    )
+    target_include_directories(
+        gdox_asus_nr09_tests
+        PRIVATE
+            tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(
+        gdox_asus_nr09_tests
+        PRIVATE gdox::optical
+    )
+    gdox_enable_c_warnings(gdox_asus_nr09_tests)
+    add_test(
+        NAME optical.asus_nr09
+        COMMAND gdox_asus_nr09_tests
+    )
 endif()

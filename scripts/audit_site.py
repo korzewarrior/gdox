@@ -82,6 +82,13 @@ def main():
 
         if "{{" in source or "}}" in source:
             errors.append(f"{relative}: unresolved template token")
+        for legacy_download_label in (
+            "<title>release — gdox</title>",
+            'href="/download/">release</a>',
+            'aria-current="page">release</span>',
+        ):
+            if legacy_download_label in source:
+                errors.append(f"{relative}: download page is labeled release")
         if not document.doctype:
             errors.append(f"{relative}: missing HTML doctype")
         if document.lang != ["en"]:

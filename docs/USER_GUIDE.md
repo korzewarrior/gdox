@@ -48,7 +48,8 @@ account. The source paths and readiness are visible on Sources and Details.
 Connect the supported drive and insert an original Xbox disc. When the disc
 name appears, choose **Start xemu** or click the disc. **Restart xemu** and
 **Close xemu** control the current session. **Eject** physically opens the
-tray when the transport is accessible.
+tray when the drive supports it. Operate the ASUS SDRW-08D1S-U tray by hand;
+GDOX disables Eject for that profile.
 
 Enable **Auto start on insert** on Settings if desired.
 

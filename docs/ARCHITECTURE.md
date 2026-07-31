@@ -110,7 +110,8 @@ Explicit media polling resumes only after xemu exits.
 - libusb Bulk-Only Transport on Linux;
 - native SCSI pass-through over the Windows optical class driver;
 - IOKit/Disk Arbitration/SCSI transport on macOS;
-- separate exact-identity GP63/GP65 MT1887 and GP08/PL-2507 optical adapters.
+- separate exact-identity GP63/GP65 MT1887, GP08/PL-2507, and ASUS A202/NR09
+  optical adapters.
 
 The MT1887 mechanism accepts a transport opener and a requested speed from its
 platform adapter. Desktop discovery selects the mechanism's maximum rate;
@@ -126,9 +127,12 @@ also verifies and canonicalizes its separate auxiliary field. The GP08
 adapter keeps its multi-field
 activation and restoration order inside its own source module, uses SCSI DATA
 OUT only for those validated volatile-memory writes, and caps READ(10) at the
-PL-2507 bridge's validated 32-sector transfer size. Adding another drive means
-adding another source adapter with its own identity, transport, state
-transaction, error recovery, and physical tests.
+PL-2507 bridge's validated 32-sector transfer size. The ASUS adapter likewise
+keeps its eight-field transaction and restoration order inside its source
+module, validates two fixed fields before writing, caps READ(10) at 32 sectors,
+and never issues a tray command to the manual-close mechanism. Adding another
+drive means adding another source adapter with its own identity, transport,
+state transaction, error recovery, and physical tests.
 
 Drive discovery is non-owning. Linux uses libusb enumeration plus the kernel
 optical media-status interface; Windows enumerates optical class devices and

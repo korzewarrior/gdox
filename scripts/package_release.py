@@ -31,6 +31,7 @@ RUNTIME_TARGETS = {
     "x86_64-pc-windows-gnu": "x86_64-pc-windows-msvc",
 }
 DOCUMENTS = (
+    "ASUS_NR09.md",
     "CATALOG.md",
     "PRESERVATION.md",
     "SAFETY.md",

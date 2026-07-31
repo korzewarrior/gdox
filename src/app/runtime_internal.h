@@ -59,6 +59,7 @@ void gdox_runtime_preferences_from_snapshot(
 );
 void gdox_runtime_set_controls(
     gdox_runtime_snapshot *snapshot,
+    gdox_optical_drive optical_drive,
     bool has_session,
     bool emulator_running
 );

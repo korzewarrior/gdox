@@ -26,6 +26,11 @@ extern "C" {
 #define GDOX_GP08_SCSI_VENDOR "HL-DT-ST"
 #define GDOX_GP08_SCSI_MODEL "DVDRAM GP08NU10"
 #define GDOX_GP08_SCSI_REVISION "JE01"
+#define GDOX_ASUS_USB_VENDOR_ID UINT16_C(0x13fd)
+#define GDOX_ASUS_USB_PRODUCT_ID UINT16_C(0x1640)
+#define GDOX_ASUS_SCSI_VENDOR "ASUS"
+#define GDOX_ASUS_SCSI_MODEL "SDRW-08D1S-U"
+#define GDOX_ASUS_SCSI_REVISION "A202"
 #define GDOX_XGD1_TOTAL_SECTORS UINT64_C(3820880)
 
 typedef enum gdox_optical_drive {
@@ -33,6 +38,7 @@ typedef enum gdox_optical_drive {
     GDOX_OPTICAL_DRIVE_GP63,
     GDOX_OPTICAL_DRIVE_GP08,
     GDOX_OPTICAL_DRIVE_GP65,
+    GDOX_OPTICAL_DRIVE_ASUS_NR09,
 } gdox_optical_drive;
 
 typedef struct gdox_optical_presence {
@@ -43,6 +49,7 @@ typedef struct gdox_optical_presence {
 } gdox_optical_presence;
 
 const char *gdox_optical_drive_name(gdox_optical_drive drive);
+bool gdox_optical_drive_can_eject(gdox_optical_drive drive);
 bool gdox_optical_observe(
     gdox_optical_presence *presence,
     gdox_error *error
@@ -111,6 +118,21 @@ bool gdox_optical_open_gp08(
     gdox_error *error
 );
 bool gdox_optical_eject_gp08(gdox_error *error);
+
+bool gdox_optical_observe_asus_nr09(
+    gdox_optical_presence *presence,
+    gdox_error *error
+);
+bool gdox_optical_asus_nr09_connected(
+    bool *connected,
+    gdox_error *error
+);
+bool gdox_optical_open_asus_nr09(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_error *error
+);
 
 #ifdef __cplusplus
 }

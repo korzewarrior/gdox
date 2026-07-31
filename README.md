@@ -13,11 +13,16 @@ gdox can also make a playable xiso or a full-disc archival image.
 
 ## now
 
-0.1.2 is an active development release. direct-disc playback is validated with
-the stock `HL-DT-ST GP63EX70 RF02` and, on windows, the
-`HL-DT-ST GP65NB60 PB00`. an exact-identity `HL-DT-ST GP08NU10 JE01` profile
-is also included after a community-reported successful activation and
-xbox-sector read from Eddi (`@eddifpv`); live-play testing remains.
+0.1.3 is an active development release. current exact drive profiles:
+
+1. `HL-DT-ST GP63EX70 RF02` — direct-disc play validated on linux, steam
+   deck, macos, and windows by korze (`@korzewarrior`).
+2. `HL-DT-ST GP65NB60 PB00` — direct-disc play and restoration validated on
+   windows by The Legendary Gojira (`@skullcandy977`).
+3. `HL-DT-ST GP08NU10 JE01` — activation and xbox-sector reads reported by
+   Eddi (`@eddifpv`); project-side live-play testing remains.
+4. `ASUS SDRW-08D1S-U A202` — direct-disc play and restoration validated on
+   windows by The Legendary Gojira (`@skullcandy977`).
 
 linux, steam deck, macos, and windows builds are available. android is still
 in development.

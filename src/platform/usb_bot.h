@@ -10,6 +10,7 @@ typedef enum gdox_usb_bot_identity {
     GDOX_USB_BOT_GP63,
     GDOX_USB_BOT_GP65,
     GDOX_USB_BOT_GP08,
+    GDOX_USB_BOT_ASUS_NR09,
 } gdox_usb_bot_identity;
 
 bool gdox_usb_bot_open(

@@ -15,3 +15,7 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0e8d", ATTR{idPro
 # The exact GP08NU10 JE01 backend uses SCSI READ/WRITE BUFFER through its
 # Prolific PL-2507 bridge for validated, volatile RAM state only.
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="152e", ATTR{idProduct}=="2507", TAG+="uaccess", MODE="0660"
+
+# The exact ASUS SDRW-08D1S-U A202 backend uses the decoded NR09 volatile
+# memory interface through its Initio USB bridge. No firmware is flashed.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="13fd", ATTR{idProduct}=="1640", TAG+="uaccess", MODE="0660"

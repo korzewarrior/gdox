@@ -222,7 +222,8 @@ static bool supported_identity(gdox_usb_bot_identity identity)
 {
     return identity == GDOX_USB_BOT_GP63
         || identity == GDOX_USB_BOT_GP65
-        || identity == GDOX_USB_BOT_GP08;
+        || identity == GDOX_USB_BOT_GP08
+        || identity == GDOX_USB_BOT_ASUS_NR09;
 }
 
 static bool open_native_device(

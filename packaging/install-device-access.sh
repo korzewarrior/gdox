@@ -27,7 +27,7 @@ if [[ -n ${desktop_user} && ${desktop_user} != root ]]; then
         [[ -r "${device}/idVendor" && -r "${device}/idProduct" ]] || continue
         vendor=$(<"${device}/idVendor")
         product=$(<"${device}/idProduct")
-        [[ ${vendor}:${product} == 0e8d:1887 || ${vendor}:${product} == 152e:2507 ]] || continue
+        [[ ${vendor}:${product} == 0e8d:1887 || ${vendor}:${product} == 152e:2507 || ${vendor}:${product} == 13fd:1640 ]] || continue
         bus=$(<"${device}/busnum")
         number=$(<"${device}/devnum")
         node=$(printf '/dev/bus/usb/%03d/%03d' "${bus}" "${number}")

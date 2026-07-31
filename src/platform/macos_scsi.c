@@ -33,6 +33,7 @@ typedef enum {
     kGdoxMacDriveGp63,
     kGdoxMacDriveGp65,
     kGdoxMacDriveGp08,
+    kGdoxMacDriveAsusNr09,
 } GdoxMacDriveIdentity;
 
 enum {
@@ -132,6 +133,9 @@ static GdoxMacDriveIdentity requested_identity(
     if (requested == GDOX_USB_BOT_GP08) {
         return kGdoxMacDriveGp08;
     }
+    if (requested == GDOX_USB_BOT_ASUS_NR09) {
+        return kGdoxMacDriveAsusNr09;
+    }
     return kGdoxMacDriveUnknown;
 }
 
@@ -149,6 +153,10 @@ static int usb_identity(
     }
     if (identity == kGdoxMacDriveGp08) {
         *output = GDOX_USB_BOT_GP08;
+        return 1;
+    }
+    if (identity == kGdoxMacDriveAsusNr09) {
+        *output = GDOX_USB_BOT_ASUS_NR09;
         return 1;
     }
     return 0;
