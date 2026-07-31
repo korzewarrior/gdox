@@ -1,4 +1,6 @@
-# User guide
+# Original Xbox user guide
+
+This guide covers Original Xbox support in gdox 0.1.3.
 
 ## First run
 

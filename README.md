@@ -1,21 +1,25 @@
 # gdox
 
-put an original xbox game disc in a compatible stock dvd drive, open gdox,
-and [xemu](https://xemu.app/) plays it straight from the disc. no install or
-disc image first.
+gdox reads, plays, and preserves physical game discs through supported optical
+drives.
 
-gdox can also make a playable xiso or a full-disc archival image.
+the current release supports original xbox. it can send a physical disc
+directly to [xemu](https://xemu.app/), make a playable xiso, or create a
+full-disc preservation image.
 
 ## now
 
-0.1.3 is an active development release. linux, steam deck, macos, and windows
-builds are available. android is in development.
+0.1.3 is an active development release. current system: original xbox.
+
+linux, steam deck, macos, and windows builds are available. android is in
+development.
 
 ## source
 
-during play, gdox reads only what xemu asks for. it does not flash the drive
-or copy the game first. [how it works](https://gdox.korze.org/wtf/) explains
-the complete path.
+the original xbox path reads only what xemu asks for. it does not flash the
+drive or copy the game first.
+[how it works](https://gdox.korze.org/wtf/#original-xbox) explains the
+complete path.
 
 build and test:
 

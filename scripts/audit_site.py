@@ -11,6 +11,7 @@ from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SITE = ROOT.parent / "gdox-output" / "site" / "public"
+VIRTUAL_ROUTES = {"/download/auto", "/download/auto/"}
 
 
 class Document(HTMLParser):
@@ -114,6 +115,8 @@ def main():
 
     for html, document in documents.items():
         for url in document.urls:
+            if urlsplit(url).path in VIRTUAL_ROUTES:
+                continue
             target, fragment = page_target(site, url)
             if target is None or urlsplit(url).path.startswith("/downloads/"):
                 continue

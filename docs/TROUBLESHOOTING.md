@@ -1,4 +1,6 @@
-# Troubleshooting
+# Original Xbox troubleshooting
+
+This guide covers the Original Xbox path in gdox 0.1.3.
 
 ## Supported drive unavailable
 

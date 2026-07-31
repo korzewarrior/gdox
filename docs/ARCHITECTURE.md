@@ -1,5 +1,7 @@
 # Architecture
 
+This document describes the Original Xbox implementation in gdox 0.1.3.
+
 GDOX is a layered application with one active-media session owner.
 Dependencies point inward:
 

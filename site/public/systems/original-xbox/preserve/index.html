@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>original xbox / preserve — gdox</title>
+  <meta name="description" content="Original Xbox disc-preservation formats and claim boundaries in gdox.">
+  <link rel="canonical" href="https://gdox.korze.org/systems/original-xbox/preserve/">
+  {{INCLUDE:head-assets.html}}
+</head>
+<body>
+  {{INCLUDE:skip-link.html}}
+
+  <main id="main">
+    <nav aria-label="breadcrumb">
+      <h1><a href="/">gdox</a> / <a href="/systems/">systems</a> / <a href="/systems/original-xbox/">original xbox</a> / <span aria-current="page">preserve</span></h1>
+    </nav>
+    <p>gdox creates two Original Xbox disc-image formats.</p>
+
+    <section>
+      <h2>playable xiso</h2>
+      <p>a playable xiso rebuilds the XDVDFS game filesystem into a smaller conventional layout for xemu. it does not retain the physical mastering layout.</p>
+    </section>
+
+    <section>
+      <h2>full disc</h2>
+      <p>a full-disc image retains the accessible physical address space. gdox stores hashes, a manifest, unreadable ranges, and available drive evidence beside it.</p>
+      <p>full length does not by itself make the image security-sector-complete or redump-complete. gdox records those claims separately.</p>
+    </section>
+
+    <section>
+      <h2>verification</h2>
+      <p>when verification is enabled, gdox hashes the output while writing, closes it, reads the completed file again, and requires both hash sets to match before publishing the final name.</p>
+      <p>the complete format and evidence boundaries are in <a href="https://github.com/korzewarrior/gdox/blob/main/docs/PRESERVATION.md" rel="external">PRESERVATION.md</a>.</p>
+    </section>
+
+    {{INCLUDE:footer.html}}
+  </main>
+</body>
+</html>

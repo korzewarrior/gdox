@@ -1,4 +1,4 @@
-# Disc preservation
+# Original Xbox disc preservation
 
 GDOX creates two layouts that both conventionally use the `.iso` extension.
 

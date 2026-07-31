@@ -4,49 +4,38 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>gdox</title>
-  <meta name="description" content="Play and preserve original Xbox discs with a supported stock DVD drive.">
-  <meta name="theme-color" content="#07140b">
+  <meta name="description" content="Read, play, and preserve physical game discs through supported optical drives.">
   <link rel="canonical" href="https://gdox.korze.org/">
-  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-  <link rel="preload" href="/assets/fonts/chakra-petch-v13-latin-400.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/assets/style.css?v={{STYLE_VERSION}}">
+  {{INCLUDE:head-assets.html}}
 </head>
 <body>
-  <a class="skip-link" href="#main">skip to content</a>
+  {{INCLUDE:skip-link.html}}
 
   <main id="main">
     <nav aria-label="breadcrumb">
       <h1><span aria-current="page">gdox</span> /</h1>
     </nav>
-    <p>put an original xbox game disc in a compatible stock dvd drive, open gdox, and <a href="https://xemu.app/" rel="external">xemu</a> plays it straight from the disc. no game install or image is required first. gdox can also create a smaller playable xiso or a larger archival image.</p>
+    <p>gdox reads, plays, and preserves physical game discs through supported optical drives.</p>
     <div class="download-actions">
-      <a class="primary-download" href="/download/linux/#get-steam-deck">download</a>
+      <a class="primary-download" href="/download/auto/">download</a>
       <a class="secondary-action" href="https://discord.gg/TEzuUEJk4B" rel="external">discord</a>
     </div>
     <section>
       <h2>release status</h2>
-      <p>gdox 0.1.3 is an active development release. see <a href="/drives/">supported drives</a> for the current hardware library.</p>
+      <p>gdox 0.1.3 is an active development release. current system: <a href="/systems/original-xbox/">original xbox</a>.</p>
     </section>
 
     <section>
       <div class="index">
-        <p><a href="/wtf/">wtf</a><br><span>from drive to xemu.</span></p>
-        <p><a href="/drives/">drives</a><br><span>supported hardware.</span></p>
-        <p><a href="/download/">download</a><br><span>platform guides and current release status.</span></p>
-        <p><a href="https://github.com/korzewarrior/gdox" rel="external">source</a><br><span>all of it, on github.</span></p>
+        <p><a href="/download/">downloads</a><br><span>choose a platform.</span></p>
+        <p><a href="/systems/">systems</a><br><span>supported systems.</span></p>
+        <p><a href="/drives/">drives</a><br><span>supported drives.</span></p>
+        <p><a href="/preserve/">preserve</a><br><span>save a disc.</span></p>
+        <p><a href="/wtf/">wtf</a><br><span>how it works.</span></p>
       </div>
     </section>
 
-    <footer>
-      <nav class="footer-links" aria-label="footer">
-        <a href="https://korze.org/" rel="me">korze(warrior)</a>
-        <a href="https://github.com/korzewarrior/gdox" rel="external">github</a>
-        <a href="https://x.com/korzewarrior" rel="me external">x</a>
-        <a href="https://discord.gg/TEzuUEJk4B" rel="external">discord</a>
-      </nav>
-      <p class="disclaimer">GDOX is an independent open source project and is not affiliated with Microsoft Corporation or the xemu project. Xbox, Microsoft, xemu, and other product and company names belong to their respective owners and are used only for identification. Their use does not imply endorsement or association.</p>
-    </footer>
+    {{INCLUDE:footer.html}}
   </main>
 </body>
 </html>

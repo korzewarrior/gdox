@@ -1,4 +1,4 @@
-# Offline mastering catalog
+# Original Xbox offline mastering catalog
 
 `catalog/xgd1.json` is a small reviewed XGD1 catalog used for deterministic
 full-disc normalization when a drive exposes PFI, DMI, and game data but not

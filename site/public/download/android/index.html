@@ -5,21 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>android — gdox</title>
   <meta name="description" content="Development status and target requirements for GDOX on Android.">
-  <meta name="theme-color" content="#07140b">
   <link rel="canonical" href="https://gdox.korze.org/download/android/">
-  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-  <link rel="preload" href="/assets/fonts/chakra-petch-v13-latin-400.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/assets/style.css?v={{STYLE_VERSION}}">
+  {{INCLUDE:head-assets.html}}
 </head>
 <body>
-  <a class="skip-link" href="#main">skip to content</a>
+  {{INCLUDE:skip-link.html}}
 
   <main id="main">
     <nav aria-label="breadcrumb">
       <h1><a href="/">gdox</a> / <a href="/download/">download</a> / <span aria-current="page">android</span></h1>
     </nav>
     <p>android runs an arm64 xemu build with the gdox disc reader inside the emulator. usb access is granted per session, and pulling the drive ends the game.</p>
+    <p>current system: <a href="/systems/original-xbox/">original xbox</a>.</p>
     <p>android release in development.</p>
 
     <section>
@@ -52,15 +49,7 @@
       <p>the android launcher, native adapter, and patch series are in the repository under <a href="https://github.com/korzewarrior/gdox/tree/main/android" rel="external">android/</a>.</p>
     </section>
 
-    <footer>
-      <nav class="footer-links" aria-label="footer">
-        <a href="https://korze.org/" rel="me">korze(warrior)</a>
-        <a href="https://github.com/korzewarrior/gdox" rel="external">github</a>
-        <a href="https://x.com/korzewarrior" rel="me external">x</a>
-        <a href="https://discord.gg/TEzuUEJk4B" rel="external">discord</a>
-      </nav>
-      <p class="disclaimer">GDOX is an independent open source project and is not affiliated with Microsoft Corporation or the xemu project. Xbox, Microsoft, xemu, and other product and company names belong to their respective owners and are used only for identification. Their use does not imply endorsement or association.</p>
-    </footer>
+    {{INCLUDE:footer.html}}
   </main>
 </body>
 </html>
