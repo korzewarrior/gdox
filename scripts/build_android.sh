@@ -8,9 +8,7 @@ output_root=${GDOX_OUTPUT_ROOT:-${GDOX_OUTPUT_DIR:-"$gdox_root/../gdox-output"}}
 source_root=$output_root/build/android-emulator/source
 temporary_root=$output_root/cache/android-tmp
 build_type=${1:-debug}
-version=$(sed -n \
-    's/^[[:space:]]*VERSION \([0-9][0-9.]*\).*/\1/p' \
-    "$gdox_root/CMakeLists.txt" | head -n 1)
+version=$(python "$gdox_root/scripts/project_version.py")
 
 . "$gdox_root/android/dependencies.lock"
 
@@ -126,6 +124,7 @@ java_options="${java_options}-Djava.io.tmpdir=$temporary_root"
     ./gradlew \
         --no-daemon \
         "$gradle_task" \
+        -PgdoxVersion="$version" \
         -PgdoxKeyProperties="$key_properties" \
         -Pkotlin.compiler.execution.strategy=in-process
 )

@@ -21,8 +21,7 @@
         "87A6FD57"
       ],
       "references": [
-        "https://redump.info/disc/27162/",
-        "https://forum.redump.org/topic/21835/dumping-xbox-xbox-360-security-sector-ranges/"
+        "https://redump.info/disc/27162/"
       ],
       "expected_hashes": {
         "crc32": "013986D0",

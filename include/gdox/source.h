@@ -3,7 +3,7 @@
 
 #include "gdox/error.h"
 #include "gdox/evidence.h"
-#include "gdox/protocol.h"
+#include "gdox/sector.h"
 
 #include <stdbool.h>
 #include <stddef.h>

@@ -20,10 +20,9 @@ int gdox_macos_scsi_release_system_media(
     char *error,
     size_t error_capacity
 );
-int gdox_macos_scsi_observe(
-    int identity,
-    int *drive_present,
-    int *media_present
+int gdox_macos_scsi_observe_all(
+    int drive_present[GDOX_USB_BOT_IDENTITY_COUNT],
+    int media_present[GDOX_USB_BOT_IDENTITY_COUNT]
 );
 int gdox_macos_scsi_open(
     int identity,
@@ -326,14 +325,51 @@ bool gdox_usb_bot_open(
     return true;
 }
 
-bool gdox_usb_bot_present(
-    gdox_usb_bot_identity identity,
-    bool *drive_present,
+bool gdox_usb_bot_observe_all(
+    gdox_usb_bot_observation observations[GDOX_USB_BOT_IDENTITY_COUNT],
     gdox_error *error
 )
 {
-    int observed_drive = 0;
-    int observed_media = 0;
+    int observed_drives[GDOX_USB_BOT_IDENTITY_COUNT];
+    int observed_media[GDOX_USB_BOT_IDENTITY_COUNT];
+    size_t index;
+
+    gdox_error_clear(error);
+    if (observations == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "optical observations output is required"
+        );
+        return false;
+    }
+    if (gdox_macos_scsi_observe_all(
+            observed_drives,
+            observed_media
+        ) != 0) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_TRANSPORT,
+            "could not enumerate macOS optical drives"
+        );
+        return false;
+    }
+    for (index = 0U; index < GDOX_USB_BOT_IDENTITY_COUNT; ++index) {
+        observations[index].drive_present = observed_drives[index] != 0;
+        observations[index].media_status_known =
+            observations[index].drive_present;
+        observations[index].media_present = observed_media[index] != 0;
+    }
+    return true;
+}
+
+bool gdox_usb_bot_present_all(
+    bool drive_present[GDOX_USB_BOT_IDENTITY_COUNT],
+    gdox_error *error
+)
+{
+    int observed_drives[GDOX_USB_BOT_IDENTITY_COUNT];
+    size_t index;
 
     gdox_error_clear(error);
     if (drive_present == NULL) {
@@ -344,64 +380,17 @@ bool gdox_usb_bot_present(
         );
         return false;
     }
-    *drive_present = false;
-    if (!supported_identity(identity)) {
+    if (gdox_macos_scsi_observe_all(observed_drives, NULL) != 0) {
         gdox_error_set(
             error,
-            GDOX_ERROR_UNSUPPORTED,
-            "macOS observer does not support this USB optical mechanism"
+            GDOX_ERROR_TRANSPORT,
+            "could not enumerate macOS optical drives"
         );
         return false;
     }
-    (void)gdox_macos_scsi_observe(
-        (int)identity,
-        &observed_drive,
-        &observed_media
-    );
-    *drive_present = observed_drive != 0;
-    return true;
-}
-
-bool gdox_usb_bot_observe(
-    gdox_usb_bot_identity identity,
-    bool *drive_present,
-    bool *media_status_known,
-    bool *media_present,
-    gdox_error *error
-)
-{
-    int observed_drive = 0;
-    int observed_media = 0;
-
-    gdox_error_clear(error);
-    if (drive_present == NULL || media_status_known == NULL
-        || media_present == NULL) {
-        gdox_error_set(
-            error,
-            GDOX_ERROR_INVALID_ARGUMENT,
-            "optical observation outputs are required"
-        );
-        return false;
+    for (index = 0U; index < GDOX_USB_BOT_IDENTITY_COUNT; ++index) {
+        drive_present[index] = observed_drives[index] != 0;
     }
-    *drive_present = false;
-    *media_status_known = false;
-    *media_present = false;
-    if (!supported_identity(identity)) {
-        gdox_error_set(
-            error,
-            GDOX_ERROR_UNSUPPORTED,
-            "macOS observer does not support this USB optical mechanism"
-        );
-        return false;
-    }
-    (void)gdox_macos_scsi_observe(
-        (int)identity,
-        &observed_drive,
-        &observed_media
-    );
-    *drive_present = observed_drive != 0;
-    *media_status_known = *drive_present;
-    *media_present = observed_media != 0;
     return true;
 }
 

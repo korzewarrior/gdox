@@ -3,6 +3,8 @@
 #include "gdox/optical.h"
 
 #include "platform/gp08_source.h"
+#include "platform/mmc_commands.h"
+#include "platform/optical_driver.h"
 #include "platform/portable_sync.h"
 #include "platform/scsi_transport.h"
 #include "platform/usb_bot.h"
@@ -90,12 +92,6 @@ typedef struct gdox_gp08_state {
     uint32_t block_size;
 } gdox_gp08_state;
 
-typedef struct gdox_gp08_identity {
-    char vendor[9];
-    char model[17];
-    char revision[5];
-} gdox_gp08_identity;
-
 typedef struct gdox_gp08_context {
     gdox_scsi_transport transport;
     gdox_mutex mutex;
@@ -110,20 +106,6 @@ typedef struct gdox_gp08_context {
     bool active;
 } gdox_gp08_context;
 
-static uint32_t read_be_u32(const uint8_t *input)
-{
-    return (uint32_t)input[0] << 24U
-        | (uint32_t)input[1] << 16U
-        | (uint32_t)input[2] << 8U
-        | (uint32_t)input[3];
-}
-
-static void put_be_u16(uint8_t *output, uint16_t value)
-{
-    output[0] = (uint8_t)(value >> 8U);
-    output[1] = (uint8_t)(value & 0xffU);
-}
-
 static void put_be_u24(uint8_t *output, uint32_t value)
 {
     output[0] = (uint8_t)((value >> 16U) & 0xffU);
@@ -131,190 +113,11 @@ static void put_be_u24(uint8_t *output, uint32_t value)
     output[2] = (uint8_t)(value & 0xffU);
 }
 
-static void put_be_u32(uint8_t *output, uint32_t value)
-{
-    output[0] = (uint8_t)(value >> 24U);
-    output[1] = (uint8_t)((value >> 16U) & 0xffU);
-    output[2] = (uint8_t)((value >> 8U) & 0xffU);
-    output[3] = (uint8_t)(value & 0xffU);
-}
-
-static void copy_ascii_field(
-    char *output,
-    size_t output_bytes,
-    const uint8_t *input,
-    size_t input_bytes
-)
-{
-    size_t begin = 0U;
-    size_t end = input_bytes;
-    size_t length;
-
-    while (begin < end && (input[begin] == ' ' || input[begin] == 0U)) {
-        ++begin;
-    }
-    while (end > begin && (input[end - 1U] == ' ' || input[end - 1U] == 0U)) {
-        --end;
-    }
-    length = end - begin;
-    if (length >= output_bytes) {
-        length = output_bytes - 1U;
-    }
-    memcpy(output, input + begin, length);
-    output[length] = '\0';
-}
-
-static bool inquiry(
-    gdox_scsi_transport *transport,
-    gdox_gp08_identity *identity,
-    gdox_error *error
-)
-{
-    uint8_t cdb[6] = {0x12U, 0U, 0U, 0U, 96U, 0U};
-    uint8_t response[96];
-    size_t transferred;
-
-    if (!gdox_scsi_command_in(
-            transport,
-            "INQUIRY",
-            cdb,
-            sizeof(cdb),
-            response,
-            sizeof(response),
-            GDOX_GP08_DEFAULT_TIMEOUT_MS,
-            &transferred,
-            error
-        )) {
-        return false;
-    }
-    if (transferred < 36U) {
-        gdox_error_set(error, GDOX_ERROR_PROTOCOL, "INQUIRY returned fewer than 36 bytes");
-        return false;
-    }
-    copy_ascii_field(identity->vendor, sizeof(identity->vendor), response + 8U, 8U);
-    copy_ascii_field(identity->model, sizeof(identity->model), response + 16U, 16U);
-    copy_ascii_field(identity->revision, sizeof(identity->revision), response + 32U, 4U);
-    return true;
-}
-
-static bool identity_is_validated(const gdox_gp08_identity *identity)
+static bool identity_is_validated(const gdox_mmc_identity *identity)
 {
     return strcmp(identity->vendor, GDOX_GP08_SCSI_VENDOR) == 0
         && strcmp(identity->model, GDOX_GP08_SCSI_MODEL) == 0
         && strcmp(identity->revision, GDOX_GP08_SCSI_REVISION) == 0;
-}
-
-static bool test_unit_ready_with_timeout(
-    gdox_scsi_transport *transport,
-    uint32_t timeout_ms,
-    gdox_error *error
-)
-{
-    static const uint8_t cdb[6] = {0U, 0U, 0U, 0U, 0U, 0U};
-    return gdox_scsi_command_none(
-        transport,
-        "TEST UNIT READY",
-        cdb,
-        sizeof(cdb),
-        timeout_ms,
-        error
-    );
-}
-
-static bool test_unit_ready(gdox_scsi_transport *transport, gdox_error *error)
-{
-    return test_unit_ready_with_timeout(
-        transport,
-        GDOX_GP08_DEFAULT_TIMEOUT_MS,
-        error
-    );
-}
-
-static bool request_sense(
-    gdox_scsi_transport *transport,
-    uint8_t output[18],
-    size_t *transferred,
-    gdox_error *error
-)
-{
-    static const uint8_t cdb[6] = {0x03U, 0U, 0U, 0U, 18U, 0U};
-    return gdox_scsi_command_in(
-        transport,
-        "REQUEST SENSE",
-        cdb,
-        sizeof(cdb),
-        output,
-        18U,
-        GDOX_GP08_DEFAULT_TIMEOUT_MS,
-        transferred,
-        error
-    );
-}
-
-static bool read_capacity(
-    gdox_scsi_transport *transport,
-    uint32_t *last_lba,
-    uint32_t *block_size,
-    gdox_error *error
-)
-{
-    static const uint8_t cdb[10] = {
-        0x25U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U,
-    };
-    uint8_t response[8];
-    size_t transferred;
-
-    if (!gdox_scsi_command_in(
-            transport,
-            "READ CAPACITY(10)",
-            cdb,
-            sizeof(cdb),
-            response,
-            sizeof(response),
-            UINT32_C(10000),
-            &transferred,
-            error
-        )) {
-        return false;
-    }
-    if (transferred != sizeof(response)) {
-        gdox_error_set(error, GDOX_ERROR_PROTOCOL, "READ CAPACITY(10) returned a short response");
-        return false;
-    }
-    *last_lba = read_be_u32(response);
-    *block_size = read_be_u32(response + 4U);
-    return true;
-}
-
-static bool read_dvd_structure(
-    gdox_scsi_transport *transport,
-    uint8_t format,
-    uint8_t *output,
-    size_t output_bytes,
-    size_t *transferred,
-    gdox_error *error
-)
-{
-    uint8_t cdb[12] = {0};
-
-    if (output_bytes > UINT16_MAX) {
-        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "DVD structure buffer is too large");
-        return false;
-    }
-    cdb[0] = 0xadU;
-    cdb[7] = format;
-    put_be_u16(cdb + 8U, (uint16_t)output_bytes);
-    return gdox_scsi_command_in(
-        transport,
-        "READ DVD STRUCTURE",
-        cdb,
-        sizeof(cdb),
-        output,
-        output_bytes,
-        UINT32_C(10000),
-        transferred,
-        error
-    );
 }
 
 static bool read_buffer(
@@ -400,47 +203,6 @@ static bool write_buffer(
     return true;
 }
 
-static bool read10(
-    gdox_scsi_transport *transport,
-    uint32_t lba,
-    uint32_t blocks,
-    uint8_t *output,
-    size_t output_bytes,
-    gdox_error *error
-)
-{
-    uint8_t cdb[10] = {0};
-    size_t transferred;
-    const uint64_t expected = (uint64_t)blocks * GDOX_LOGICAL_SECTOR_BYTES;
-
-    if (blocks == 0U || blocks > GDOX_GP08_MAX_READ_BLOCKS
-        || expected != output_bytes) {
-        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "invalid bounded GP08 READ(10) request");
-        return false;
-    }
-    cdb[0] = 0x28U;
-    put_be_u32(cdb + 2U, lba);
-    put_be_u16(cdb + 7U, (uint16_t)blocks);
-    if (!gdox_scsi_command_in(
-            transport,
-            "READ(10)",
-            cdb,
-            sizeof(cdb),
-            output,
-            output_bytes,
-            GDOX_GP08_READ_TIMEOUT_MS,
-            &transferred,
-            error
-        )) {
-        return false;
-    }
-    if (transferred != output_bytes) {
-        gdox_error_set(error, GDOX_ERROR_TRANSPORT, "READ(10) returned a short transfer");
-        return false;
-    }
-    return true;
-}
-
 static bool ladder_aborted(const atomic_bool *abort, gdox_error *error)
 {
     if (abort != NULL
@@ -503,8 +265,9 @@ static bool read_state(
             sizeof(state->pfi_end),
             error
         )
-        && read_capacity(
+        && gdox_mmc_read_capacity_10(
             &context->transport,
+            UINT32_C(10000),
             &state->last_lba,
             &state->block_size,
             error
@@ -678,6 +441,19 @@ static bool apply_live(gdox_gp08_context *context, gdox_error *error)
     return true;
 }
 
+static void record_first_restore_error(
+    bool succeeded,
+    const gdox_error *current,
+    bool *command_failed,
+    gdox_error *first_error
+)
+{
+    if (!succeeded && !*command_failed) {
+        *first_error = *current;
+        *command_failed = true;
+    }
+}
+
 static bool restore_stock(gdox_gp08_context *context, gdox_error *error)
 {
     gdox_error first_error;
@@ -686,36 +462,78 @@ static bool restore_stock(gdox_gp08_context *context, gdox_error *error)
     bool command_failed = false;
 
     gdox_error_clear(&first_error);
-#define GDOX_GP08_RESTORE(address, field)                                      \
-    do {                                                                       \
-        if (!write_buffer(                                                     \
-                &context->transport,                                           \
-                (address),                                                     \
-                context->stock.field,                                          \
-                sizeof(context->stock.field),                                  \
-                &current                                                       \
-            ) && !command_failed) {                                             \
-            first_error = current;                                             \
-            command_failed = true;                                             \
-        }                                                                      \
-    } while (false)
-
-    GDOX_GP08_RESTORE(GDOX_GP08_CAPACITY_ADDRESS, capacity);
-    GDOX_GP08_RESTORE(GDOX_GP08_END_CACHE_ADDRESS, end_cache);
-    GDOX_GP08_RESTORE(GDOX_GP08_PFI_END_ADDRESS, pfi_end);
-    GDOX_GP08_RESTORE(GDOX_GP08_ZONE2_ADDRESS, zone2);
-    GDOX_GP08_RESTORE(GDOX_GP08_ZONE1_ADDRESS, zone1);
-    if (!write_buffer(
+    record_first_restore_error(
+        write_buffer(
+            &context->transport,
+            GDOX_GP08_CAPACITY_ADDRESS,
+            context->stock.capacity,
+            sizeof(context->stock.capacity),
+            &current
+        ),
+        &current,
+        &command_failed,
+        &first_error
+    );
+    record_first_restore_error(
+        write_buffer(
+            &context->transport,
+            GDOX_GP08_END_CACHE_ADDRESS,
+            context->stock.end_cache,
+            sizeof(context->stock.end_cache),
+            &current
+        ),
+        &current,
+        &command_failed,
+        &first_error
+    );
+    record_first_restore_error(
+        write_buffer(
+            &context->transport,
+            GDOX_GP08_PFI_END_ADDRESS,
+            context->stock.pfi_end,
+            sizeof(context->stock.pfi_end),
+            &current
+        ),
+        &current,
+        &command_failed,
+        &first_error
+    );
+    record_first_restore_error(
+        write_buffer(
+            &context->transport,
+            GDOX_GP08_ZONE2_ADDRESS,
+            context->stock.zone2,
+            sizeof(context->stock.zone2),
+            &current
+        ),
+        &current,
+        &command_failed,
+        &first_error
+    );
+    record_first_restore_error(
+        write_buffer(
+            &context->transport,
+            GDOX_GP08_ZONE1_ADDRESS,
+            context->stock.zone1,
+            sizeof(context->stock.zone1),
+            &current
+        ),
+        &current,
+        &command_failed,
+        &first_error
+    );
+    record_first_restore_error(
+        write_buffer(
             &context->transport,
             GDOX_GP08_ZONE0_LENGTH_ADDRESS,
             context->stock.zone0 + 12U,
             4U,
             &current
-        ) && !command_failed) {
-        first_error = current;
-        command_failed = true;
-    }
-#undef GDOX_GP08_RESTORE
+        ),
+        &current,
+        &command_failed,
+        &first_error
+    );
 
     if (read_state(context, NULL, &observed, &current)
         && memcmp(&observed, &context->stock, sizeof(observed)) == 0) {
@@ -794,8 +612,9 @@ static bool recover_optical(gdox_gp08_context *context, gdox_error *error)
     {
         uint8_t sense[18];
         size_t transferred;
-        (void)request_sense(
+        (void)gdox_mmc_request_sense(
             &context->transport,
+            GDOX_GP08_DEFAULT_TIMEOUT_MS,
             sense,
             &transferred,
             &last
@@ -813,7 +632,11 @@ static bool recover_optical(gdox_gp08_context *context, gdox_error *error)
         if (ladder_aborted(&context->abort, error)) {
             return false;
         }
-        if (test_unit_ready(&context->transport, &last)) {
+        if (gdox_mmc_test_unit_ready(
+                &context->transport,
+                GDOX_GP08_DEFAULT_TIMEOUT_MS,
+                &last
+            )) {
             return ensure_live(context, error);
         }
         if (last.code == GDOX_ERROR_NOT_FOUND) {
@@ -843,12 +666,15 @@ static bool read_range_with_recovery(
         if (ladder_aborted(&context->abort, error)) {
             return false;
         }
-        if (read10(
+        if (gdox_mmc_read_10(
                 &context->transport,
                 lba,
                 blocks,
+                GDOX_GP08_MAX_READ_BLOCKS,
+                GDOX_LOGICAL_SECTOR_BYTES,
                 output,
                 output_bytes,
+                GDOX_GP08_READ_TIMEOUT_MS,
                 &last
             )) {
             (void)atomic_fetch_add_explicit(
@@ -1012,7 +838,7 @@ static bool gp08_media_present(const void *raw_context)
     if (!gdox_mutex_lock(&context->mutex)) {
         return false;
     }
-    present = test_unit_ready_with_timeout(
+    present = gdox_mmc_test_unit_ready(
         &context->transport,
         GDOX_GP08_PRESENCE_TIMEOUT_MS,
         &error
@@ -1133,7 +959,7 @@ static bool open_validated_transport(
     gdox_gp08_transport_opener opener,
     void *opener_context,
     gdox_scsi_transport *transport,
-    gdox_gp08_identity *identity,
+    gdox_mmc_identity *identity,
     gdox_error *error
 )
 {
@@ -1143,7 +969,12 @@ static bool open_validated_transport(
         if (!opener(opener_context, transport, error)) {
             return false;
         }
-        if (inquiry(transport, identity, error)) {
+        if (gdox_mmc_inquiry(
+                transport,
+                GDOX_GP08_DEFAULT_TIMEOUT_MS,
+                identity,
+                error
+            )) {
             break;
         }
         gdox_scsi_transport_destroy(transport);
@@ -1172,6 +1003,190 @@ static void destroy_failed_open(gdox_gp08_context *context)
     free(context);
 }
 
+static bool wait_for_ready(
+    gdox_gp08_context *context,
+    uint32_t ready_timeout_ms,
+    gdox_error *error
+)
+{
+    const uint32_t attempts = ready_timeout_ms / UINT32_C(500) + 1U;
+    uint32_t attempt;
+
+    gdox_error_clear(error);
+    for (attempt = 0U; attempt < attempts; ++attempt) {
+        if (gdox_mmc_test_unit_ready(
+                &context->transport,
+                GDOX_GP08_DEFAULT_TIMEOUT_MS,
+                error
+            )) {
+            return true;
+        }
+        if (attempt + 1U < attempts) {
+            gdox_sleep_ms(UINT32_C(500));
+        }
+    }
+    return false;
+}
+
+static bool collect_disc_evidence(
+    gdox_gp08_context *context,
+    gdox_error *error
+)
+{
+    uint8_t pfi[2052];
+    uint8_t dmi[2052];
+    size_t transferred;
+    gdox_error dmi_error;
+
+    if (!gdox_mmc_read_dvd_structure(
+            &context->transport,
+            0U,
+            pfi,
+            sizeof(pfi),
+            UINT32_C(10000),
+            &transferred,
+            error
+        )
+        || transferred != sizeof(pfi)
+        || memcmp(
+            pfi + 17U,
+            stock_pfi_prefix,
+            sizeof(stock_pfi_prefix)
+        ) != 0) {
+        if (!gdox_error_is_set(error)) {
+            gdox_error_set(
+                error,
+                GDOX_ERROR_INVALID_SOURCE,
+                "disc does not have the expected original-Xbox decoy geometry"
+            );
+        }
+        return false;
+    }
+    context->evidence.pfi_present = true;
+    memcpy(context->evidence.pfi, pfi + 4U, GDOX_DISC_STRUCTURE_BYTES);
+    gdox_error_clear(&dmi_error);
+    if (gdox_mmc_read_dvd_structure(
+            &context->transport,
+            0x04U,
+            dmi,
+            sizeof(dmi),
+            UINT32_C(10000),
+            &transferred,
+            &dmi_error
+        )
+        && transferred == sizeof(dmi)) {
+        context->evidence.dmi_present = true;
+        memcpy(context->evidence.dmi, dmi + 4U, GDOX_DISC_STRUCTURE_BYTES);
+    } else {
+        (void)snprintf(
+            context->evidence.note,
+            sizeof(context->evidence.note),
+            "%s",
+            "DMI evidence was unavailable; full-disc output cannot claim complete evidence."
+        );
+    }
+    if (context->evidence.note[0] == '\0') {
+        (void)snprintf(
+            context->evidence.note,
+            sizeof(context->evidence.note),
+            "%s",
+            "This drive does not expose decrypted security-sector evidence."
+        );
+    }
+    return true;
+}
+
+static bool validate_stock_state(
+    gdox_gp08_context *context,
+    gdox_error *error
+)
+{
+    if (read_state(context, &context->abort, &context->stock, error)
+        && state_is_stock(&context->stock)) {
+        return true;
+    }
+    if (!gdox_error_is_set(error)) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_UNSUPPORTED,
+            "refusing GP08 session because stock volatile state does not match"
+        );
+    }
+    return false;
+}
+
+static bool apply_live_with_rollback(
+    gdox_gp08_context *context,
+    gdox_error *error
+)
+{
+    gdox_error operation_error;
+
+    if (apply_live(context, error)) {
+        context->active = true;
+        return true;
+    }
+    operation_error = *error;
+    if (!restore_stock_after_streaming(context, error)) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_TRANSPORT,
+            "GP08 initialization failed and volatile-state restoration also failed; power-cycle the drive"
+        );
+    } else {
+        *error = operation_error;
+    }
+    return false;
+}
+
+static bool validate_live_descriptor(
+    gdox_gp08_context *context,
+    gdox_error *error
+)
+{
+    uint8_t descriptor[GDOX_LOGICAL_SECTOR_BYTES];
+    gdox_error operation_error;
+
+    if (gdox_mmc_read_10(
+            &context->transport,
+            GDOX_GP08_DESCRIPTOR_LBA,
+            1U,
+            GDOX_GP08_MAX_READ_BLOCKS,
+            GDOX_LOGICAL_SECTOR_BYTES,
+            descriptor,
+            sizeof(descriptor),
+            GDOX_GP08_READ_TIMEOUT_MS,
+            error
+        )
+        && memcmp(descriptor, xdvdfs_magic, sizeof(xdvdfs_magic)) == 0
+        && memcmp(
+            descriptor + sizeof(descriptor) - sizeof(xdvdfs_magic),
+            xdvdfs_magic,
+            sizeof(xdvdfs_magic)
+        ) == 0) {
+        return true;
+    }
+    operation_error = *error;
+    if (!gdox_error_is_set(&operation_error)) {
+        gdox_error_set(
+            &operation_error,
+            GDOX_ERROR_NOT_FOUND,
+            "live GP08 view did not contain a complete XDVDFS descriptor"
+        );
+    }
+    if (!restore_stock_after_streaming(context, error)) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_TRANSPORT,
+            "GP08 disc validation failed and volatile-state restoration also failed; power-cycle the drive"
+        );
+    } else {
+        context->active = false;
+        *error = operation_error;
+    }
+    return false;
+}
+
 bool gdox_gp08_source_open(
     gdox_gp08_transport_opener opener,
     void *opener_context,
@@ -1182,14 +1197,7 @@ bool gdox_gp08_source_open(
 )
 {
     gdox_gp08_context *context;
-    gdox_gp08_identity identity;
-    uint32_t attempts;
-    uint32_t attempt;
-    uint8_t pfi[2052];
-    uint8_t dmi[2052];
-    uint8_t descriptor[GDOX_LOGICAL_SECTOR_BYTES];
-    size_t transferred;
-    gdox_error operation_error;
+    gdox_mmc_identity identity;
 
     gdox_error_clear(error);
     if (opener == NULL || source == NULL || gdox_source_is_valid(source)) {
@@ -1226,129 +1234,11 @@ bool gdox_gp08_source_open(
         free(context);
         return false;
     }
-    gdox_error_clear(&operation_error);
-    attempts = ready_timeout_ms / UINT32_C(500) + 1U;
-    for (attempt = 0U; attempt < attempts; ++attempt) {
-        if (test_unit_ready(&context->transport, &operation_error)) {
-            break;
-        }
-        if (attempt + 1U < attempts) {
-            gdox_sleep_ms(UINT32_C(500));
-        }
-    }
-    if (attempt == attempts) {
-        *error = operation_error;
-        destroy_failed_open(context);
-        return false;
-    }
-    if (!read_dvd_structure(
-            &context->transport,
-            0U,
-            pfi,
-            sizeof(pfi),
-            &transferred,
-            error
-        )
-        || transferred != sizeof(pfi)
-        || memcmp(pfi + 17U, stock_pfi_prefix, sizeof(stock_pfi_prefix)) != 0) {
-        if (!gdox_error_is_set(error)) {
-            gdox_error_set(
-                error,
-                GDOX_ERROR_INVALID_SOURCE,
-                "disc does not have the expected original-Xbox decoy geometry"
-            );
-        }
-        destroy_failed_open(context);
-        return false;
-    }
-    context->evidence.pfi_present = true;
-    memcpy(context->evidence.pfi, pfi + 4U, GDOX_DISC_STRUCTURE_BYTES);
-    if (read_dvd_structure(
-            &context->transport,
-            0x04U,
-            dmi,
-            sizeof(dmi),
-            &transferred,
-            &operation_error
-        )
-        && transferred == sizeof(dmi)) {
-        context->evidence.dmi_present = true;
-        memcpy(context->evidence.dmi, dmi + 4U, GDOX_DISC_STRUCTURE_BYTES);
-    } else {
-        (void)snprintf(
-            context->evidence.note,
-            sizeof(context->evidence.note),
-            "%s",
-            "DMI evidence was unavailable; full-disc output cannot claim complete evidence."
-        );
-    }
-    if (context->evidence.note[0] == '\0') {
-        (void)snprintf(
-            context->evidence.note,
-            sizeof(context->evidence.note),
-            "%s",
-            "This drive does not expose decrypted security-sector evidence."
-        );
-    }
-    if (!read_state(context, &context->abort, &context->stock, error)
-        || !state_is_stock(&context->stock)) {
-        if (!gdox_error_is_set(error)) {
-            gdox_error_set(
-                error,
-                GDOX_ERROR_UNSUPPORTED,
-                "refusing GP08 session because stock volatile state does not match"
-            );
-        }
-        destroy_failed_open(context);
-        return false;
-    }
-    if (!apply_live(context, error)) {
-        operation_error = *error;
-        if (!restore_stock_after_streaming(context, error)) {
-            gdox_error_set(
-                error,
-                GDOX_ERROR_TRANSPORT,
-                "GP08 initialization failed and volatile-state restoration also failed; power-cycle the drive"
-            );
-        } else {
-            *error = operation_error;
-        }
-        destroy_failed_open(context);
-        return false;
-    }
-    context->active = true;
-    if (!read10(
-            &context->transport,
-            GDOX_GP08_DESCRIPTOR_LBA,
-            1U,
-            descriptor,
-            sizeof(descriptor),
-            error
-        )
-        || memcmp(descriptor, xdvdfs_magic, sizeof(xdvdfs_magic)) != 0
-        || memcmp(
-            descriptor + sizeof(descriptor) - sizeof(xdvdfs_magic),
-            xdvdfs_magic,
-            sizeof(xdvdfs_magic)
-        ) != 0) {
-        operation_error = *error;
-        if (!gdox_error_is_set(&operation_error)) {
-            gdox_error_set(
-                &operation_error,
-                GDOX_ERROR_NOT_FOUND,
-                "live GP08 view did not contain a complete XDVDFS descriptor"
-            );
-        }
-        if (!restore_stock_after_streaming(context, error)) {
-            gdox_error_set(
-                error,
-                GDOX_ERROR_TRANSPORT,
-                "GP08 disc validation failed and volatile-state restoration also failed; power-cycle the drive"
-            );
-        } else {
-            context->active = false;
-            *error = operation_error;
-        }
+    if (!wait_for_ready(context, ready_timeout_ms, error)
+        || !collect_disc_evidence(context, error)
+        || !validate_stock_state(context, error)
+        || !apply_live_with_rollback(context, error)
+        || !validate_live_descriptor(context, error)) {
         destroy_failed_open(context);
         return false;
     }
@@ -1356,42 +1246,6 @@ bool gdox_gp08_source_open(
     source->context = context;
     source->ops = &gp08_source_ops;
     return true;
-}
-
-bool gdox_optical_observe_gp08(
-    gdox_optical_presence *presence,
-    gdox_error *error
-)
-{
-    gdox_error_clear(error);
-    if (presence == NULL) {
-        gdox_error_set(
-            error,
-            GDOX_ERROR_INVALID_ARGUMENT,
-            "optical presence output is required"
-        );
-        return false;
-    }
-    presence->drive = GDOX_OPTICAL_DRIVE_NONE;
-    return gdox_usb_bot_observe(
-        GDOX_USB_BOT_GP08,
-        &presence->drive_present,
-        &presence->media_status_known,
-        &presence->media_present,
-        error
-    );
-}
-
-bool gdox_optical_gp08_connected(
-    bool *connected,
-    gdox_error *error
-)
-{
-    return gdox_usb_bot_present(
-        GDOX_USB_BOT_GP08,
-        connected,
-        error
-    );
 }
 
 bool gdox_optical_open_gp08(
@@ -1414,7 +1268,7 @@ bool gdox_optical_open_gp08(
 bool gdox_optical_eject_gp08(gdox_error *error)
 {
     gdox_scsi_transport transport = {0};
-    gdox_gp08_identity identity;
+    gdox_mmc_identity identity;
     static const uint8_t allow_removal[6] = {0x1eU, 0U, 0U, 0U, 0U, 0U};
     static const uint8_t eject[6] = {0x1bU, 0U, 0U, 0U, 0x02U, 0U};
     gdox_error ignored;

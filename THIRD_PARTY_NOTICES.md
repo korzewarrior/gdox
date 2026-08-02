@@ -1,6 +1,7 @@
 # Third-party notices
 
-GDOX itself is dedicated under the repository's `LICENSE`.
+GDOX's original code and documentation are dedicated under the repository's
+CC0 1.0 Universal `LICENSE`. Third-party works retain their own licenses.
 
 The desktop application links or embeds pinned versions of raylib, Dear ImGui,
 rlImGui, Native File Dialog Extended, libusb, OpenSSL or platform crypto APIs,

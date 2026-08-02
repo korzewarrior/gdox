@@ -4,57 +4,53 @@
 
 #include <string.h>
 
-static const gdox_usb_bot_identity_spec gp63 = {
-    GDOX_USB_BOT_GP63,
-    GDOX_GP63_USB_VENDOR_ID,
-    GDOX_GP63_USB_PRODUCT_ID,
-    GDOX_GP63_SCSI_VENDOR,
-    GDOX_GP63_SCSI_MODEL,
-    GDOX_GP63_SCSI_REVISION,
+static const gdox_usb_bot_identity_spec identities[] = {
+    {
+        GDOX_USB_BOT_GP63,
+        GDOX_GP63_USB_VENDOR_ID,
+        GDOX_GP63_USB_PRODUCT_ID,
+        GDOX_GP63_SCSI_VENDOR,
+        GDOX_GP63_SCSI_MODEL,
+        GDOX_GP63_SCSI_REVISION,
+    },
+    {
+        GDOX_USB_BOT_GP65,
+        GDOX_GP65_USB_VENDOR_ID,
+        GDOX_GP65_USB_PRODUCT_ID,
+        GDOX_GP65_SCSI_VENDOR,
+        GDOX_GP65_SCSI_MODEL,
+        GDOX_GP65_SCSI_REVISION,
+    },
+    {
+        GDOX_USB_BOT_GP08,
+        GDOX_GP08_USB_VENDOR_ID,
+        GDOX_GP08_USB_PRODUCT_ID,
+        GDOX_GP08_SCSI_VENDOR,
+        GDOX_GP08_SCSI_MODEL,
+        GDOX_GP08_SCSI_REVISION,
+    },
+    {
+        GDOX_USB_BOT_ASUS_NR09,
+        GDOX_ASUS_USB_VENDOR_ID,
+        GDOX_ASUS_USB_PRODUCT_ID,
+        GDOX_ASUS_SCSI_VENDOR,
+        GDOX_ASUS_SCSI_MODEL,
+        GDOX_ASUS_SCSI_REVISION,
+    },
 };
 
-static const gdox_usb_bot_identity_spec gp65 = {
-    GDOX_USB_BOT_GP65,
-    GDOX_GP65_USB_VENDOR_ID,
-    GDOX_GP65_USB_PRODUCT_ID,
-    GDOX_GP65_SCSI_VENDOR,
-    GDOX_GP65_SCSI_MODEL,
-    GDOX_GP65_SCSI_REVISION,
-};
-
-static const gdox_usb_bot_identity_spec gp08 = {
-    GDOX_USB_BOT_GP08,
-    GDOX_GP08_USB_VENDOR_ID,
-    GDOX_GP08_USB_PRODUCT_ID,
-    GDOX_GP08_SCSI_VENDOR,
-    GDOX_GP08_SCSI_MODEL,
-    GDOX_GP08_SCSI_REVISION,
-};
-
-static const gdox_usb_bot_identity_spec asus_nr09 = {
-    GDOX_USB_BOT_ASUS_NR09,
-    GDOX_ASUS_USB_VENDOR_ID,
-    GDOX_ASUS_USB_PRODUCT_ID,
-    GDOX_ASUS_SCSI_VENDOR,
-    GDOX_ASUS_SCSI_MODEL,
-    GDOX_ASUS_SCSI_REVISION,
-};
+_Static_assert(
+    sizeof(identities) / sizeof(identities[0])
+        == GDOX_USB_BOT_IDENTITY_COUNT,
+    "USB BOT identity registry must cover every identity"
+);
 
 const gdox_usb_bot_identity_spec *gdox_usb_bot_identity_get(
     gdox_usb_bot_identity identity
 )
 {
-    if (identity == GDOX_USB_BOT_GP63) {
-        return &gp63;
-    }
-    if (identity == GDOX_USB_BOT_GP65) {
-        return &gp65;
-    }
-    if (identity == GDOX_USB_BOT_GP08) {
-        return &gp08;
-    }
-    if (identity == GDOX_USB_BOT_ASUS_NR09) {
-        return &asus_nr09;
+    if ((unsigned int)identity < GDOX_USB_BOT_IDENTITY_COUNT) {
+        return &identities[(size_t)identity];
     }
     return NULL;
 }

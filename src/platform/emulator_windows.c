@@ -2,7 +2,7 @@
 
 #include "gdox/emulator.h"
 
-#include "platform/emulator_configuration.h"
+#include "core/emulator_configuration.h"
 #include "platform/portable_sync.h"
 #include "platform/windows_support.h"
 
@@ -610,6 +610,48 @@ static bool command_character(
     return true;
 }
 
+static bool command_repeat(
+    wide_command *command,
+    wchar_t character,
+    size_t count,
+    gdox_error *error
+)
+{
+    if (!command_reserve(command, count, error)) {
+        return false;
+    }
+    for (size_t index = 0U; index < count; ++index) {
+        command->text[command->length++] = character;
+    }
+    command->text[command->length] = L'\0';
+    return true;
+}
+
+static bool command_backslash_run(
+    wide_command *command,
+    size_t count,
+    bool before_quote,
+    bool closes_argument,
+    gdox_error *error
+)
+{
+    size_t output_count = count;
+
+    if (before_quote || closes_argument) {
+        const size_t extra = before_quote ? 1U : 0U;
+        if (count > (SIZE_MAX - extra) / 2U) {
+            gdox_error_set(
+                error,
+                GDOX_ERROR_INTERNAL,
+                "xemu command line is too long"
+            );
+            return false;
+        }
+        output_count = count * 2U + extra;
+    }
+    return command_repeat(command, L'\\', output_count, error);
+}
+
 static bool command_argument(
     wide_command *command,
     const wchar_t *argument,
@@ -632,34 +674,28 @@ static bool command_argument(
             ++cursor;
             continue;
         }
-        if (*cursor == L'"') {
-            size_t index;
-            for (index = 0U; index < backslashes * 2U + 1U; ++index) {
-                if (!command_character(command, L'\\', error)) {
-                    return false;
-                }
-            }
-            backslashes = 0U;
-        } else {
-            while (backslashes != 0U) {
-                if (!command_character(command, L'\\', error)) {
-                    return false;
-                }
-                --backslashes;
-            }
+        if (!command_backslash_run(
+                command,
+                backslashes,
+                *cursor == L'"',
+                false,
+                error
+            )) {
+            return false;
         }
+        backslashes = 0U;
         if (!command_character(command, *cursor++, error)) {
             return false;
         }
     }
-    while (backslashes != 0U) {
-        if (!command_character(command, L'\\', error)
-            || !command_character(command, L'\\', error)) {
-            return false;
-        }
-        --backslashes;
-    }
-    return command_character(command, L'"', error);
+    return command_backslash_run(
+        command,
+        backslashes,
+        false,
+        true,
+        error
+    )
+        && command_character(command, L'"', error);
 }
 
 static bool append_utf8_argument(

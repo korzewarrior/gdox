@@ -5,8 +5,7 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: release-${{ github.ref }}
@@ -14,10 +13,12 @@ concurrency:
 
 jobs:
   quality:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -26,10 +27,14 @@ jobs:
             libgl1-mesa-dev libglu1-mesa-dev \
             libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev
       - name: Verify source tree
-        run: make check
+        run: |
+          python scripts/project_version.py --validate "${GITHUB_REF_NAME}"
+          make check
 
   unix:
     needs: quality
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -45,7 +50,7 @@ jobs:
             artifact: dist/.build/aarch64-apple-darwin/gdox.app
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -76,7 +81,7 @@ jobs:
           --output dist/release
       - name: Audit release payload
         run: python scripts/audit_release.py --path dist/release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gdox-${{ matrix.target }}
           path: |
@@ -86,9 +91,11 @@ jobs:
 
   windows:
     needs: quality
+    permissions:
+      contents: read
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build
         shell: cmd
         run: >-
@@ -104,7 +111,7 @@ jobs:
           --output dist/release
       - name: Audit release payload
         run: python scripts/audit_release.py --path dist/release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gdox-x86_64-pc-windows-msvc
           path: |
@@ -114,9 +121,11 @@ jobs:
 
   source:
     needs: quality
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Package GDOX source
         run: >-
           python scripts/package_source.py
@@ -126,7 +135,7 @@ jobs:
         run: python scripts/fetch_runtime.py source --output dist
       - name: Audit source payload
         run: python scripts/audit_release.py --path dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sources
           path: |
@@ -138,10 +147,12 @@ jobs:
 
   publish:
     needs: [unix, windows, source]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: "*"
           path: dist
@@ -164,11 +175,15 @@ jobs:
             -x SHA256SUMS.minisig -m SHA256SUMS
           rm "$RUNNER_TEMP/minisign.key"
           minisign -V -p ../packaging/minisign.pub -m SHA256SUMS
-      - name: Create draft release
+      - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${GITHUB_REF_NAME}"
-          --draft
-          --generate-notes
-          dist/*
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --draft \
+              --generate-notes \
+              dist/*
+          fi

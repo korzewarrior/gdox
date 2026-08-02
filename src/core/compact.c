@@ -257,6 +257,227 @@ static bool bytes_are_empty_directory(const uint8_t *bytes, size_t length)
     return true;
 }
 
+typedef struct compact_entry {
+    uint16_t left;
+    uint16_t right;
+    uint32_t source_sector;
+    uint32_t size;
+    uint8_t attributes;
+    uint32_t output_sector;
+    uint64_t output_blocks;
+} compact_entry;
+
+typedef struct compact_directory_reader {
+    compact_builder *builder;
+    compact_directory directory;
+    uint8_t *data;
+    uint8_t *visited;
+    offset_stack *pending;
+} compact_directory_reader;
+
+static uint16_t compact_read_u16(const uint8_t *data, size_t offset)
+{
+    return (uint16_t)(
+        (uint16_t)data[offset]
+            | (uint16_t)((uint16_t)data[offset + 1U] << 8U)
+    );
+}
+
+static bool read_compact_entry(
+    compact_directory_reader *reader,
+    size_t offset,
+    compact_entry *entry,
+    bool *already_visited,
+    gdox_error *error
+)
+{
+    const size_t directory_size = reader->directory.size;
+    size_t slot;
+    uint8_t name_bytes;
+    uint64_t source_end;
+
+    *already_visited = false;
+    if (offset % 4U != 0U || offset > directory_size
+        || directory_size - offset < 14U) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_VOLUME,
+            "compact directory entry is truncated"
+        );
+        return false;
+    }
+    slot = offset / 4U;
+    if (reader->visited[slot] != 0U) {
+        *already_visited = true;
+        return true;
+    }
+    reader->visited[slot] = 1U;
+    entry->left = compact_read_u16(reader->data, offset);
+    entry->right = compact_read_u16(reader->data, offset + 2U);
+    entry->source_sector = read_le_u32(reader->data + offset + 4U);
+    entry->size = read_le_u32(reader->data + offset + 8U);
+    entry->attributes = reader->data[offset + 12U];
+    name_bytes = reader->data[offset + 13U];
+    if (name_bytes == 0U
+        || name_bytes > directory_size - offset - 14U) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_VOLUME,
+            "compact directory name is invalid"
+        );
+        return false;
+    }
+    if (!allocate_region(
+        reader->builder,
+        entry->size,
+        &entry->output_sector,
+        &entry->output_blocks,
+        error
+    ) || !add_u64(
+        entry->source_sector,
+        entry->output_blocks,
+        &source_end
+    ) || source_end > gdox_source_sector_count(reader->builder->source)) {
+        if (!gdox_error_is_set(error)) {
+            gdox_error_set(
+                error,
+                GDOX_ERROR_INVALID_VOLUME,
+                "XDVDFS file extent exceeds the partition"
+            );
+        }
+        return false;
+    }
+    put_le_u32(reader->data + offset + 4U, entry->output_sector);
+    return true;
+}
+
+static bool record_compact_entry(
+    compact_directory_reader *reader,
+    const compact_entry *entry,
+    gdox_error *error
+)
+{
+    if ((entry->attributes & 0x10U) != 0U) {
+        const compact_directory child = {
+            entry->source_sector,
+            entry->size,
+            entry->output_sector,
+            reader->directory.depth + 1U,
+        };
+        if (reader->directory.depth < COMPACT_MAX_DEPTH
+            && push_directory(reader->builder, child, error)) {
+            return true;
+        }
+        if (!gdox_error_is_set(error)) {
+            gdox_error_set(
+                error,
+                GDOX_ERROR_INVALID_VOLUME,
+                "XDVDFS directory nesting limit exceeded"
+            );
+        }
+        return false;
+    }
+    if (!push_segment(
+        reader->builder,
+        (compact_segment){
+            entry->output_sector,
+            entry->output_blocks,
+            entry->source_sector,
+            entry->size,
+            NULL,
+            entry->size == 0U ? COMPACT_SEGMENT_ZERO : COMPACT_SEGMENT_FILE,
+        },
+        error
+    )) {
+        return false;
+    }
+    ++reader->builder->file_count;
+    return true;
+}
+
+static bool push_compact_entry_children(
+    offset_stack *pending,
+    const compact_entry *entry,
+    gdox_error *error
+)
+{
+    if (entry->left != 0U
+        && !push_offset(pending, (size_t)entry->left * 4U, error)) {
+        return false;
+    }
+    return entry->right == 0U
+        || push_offset(pending, (size_t)entry->right * 4U, error);
+}
+
+static bool traverse_compact_directory(
+    compact_directory_reader *reader,
+    gdox_error *error
+)
+{
+    const size_t visited_bytes =
+        ((size_t)reader->directory.size + 3U) / 4U;
+
+    reader->visited = calloc(visited_bytes, 1U);
+    if (reader->visited == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INTERNAL,
+            "could not allocate compact directory index"
+        );
+        return false;
+    }
+    if (!push_offset(reader->pending, 0U, error)) {
+        return false;
+    }
+    while (reader->pending->count != 0U) {
+        compact_entry entry;
+        bool already_visited;
+        size_t offset;
+
+        --reader->pending->count;
+        offset = reader->pending->items[reader->pending->count];
+        if (!read_compact_entry(
+            reader,
+            offset,
+            &entry,
+            &already_visited,
+            error
+        )) {
+            return false;
+        }
+        if (already_visited) {
+            continue;
+        }
+        if (!record_compact_entry(reader, &entry, error)
+            || !push_compact_entry_children(reader->pending, &entry, error)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool append_compact_directory_table(
+    compact_builder *builder,
+    compact_directory directory,
+    uint64_t blocks,
+    uint8_t *data,
+    gdox_error *error
+)
+{
+    return push_segment(
+        builder,
+        (compact_segment){
+            directory.output_sector,
+            blocks,
+            0U,
+            directory.size,
+            data,
+            COMPACT_SEGMENT_MEMORY,
+        },
+        error
+    );
+}
+
 static bool process_directory(
     compact_builder *builder,
     size_t directory_index,
@@ -270,6 +491,7 @@ static bool process_directory(
     uint8_t *data;
     uint8_t *visited = NULL;
     offset_stack pending = {0};
+    compact_directory_reader reader;
     bool success = false;
 
     if (directory.size == 0U || directory.size > COMPACT_MAX_DIRECTORY_BYTES
@@ -296,120 +518,27 @@ static bool process_directory(
     }
     builder->metadata_bytes += allocated_bytes_u64;
     if (!bytes_are_empty_directory(data, directory.size)) {
-        const size_t visited_bytes = ((size_t)directory.size + 3U) / 4U;
-        visited = calloc(visited_bytes, 1U);
-        if (visited == NULL || !push_offset(&pending, 0U, error)) {
-            free(visited);
-            free(data);
-            return false;
-        }
-        while (pending.count != 0U) {
-            size_t offset;
-            size_t slot;
-            uint16_t left;
-            uint16_t right;
-            uint32_t source_sector;
-            uint32_t size;
-            uint8_t attributes;
-            uint8_t name_bytes;
-            uint32_t output_sector;
-            uint64_t output_blocks;
-            uint64_t source_end;
-
-            --pending.count;
-            offset = pending.items[pending.count];
-            if (offset % 4U != 0U || offset > directory.size
-                || (size_t)directory.size - offset < 14U) {
-                gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME, "compact directory entry is truncated");
-                goto cleanup;
-            }
-            slot = offset / 4U;
-            if (visited[slot] != 0U) {
-                continue;
-            }
-            visited[slot] = 1U;
-            left = (uint16_t)(
-                (uint16_t)data[offset]
-                | (uint16_t)((uint16_t)data[offset + 1U] << 8U)
-            );
-            right = (uint16_t)(
-                (uint16_t)data[offset + 2U]
-                | (uint16_t)((uint16_t)data[offset + 3U] << 8U)
-            );
-            source_sector = read_le_u32(data + offset + 4U);
-            size = read_le_u32(data + offset + 8U);
-            attributes = data[offset + 12U];
-            name_bytes = data[offset + 13U];
-            if (name_bytes == 0U
-                || name_bytes > (size_t)directory.size - offset - 14U) {
-                gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME, "compact directory name is invalid");
-                goto cleanup;
-            }
-            if (!allocate_region(
-                    builder,
-                    size,
-                    &output_sector,
-                    &output_blocks,
-                    error
-                )
-                || !add_u64(source_sector, output_blocks, &source_end)
-                || source_end > gdox_source_sector_count(builder->source)) {
-                if (!gdox_error_is_set(error)) {
-                    gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME, "XDVDFS file extent exceeds the partition");
-                }
-                goto cleanup;
-            }
-            put_le_u32(data + offset + 4U, output_sector);
-            if ((attributes & 0x10U) != 0U) {
-                compact_directory child = {
-                    source_sector,
-                    size,
-                    output_sector,
-                    directory.depth + 1U,
-                };
-                if (directory.depth >= COMPACT_MAX_DEPTH
-                    || !push_directory(builder, child, error)) {
-                    if (!gdox_error_is_set(error)) {
-                        gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME, "XDVDFS directory nesting limit exceeded");
-                    }
-                    goto cleanup;
-                }
-            } else {
-                compact_segment file = {
-                    output_sector,
-                    output_blocks,
-                    source_sector,
-                    size,
-                    NULL,
-                    size == 0U ? COMPACT_SEGMENT_ZERO : COMPACT_SEGMENT_FILE,
-                };
-                if (!push_segment(builder, file, error)) {
-                    goto cleanup;
-                }
-                ++builder->file_count;
-            }
-            if (left != 0U
-                && !push_offset(&pending, (size_t)left * 4U, error)) {
-                goto cleanup;
-            }
-            if (right != 0U
-                && !push_offset(&pending, (size_t)right * 4U, error)) {
-                goto cleanup;
-            }
-        }
-    }
-    {
-        compact_segment table = {
-            directory.output_sector,
-            blocks,
-            0U,
-            directory.size,
+        reader = (compact_directory_reader){
+            builder,
+            directory,
             data,
-            COMPACT_SEGMENT_MEMORY,
+            NULL,
+            &pending,
         };
-        if (!push_segment(builder, table, error)) {
+        if (!traverse_compact_directory(&reader, error)) {
+            visited = reader.visited;
             goto cleanup;
         }
+        visited = reader.visited;
+    }
+    if (!append_compact_directory_table(
+        builder,
+        directory,
+        blocks,
+        data,
+        error
+    )) {
+        goto cleanup;
     }
     data = NULL;
     success = true;

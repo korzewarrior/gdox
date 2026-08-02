@@ -57,7 +57,11 @@ def reject_tokens(
 def main() -> int:
     failures: list[str] = []
 
-    reject_includes("src/core", ("app/", "ui/", "android/"), failures)
+    reject_includes(
+        "src/core",
+        ("app/", "ui/", "platform/", "android/"),
+        failures,
+    )
     reject_includes("src/app", ("ui/", "android/"), failures)
     reject_includes("src/ui", ("platform/", "android/"), failures)
     reject_includes("android/native", ("app/", "ui/"), failures)
@@ -99,7 +103,7 @@ def main() -> int:
     macos_transport = (ROOT / "src/platform/macos_scsi.c").read_text(
         encoding="utf-8"
     )
-    if "gdox_usb_bot_identity_matches(requested, &observed)" not in macos_transport:
+    if "gdox_usb_bot_identity_matches(candidate, &observed)" not in macos_transport:
         failures.append("macOS shared-USB-ID selection bypasses the exact matcher")
     if "GDOX_USB_BOT_ASUS_NR09" not in macos_transport:
         failures.append("macOS transport omits the ASUS A202 identity")
@@ -113,25 +117,121 @@ def main() -> int:
     optical_graph = (ROOT / "cmake/GdoxOptical.cmake").read_text(
         encoding="utf-8"
     )
+    if "gdox::media" not in optical_graph or "gdox::core" in optical_graph:
+        failures.append(
+            "optical services must depend on the portable media core only"
+        )
     for required in (
         "src/platform/asus_nr09_source.c",
         "src/platform/gp08_source.c",
+        "src/platform/mmc_commands.c",
         "src/platform/mt1887_source.c",
     ):
         if required not in optical_graph:
             failures.append(f"desktop optical graph omits {required}")
 
+    core_graph = (ROOT / "cmake/GdoxCore.cmake").read_text(encoding="utf-8")
+    for required in (
+        "add_library(gdox::media ALIAS gdox_media_core)",
+        "add_library(gdox::platform ALIAS gdox_platform_services)",
+        "add_library(gdox::services ALIAS gdox_desktop_services)",
+    ):
+        if required not in core_graph:
+            failures.append(
+                "desktop graph does not separate portable core and platform services"
+            )
+            break
+    core_sources = re.search(
+        r"add_library\(\s*gdox_core\s+STATIC(?P<sources>.*?)\n\)",
+        core_graph,
+        re.DOTALL,
+    )
+    if core_sources is None or "src/platform/" in core_sources.group("sources"):
+        failures.append("gdox_core directly compiles platform implementation sources")
+    core_links = re.search(
+        r"target_link_libraries\(\s*gdox_core(?P<links>.*?)\n\)",
+        core_graph,
+        re.DOTALL,
+    )
+    if core_links is None or "gdox::platform" in core_links.group("links"):
+        failures.append("gdox_core target depends outward on platform services")
+    services_links = re.search(
+        r"target_link_libraries\(\s*gdox_desktop_services(?P<links>.*?)\n\)",
+        core_graph,
+        re.DOTALL,
+    )
+    if services_links is None or not all(
+        dependency in services_links.group("links")
+        for dependency in ("gdox::core", "gdox::platform")
+    ):
+        failures.append("desktop services do not compose core and platform targets")
+
+    runtime_graph = (ROOT / "cmake/GdoxRuntime.cmake").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "add_library(gdox::runtime ALIAS gdox_desktop_runtime)",
+        "src/app/runtime.c",
+        "src/app/runtime_controls.c",
+        "src/app/runtime_media.c",
+        "src/app/runtime_preservation.c",
+        "gdox::services",
+        "gdox::optical",
+    ):
+        if required not in runtime_graph:
+            failures.append("desktop runtime target omits production runtime code")
+            break
+
     optical_registry = (ROOT / "src/platform/optical.c").read_text(
         encoding="utf-8"
     )
     for required in (
-        "gdox_optical_observe_asus_nr09(",
-        "gdox_optical_asus_nr09_connected(",
-        "gdox_optical_open_asus_nr09(",
+        "static const gdox_optical_driver drivers[]",
+        "gdox_usb_bot_observe_all(",
+        "gdox_usb_bot_present_all(",
+        "gdox_optical_select_presence(",
         "GDOX_OPTICAL_DRIVE_ASUS_NR09",
     ):
         if required not in optical_registry:
-            failures.append("desktop optical registry omits the ASUS A202 adapter")
+            failures.append("desktop optical registry is not table-driven")
+    legacy_optical_calls = (
+        "gdox_optical_observe_gp63(",
+        "gdox_optical_observe_gp65(",
+        "gdox_optical_observe_gp08(",
+        "gdox_optical_observe_asus_nr09(",
+        "gdox_optical_gp63_connected(",
+        "gdox_optical_gp65_connected(",
+        "gdox_optical_gp08_connected(",
+        "gdox_optical_asus_nr09_connected(",
+    )
+    for legacy in legacy_optical_calls:
+        if legacy in optical_registry:
+            failures.append(f"desktop optical registry retains legacy wrapper {legacy}")
+
+    optical_header = (ROOT / "include/gdox/optical.h").read_text(encoding="utf-8")
+    for legacy in legacy_optical_calls:
+        if legacy in optical_header:
+            failures.append(f"public optical API retains legacy wrapper {legacy}")
+
+    for name, read_command in (
+        ("asus_nr09_source.c", "gdox_mmc_read_10("),
+        ("gp08_source.c", "gdox_mmc_read_10("),
+        ("mt1887_source.c", "gdox_mmc_read_12("),
+    ):
+        source = (ROOT / "src/platform" / name).read_text(encoding="utf-8")
+        for required in (
+            "gdox_mmc_inquiry(",
+            "gdox_mmc_read_capacity_10(",
+            "gdox_mmc_read_dvd_structure(",
+            read_command,
+        ):
+            if required not in source:
+                failures.append(f"{name} bypasses shared MMC command {required}")
+        if re.search(
+            r"static\s+bool\s+(?:inquiry|read_capacity|read_dvd_structure)\s*\(",
+            source,
+        ):
+            failures.append(f"{name} duplicates shared MMC command construction")
 
     android_graph = (ROOT / "android/native/CMakeLists.txt").read_text(
         encoding="utf-8"
@@ -145,6 +245,8 @@ def main() -> int:
         failures.append("Android MT1887 source omits the identity profile")
     if "src/platform/usb_bot_identity.c" not in android_graph:
         failures.append("Android USB transport omits the shared identity matcher")
+    if "src/platform/mmc_commands.c" not in android_graph:
+        failures.append("Android optical stack omits shared MMC commands")
 
     if failures:
         for failure in failures:

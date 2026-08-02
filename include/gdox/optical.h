@@ -71,69 +71,6 @@ bool gdox_optical_eject(
     gdox_error *error
 );
 
-bool gdox_optical_observe_gp63(
-    gdox_optical_presence *presence,
-    gdox_error *error
-);
-bool gdox_optical_gp63_connected(
-    bool *connected,
-    gdox_error *error
-);
-bool gdox_optical_open_gp63(
-    uint8_t read_retries,
-    uint32_t ready_timeout_ms,
-    gdox_sector_source *source,
-    gdox_error *error
-);
-bool gdox_optical_eject_gp63(gdox_error *error);
-
-bool gdox_optical_observe_gp65(
-    gdox_optical_presence *presence,
-    gdox_error *error
-);
-bool gdox_optical_gp65_connected(
-    bool *connected,
-    gdox_error *error
-);
-bool gdox_optical_open_gp65(
-    uint8_t read_retries,
-    uint32_t ready_timeout_ms,
-    gdox_sector_source *source,
-    gdox_error *error
-);
-bool gdox_optical_eject_gp65(gdox_error *error);
-
-bool gdox_optical_observe_gp08(
-    gdox_optical_presence *presence,
-    gdox_error *error
-);
-bool gdox_optical_gp08_connected(
-    bool *connected,
-    gdox_error *error
-);
-bool gdox_optical_open_gp08(
-    uint8_t read_retries,
-    uint32_t ready_timeout_ms,
-    gdox_sector_source *source,
-    gdox_error *error
-);
-bool gdox_optical_eject_gp08(gdox_error *error);
-
-bool gdox_optical_observe_asus_nr09(
-    gdox_optical_presence *presence,
-    gdox_error *error
-);
-bool gdox_optical_asus_nr09_connected(
-    bool *connected,
-    gdox_error *error
-);
-bool gdox_optical_open_asus_nr09(
-    uint8_t read_retries,
-    uint32_t ready_timeout_ms,
-    gdox_sector_source *source,
-    gdox_error *error
-);
-
 #ifdef __cplusplus
 }
 #endif

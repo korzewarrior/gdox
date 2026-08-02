@@ -1,6 +1,6 @@
 #include "core/hdd_cache.h"
 
-#include "platform/random_access_file.h"
+#include "core/ports/random_access_file.h"
 
 #include <stdint.h>
 #include <stdlib.h>

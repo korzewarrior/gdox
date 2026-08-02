@@ -86,22 +86,14 @@ endif()
 
 add_executable(
     gdox
-    src/app/app.c
-    src/app/runtime.c
-    src/app/runtime_controls.c
-    src/app/runtime_media.c
-    src/app/runtime_preservation.c
     src/ui/configuration_pages.cpp
     src/ui/details_page.cpp
+    src/ui/gamepad_input_policy.c
     src/ui/main.cpp
     src/ui/play_page.cpp
     src/ui/presentation.cpp
     src/ui/preserve_page.cpp
     src/ui/theme.cpp
-)
-target_sources(
-    gdox
-    PRIVATE $<TARGET_OBJECTS:gdox_application_support>
 )
 if(WIN32)
     target_compile_definitions(gdox PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -136,11 +128,12 @@ target_include_directories(gdox PRIVATE src)
 target_link_libraries(
     gdox
     PRIVATE
-        gdox::optical
+        gdox::runtime
         gdox_imgui
         nfd::nfd
         ${GDOX_RAYLIB_TARGET}
 )
+gdox_enable_c_warnings(gdox)
 gdox_enable_cxx_warnings(gdox)
 if(MINGW)
     target_link_options(

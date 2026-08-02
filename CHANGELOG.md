@@ -1,5 +1,16 @@
 # changes
 
+## 0.1.4
+
+- stop background controller input from activating gdox navigation, links, or
+  quit while xemu is running; controller navigation now resumes only after
+  gdox regains focus and every button has been released
+- replaced the unused public session reducer with the desktop runtime's
+  ordered, payload-owning command planner; `gdox_session_event` now contains
+  only application commands that are actually accepted
+- consolidated desktop state, optical discovery, MMC commands, build layers,
+  version metadata, and platform tests without changing supported hardware
+
 ## 0.1.3
 
 - exact `ASUS SDRW-08D1S-U A202` support for original Xbox discs through the

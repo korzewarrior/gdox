@@ -3,7 +3,7 @@
 #include "test.h"
 
 #include "gdox/emulator.h"
-#include "platform/emulator_configuration.h"
+#include "core/emulator_configuration.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -84,6 +84,25 @@ static char *read_test_text(const char *path)
     }
     (void)fclose(file);
     return text;
+}
+
+static void test_configuration_source_validation(void)
+{
+    static const char path[] = "gdox-xemu-config-fifo.tmp";
+    gdox_emulator_options options = {0};
+    gdox_error error;
+
+    (void)remove(path);
+    GDOX_TEST_CHECK(mkfifo(path, 0600) == 0);
+#if defined(__APPLE__)
+    options.executable = "/usr/bin/true";
+#else
+    options.executable = "/bin/true";
+#endif
+    options.configuration = path;
+    GDOX_TEST_CHECK(!gdox_emulator_prepare(&options, &error));
+    GDOX_TEST_CHECK(error.code == GDOX_ERROR_INVALID_SOURCE);
+    GDOX_TEST_CHECK(remove(path) == 0);
 }
 
 static void test_targeted_configuration_and_process(void)
@@ -184,6 +203,7 @@ void gdox_test_emulator(void)
 {
     test_file_configuration();
 #if !defined(_WIN32)
+    test_configuration_source_validation();
     test_targeted_configuration_and_process();
 #endif
 }

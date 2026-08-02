@@ -5,25 +5,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[1]
-SCAN_PATHS = (
-    ROOT / "CMakeLists.txt",
-    ROOT / "README.md",
-    ROOT / "CHANGELOG.md",
-    ROOT / "CONTRIBUTING.md",
-    ROOT / "android",
-    ROOT / "cmake",
-    ROOT / "docs",
-    ROOT / "include",
-    ROOT / "packaging",
-    ROOT / "site",
-    ROOT / "src",
-    ROOT / "tests",
-)
 TEXT_SUFFIXES = {
     "",
     ".c",
@@ -55,17 +42,31 @@ FORBIDDEN = (
     re.compile(r"xgd[23]", re.IGNORECASE),
     re.compile("game" + r"[\s_-]*" + "cube", re.IGNORECASE),
     re.compile("dol" + "phin", re.IGNORECASE),
+    re.compile("dream" + r"[\s_-]*" + "cast", re.IGNORECASE),
+    re.compile("red" + "ream", re.IGNORECASE),
+    re.compile("fly" + "cast", re.IGNORECASE),
 )
 
 
 def files() -> list[Path]:
-    output: list[Path] = []
-    for candidate in SCAN_PATHS:
-        if candidate.is_file():
-            output.append(candidate)
-        elif candidate.is_dir():
-            output.extend(path for path in candidate.rglob("*") if path.is_file())
-    return sorted(set(output))
+    result = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    return sorted(
+        ROOT / name.decode()
+        for name in result.stdout.split(b"\0")
+        if name and (ROOT / name.decode()).is_file()
+    )
 
 
 def main() -> int:

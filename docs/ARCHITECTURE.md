@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the Original Xbox implementation in gdox 0.1.3.
+This document describes the current Original Xbox implementation in gdox.
 
 GDOX is a layered application with one active-media session owner.
 Dependencies point inward:
@@ -20,10 +20,12 @@ preservation service ── filesystem, hashes, evidence, output I/O
 
 ## Core
 
-`src/core` contains platform-independent disc, XDVDFS, compact-XISO,
-disc-image, preservation, evidence, hashing, session, and NBD protocol logic.
-Its public contracts are in `include/gdox`. Core code does not know about
-windows, dialogs, USB enumeration, or a specific optical mechanism.
+`src/core` contains disc, XDVDFS, compact-XISO, disc-image, preservation,
+evidence, and hashing logic. Its public contracts are
+in `include/gdox`. Operating-system services used by core are declared as
+core-owned ports under `src/core/ports`; implementations live under
+`src/platform`. Core code does not include platform implementation headers or
+know about windows, dialogs, USB enumeration, or a specific optical mechanism.
 
 Sector sources use the `gdox_sector_source` interface. Preservation therefore
 operates on the same bounded read contract whether the source is a physical
@@ -32,15 +34,27 @@ disc or a test fixture.
 `cmake/GdoxSources.cmake` is the single source manifest for the portable
 live-disc and HDD scratch services compiled into both desktop and Android.
 Android does not maintain a copied core. `scripts/audit_architecture.py`
-rejects outward dependencies from core, Android dependencies in desktop layers
-or public headers, and an Android build that stops consuming these shared
-source sets.
+rejects outward dependencies from core, including direct platform includes;
+Android dependencies in desktop layers or public headers; and an Android build
+that stops consuming these shared source sets. The desktop build exposes the
+portable live-disc subset as `gdox::media`; optical services depend on that
+target instead of the broader desktop service library. Other portable
+algorithms compile into `gdox::core`. Operating-system adapters compile into
+`gdox::platform`. Higher-level desktop targets compose both through the
+link-only `gdox::services` interface, leaving the core target free of outward
+dependencies while supplying its core-owned ports. Emulator configuration
+parsing is a separate portable service used by the platform launcher.
 
 ## Application
 
-`src/app/app.c` is the presentation-facing façade. It translates the runtime
-snapshot into stable page state and translates user actions into typed
-commands.
+`src/app/app.c` is the presentation-facing façade. It owns page selection,
+accepts the canonical runtime snapshot, and translates user actions into typed
+commands without maintaining a second field-by-field state model.
+
+The façade and production runtime sources compile once into `gdox::runtime`.
+Both the desktop executable and headless runtime-request tests link that target,
+so sanitizer and warning builds cover the same implementation shipped by the
+application.
 
 The runtime is split by ownership: `runtime.c` owns the worker thread, selected
 media, read-only NBD export, and xemu process; `runtime_media.c` opens validated
@@ -50,16 +64,21 @@ firmware imports, and source overrides. Their shared contract is private to
 `src/app`. Only the worker can transition a media session. UI code never owns
 an optical handle or image file.
 
+`runtime_commands.c` owns the production command queue and pure action
+planner. Requests retain FIFO order, own path payloads, and remain queued when
+an earlier action ends a worker cycle. The worker itself is a short coordinator
+over separate idle-discovery, live-session, emulator, and media-removal stages.
+
 `optical_monitor.c` is the pure state machine between passive device
 observation and active session initialization. It requires stable media before
 one initialization attempt. A failed attempt is latched until an explicit
 Start command; a transient USB disappearance cannot create an automatic retry
 loop.
 
-Published snapshots are copied under a mutex; the user-owned settings inside
-each snapshot are carried across publishes by one copy pair in `runtime.c`.
-Cancellation is atomic. Output files use a `.part` path and are renamed only
-after finalization.
+Published snapshots are copied under a mutex. Preferences, runtime, and UI use
+one composed settings value, which is preserved across worker publications by
+a single typed assignment. Cancellation is atomic. Output files use a `.part`
+path and are renamed only after finalization.
 
 Closing a session aborts the optical retry ladder before any thread join, so
 teardown does not wait for recovery to run out. Recovery within one source
@@ -136,12 +155,21 @@ and never issues a tray command to the manual-close mechanism. Adding another
 drive means adding another source adapter with its own identity, transport,
 state transaction, error recovery, and physical tests.
 
+The public optical API exposes drive-independent operations only. A private
+descriptor registry maps each supported identity to its name, open operation,
+and optional eject operation. Standard MMC command construction and response
+validation live in `mmc_commands.c`; identity checks, vendor memory commands,
+recovery ladders, and restoration order remain in the individual drive
+adapters.
+
 Drive discovery is non-owning. Linux uses libusb enumeration plus the kernel
 optical media-status interface; Windows enumerates optical class devices and
 validates the class driver's storage identity; macOS uses IOKit registry
-state. The active transport is claimed only after stable media is observed and
-remains exclusively owned through the live session, including any
-operating-system reset recovery.
+state. Each observation batches all supported identities into one platform
+enumeration pass and reports media state with the matching device. The active
+transport is claimed only after stable media is observed and remains
+exclusively owned through the live session, including any operating-system
+reset recovery.
 
 SteamOS resets USB storage interfaces during system resume. If Linux reports
 that a claimed supported-drive interface was lost, the transport closes the

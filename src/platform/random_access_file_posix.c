@@ -6,7 +6,7 @@
 #define _DARWIN_C_SOURCE
 #endif
 
-#include "platform/random_access_file.h"
+#include "core/ports/random_access_file.h"
 
 #include <errno.h>
 #include <fcntl.h>

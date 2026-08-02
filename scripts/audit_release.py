@@ -68,6 +68,41 @@ TEXT_RULES = (
     ),
 )
 
+PUBLIC_HYGIENE_RULES = (
+    (
+        "automated authorship reference",
+        re.compile(
+            "(?:chat" + "gpt|open" + "ai|clau" + "de|co" + "pilot)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "automated-content attribution",
+        re.compile(
+            r"(?:\b"
+            + "a"
+            + r"i[\s_-]*(?:generated|authored|written)\b|"
+            + r"\b(?:generated|authored|written)[\s_-]+by[\s_-]+"
+            + "a"
+            + r"i\b|\bas[\s_-]+an[\s_-]+"
+            + "a"
+            + r"i\b)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "unfinished implementation marker",
+        re.compile(r"\b(?:TO" + "DO|FIX" + r"ME)\b"),
+    ),
+    (
+        "unprofessional language",
+        re.compile(
+            r"\b(?:sh" + "itty|cr" + "ap|fu" + r"ck(?:ed|ing)?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
 
 def runtime_markers() -> list[tuple[str, bytes]]:
     generic_values = {
@@ -106,6 +141,8 @@ RUNTIME_MARKERS = runtime_markers()
 
 def is_third_party_source(label: str) -> bool:
     normalized = label.replace("\\", "/")
+    if normalized.endswith("/android/emulator/patches/0001-android-core.patch"):
+        return True
     if "/source/" in normalized and "/source/gdox/" not in normalized:
         return True
     if "!" not in normalized:
@@ -163,6 +200,10 @@ def inspect_bytes(label: str, data: bytes, findings: list[str]) -> None:
         )
     )
     for line_number, line in enumerate(text.splitlines(), 1):
+        if not third_party_source and not third_party_notice:
+            for rule_label, rule in PUBLIC_HYGIENE_RULES:
+                if rule.search(line):
+                    findings.append(f"{label}:{line_number}: {rule_label}")
         for rule_label, rule in TEXT_RULES:
             if (
                 third_party_notice

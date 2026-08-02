@@ -66,6 +66,168 @@ static bool parse_unsigned(
     return true;
 }
 
+typedef enum numeric_field_kind {
+    NUMERIC_SCHEMA = 0,
+    NUMERIC_AUTO_START,
+    NUMERIC_SCALE,
+    NUMERIC_ASPECT,
+    NUMERIC_FIT,
+    NUMERIC_FULLSCREEN,
+    NUMERIC_WIDTH,
+    NUMERIC_HEIGHT
+} numeric_field_kind;
+
+typedef struct numeric_field_description {
+    const char *key;
+    size_t key_bytes;
+    numeric_field_kind kind;
+} numeric_field_description;
+
+typedef struct string_field_binding {
+    const char *key;
+    size_t key_bytes;
+    char *output;
+    size_t capacity;
+    bool *seen;
+} string_field_binding;
+
+static const numeric_field_description numeric_fields[] = {
+    {"schema", 6U, NUMERIC_SCHEMA},
+    {"auto_start", 10U, NUMERIC_AUTO_START},
+    {"internal_resolution_scale", 25U, NUMERIC_SCALE},
+    {"display_aspect", 14U, NUMERIC_ASPECT},
+    {"display_fit", 11U, NUMERIC_FIT},
+    {"fullscreen", 10U, NUMERIC_FULLSCREEN},
+    {"window_width", 12U, NUMERIC_WIDTH},
+    {"window_height", 13U, NUMERIC_HEIGHT},
+};
+
+static bool key_matches(
+    const char *key,
+    size_t key_bytes,
+    const char *expected,
+    size_t expected_bytes
+)
+{
+    return key_bytes == expected_bytes
+        && memcmp(key, expected, expected_bytes) == 0;
+}
+
+static bool claim_field(bool *seen)
+{
+    if (*seen) {
+        return false;
+    }
+    *seen = true;
+    return true;
+}
+
+static const numeric_field_description *find_numeric_field(
+    const char *key,
+    size_t key_bytes
+)
+{
+    size_t index;
+    for (index = 0U;
+        index < sizeof(numeric_fields) / sizeof(numeric_fields[0]);
+        ++index) {
+        if (key_matches(
+                key,
+                key_bytes,
+                numeric_fields[index].key,
+                numeric_fields[index].key_bytes
+            )) {
+            return &numeric_fields[index];
+        }
+    }
+    return NULL;
+}
+
+static bool assign_string_field(
+    const string_field_binding *binding,
+    const char *value,
+    size_t value_bytes
+)
+{
+    if (value_bytes >= binding->capacity || !claim_field(binding->seen)) {
+        return false;
+    }
+    memcpy(binding->output, value, value_bytes);
+    binding->output[value_bytes] = '\0';
+    return true;
+}
+
+static bool assign_numeric_field(
+    gdox_preferences *preferences,
+    decoded_fields *fields,
+    numeric_field_kind kind,
+    unsigned long value
+)
+{
+    bool *seen;
+
+    switch (kind) {
+        case NUMERIC_SCHEMA:
+            seen = &fields->schema;
+            if (value != GDOX_PREFERENCES_SCHEMA) {
+                return false;
+            }
+            break;
+        case NUMERIC_AUTO_START:
+            seen = &fields->auto_start;
+            if (value > 1U) {
+                return false;
+            }
+            preferences->auto_start = value != 0U;
+            break;
+        case NUMERIC_SCALE:
+            seen = &fields->scale;
+            if (value < 1U || value > 10U) {
+                return false;
+            }
+            preferences->internal_resolution_scale = (uint8_t)value;
+            break;
+        case NUMERIC_ASPECT:
+            seen = &fields->aspect;
+            if (value > (unsigned long)GDOX_EMULATOR_ASPECT_NATIVE) {
+                return false;
+            }
+            preferences->display_aspect = (gdox_emulator_aspect)value;
+            break;
+        case NUMERIC_FIT:
+            seen = &fields->fit;
+            if (value > (unsigned long)GDOX_EMULATOR_FIT_STRETCH) {
+                return false;
+            }
+            preferences->display_fit = (gdox_emulator_fit)value;
+            break;
+        case NUMERIC_FULLSCREEN:
+            seen = &fields->fullscreen;
+            if (value > 1U) {
+                return false;
+            }
+            preferences->fullscreen = value != 0U;
+            break;
+        case NUMERIC_WIDTH:
+            seen = &fields->width;
+            if (value < 640U || value > 7680U) {
+                return false;
+            }
+            preferences->window_width = (uint16_t)value;
+            break;
+        case NUMERIC_HEIGHT:
+            seen = &fields->height;
+            if (value < 480U || value > 4320U) {
+                return false;
+            }
+            preferences->window_height = (uint16_t)value;
+            break;
+        default:
+            return false;
+    }
+    return claim_field(seen);
+}
+
 static bool assign_field(
     gdox_preferences *preferences,
     decoded_fields *fields,
@@ -75,104 +237,49 @@ static bool assign_field(
     size_t value_bytes
 )
 {
-    unsigned long parsed = 0U;
-    bool *seen = NULL;
+    const string_field_binding strings[] = {
+        {
+            "xemu_override",
+            13U,
+            preferences->xemu_override,
+            sizeof(preferences->xemu_override),
+            &fields->xemu_override,
+        },
+        {
+            "hdd_override",
+            12U,
+            preferences->hdd_override,
+            sizeof(preferences->hdd_override),
+            &fields->hdd_override,
+        },
+        {
+            "preservation_directory",
+            22U,
+            preferences->preservation_directory,
+            sizeof(preferences->preservation_directory),
+            &fields->preservation_directory,
+        },
+    };
+    const numeric_field_description *numeric;
+    unsigned long parsed;
+    size_t index;
 
-    if (key_bytes == 13U && memcmp(key, "xemu_override", 13U) == 0) {
-        if (value_bytes >= sizeof(preferences->xemu_override)) {
-            return false;
-        }
-        seen = &fields->xemu_override;
-        memcpy(preferences->xemu_override, value, value_bytes);
-        preferences->xemu_override[value_bytes] = '\0';
-    } else if (key_bytes == 12U
-        && memcmp(key, "hdd_override", 12U) == 0) {
-        if (value_bytes >= sizeof(preferences->hdd_override)) {
-            return false;
-        }
-        seen = &fields->hdd_override;
-        memcpy(preferences->hdd_override, value, value_bytes);
-        preferences->hdd_override[value_bytes] = '\0';
-    } else if (key_bytes == 22U
-        && memcmp(key, "preservation_directory", 22U) == 0) {
-        if (value_bytes >= sizeof(preferences->preservation_directory)) {
-            return false;
-        }
-        seen = &fields->preservation_directory;
-        memcpy(preferences->preservation_directory, value, value_bytes);
-        preferences->preservation_directory[value_bytes] = '\0';
-    } else {
-        if (!parse_unsigned(value, value_bytes, &parsed)) {
-            return false;
+    for (index = 0U; index < sizeof(strings) / sizeof(strings[0]); ++index) {
+        if (key_matches(
+                key,
+                key_bytes,
+                strings[index].key,
+                strings[index].key_bytes
+            )) {
+            return assign_string_field(&strings[index], value, value_bytes);
         }
     }
-    if (seen != NULL) {
-        if (*seen) {
-            return false;
-        }
-        *seen = true;
-        return true;
-    }
-    if (key_bytes == 6U && memcmp(key, "schema", 6U) == 0) {
-        seen = &fields->schema;
-        if (parsed != GDOX_PREFERENCES_SCHEMA) {
-            return false;
-        }
-    } else if (key_bytes == 10U && memcmp(key, "auto_start", 10U) == 0) {
-        seen = &fields->auto_start;
-        if (parsed > 1U) {
-            return false;
-        }
-        preferences->auto_start = parsed != 0U;
-    } else if (key_bytes == 25U
-        && memcmp(key, "internal_resolution_scale", 25U) == 0) {
-        seen = &fields->scale;
-        if (parsed < 1U || parsed > 10U) {
-            return false;
-        }
-        preferences->internal_resolution_scale = (uint8_t)parsed;
-    } else if (key_bytes == 14U
-        && memcmp(key, "display_aspect", 14U) == 0) {
-        seen = &fields->aspect;
-        if (parsed > (unsigned long)GDOX_EMULATOR_ASPECT_NATIVE) {
-            return false;
-        }
-        preferences->display_aspect = (gdox_emulator_aspect)parsed;
-    } else if (key_bytes == 11U
-        && memcmp(key, "display_fit", 11U) == 0) {
-        seen = &fields->fit;
-        if (parsed > (unsigned long)GDOX_EMULATOR_FIT_STRETCH) {
-            return false;
-        }
-        preferences->display_fit = (gdox_emulator_fit)parsed;
-    } else if (key_bytes == 10U && memcmp(key, "fullscreen", 10U) == 0) {
-        seen = &fields->fullscreen;
-        if (parsed > 1U) {
-            return false;
-        }
-        preferences->fullscreen = parsed != 0U;
-    } else if (key_bytes == 12U
-        && memcmp(key, "window_width", 12U) == 0) {
-        seen = &fields->width;
-        if (parsed < 640U || parsed > 7680U) {
-            return false;
-        }
-        preferences->window_width = (uint16_t)parsed;
-    } else if (key_bytes == 13U
-        && memcmp(key, "window_height", 13U) == 0) {
-        seen = &fields->height;
-        if (parsed < 480U || parsed > 4320U) {
-            return false;
-        }
-        preferences->window_height = (uint16_t)parsed;
-    } else {
-        return true;
-    }
-    if (*seen) {
+    if (!parse_unsigned(value, value_bytes, &parsed)) {
         return false;
     }
-    *seen = true;
-    return true;
+    numeric = find_numeric_field(key, key_bytes);
+    return numeric == NULL
+        || assign_numeric_field(preferences, fields, numeric->kind, parsed);
 }
 
 static bool decode(

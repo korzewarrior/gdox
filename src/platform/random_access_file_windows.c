@@ -1,6 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 
-#include "platform/random_access_file.h"
+#include "core/ports/random_access_file.h"
 #include "platform/windows_support.h"
 
 #include <windows.h>

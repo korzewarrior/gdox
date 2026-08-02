@@ -1,6 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 
-#include "platform/hash_backend.h"
+#include "core/ports/hash_backend.h"
 
 #include <windows.h>
 #include <bcrypt.h>

@@ -1,7 +1,7 @@
 #include "gdox/preserve.h"
 
 #include "core/preservation_internal.h"
-#include "platform/preservation_io.h"
+#include "core/ports/preservation_io.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -306,6 +306,66 @@ static bool write_image(writer_state *state, gdox_error *error)
     return gdox_hash_stream_finish(state->hashes, &state->result->hashes, error);
 }
 
+static bool hash_file_contents(
+    gdox_preservation_file *file,
+    uint64_t expected_bytes,
+    writer_state *state,
+    gdox_hash_stream *hashes,
+    uint8_t *buffer,
+    gdox_hashes *output,
+    gdox_error *error
+)
+{
+    uint64_t completed = 0U;
+
+    for (;;) {
+        size_t read_bytes = 0U;
+        if (is_cancelled(state)) {
+            gdox_error_set(
+                error,
+                GDOX_ERROR_CANCELLED,
+                "preservation verification was cancelled"
+            );
+            return false;
+        }
+        if (!gdox_preservation_file_read(
+            file,
+            buffer,
+            PRESERVATION_VERIFY_BUFFER,
+            &read_bytes,
+            error
+        )) {
+            return false;
+        }
+        if (read_bytes == 0U) {
+            break;
+        }
+        if (!gdox_hash_stream_update(hashes, buffer, read_bytes, error)) {
+            return false;
+        }
+        completed += read_bytes;
+        report_progress(
+            state,
+            GDOX_PRESERVATION_VERIFYING,
+            completed,
+            expected_bytes,
+            false
+        );
+    }
+    if (completed == expected_bytes
+        && gdox_hash_stream_finish(hashes, output, error)) {
+        return true;
+    }
+    if (!gdox_error_is_set(error)) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_SOURCE,
+            "preservation verification ended at the wrong length"
+        );
+    }
+    return false;
+}
+
 static bool hash_file(
     const char *path,
     uint64_t expected_bytes,
@@ -318,7 +378,6 @@ static bool hash_file(
     gdox_hash_stream *hashes = NULL;
     uint8_t *buffer = NULL;
     uint64_t length = 0U;
-    uint64_t completed = 0U;
     bool success = false;
     gdox_error close_error;
 
@@ -337,41 +396,15 @@ static bool hash_file(
         gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate verification buffer");
         goto cleanup;
     }
-    for (;;) {
-        size_t read_bytes = 0U;
-        if (is_cancelled(state)) {
-            gdox_error_set(error, GDOX_ERROR_CANCELLED, "preservation verification was cancelled");
-            goto cleanup;
-        }
-        if (!gdox_preservation_file_read(
-                file,
-                buffer,
-                PRESERVATION_VERIFY_BUFFER,
-                &read_bytes,
-                error
-            )) {
-            goto cleanup;
-        }
-        if (read_bytes == 0U) {
-            break;
-        }
-        if (!gdox_hash_stream_update(hashes, buffer, read_bytes, error)) {
-            goto cleanup;
-        }
-        completed += read_bytes;
-        report_progress(
-            state,
-            GDOX_PRESERVATION_VERIFYING,
-            completed,
-            expected_bytes,
-            false
-        );
-    }
-    if (completed != expected_bytes
-        || !gdox_hash_stream_finish(hashes, output, error)) {
-        if (!gdox_error_is_set(error)) {
-            gdox_error_set(error, GDOX_ERROR_INVALID_SOURCE, "preservation verification ended at the wrong length");
-        }
+    if (!hash_file_contents(
+        file,
+        expected_bytes,
+        state,
+        hashes,
+        buffer,
+        output,
+        error
+    )) {
         goto cleanup;
     }
     success = true;
@@ -527,6 +560,108 @@ void gdox_preservation_result_destroy(gdox_preservation_result *result)
     }
 }
 
+static bool write_and_verify_preservation(
+    const char *part_path,
+    uint64_t total_bytes,
+    writer_state *state,
+    gdox_error *error
+)
+{
+    gdox_hashes verified;
+
+    if (!gdox_preservation_file_create(part_path, &state->file, error)
+        || !gdox_hash_stream_create(&state->hashes, error)
+        || !write_image(state, error)) {
+        return false;
+    }
+    gdox_hash_stream_destroy(state->hashes);
+    state->hashes = NULL;
+    if (!gdox_preservation_file_sync_close(state->file, error)) {
+        state->file = NULL;
+        return false;
+    }
+    state->file = NULL;
+    if (!state->request->verify) {
+        return true;
+    }
+    state->started = current_seconds();
+    state->last_progress = 0.0;
+    if (hash_file(part_path, total_bytes, state, &verified, error)
+        && hashes_equal(&verified, &state->result->hashes)) {
+        state->result->readback_verified = true;
+        return true;
+    }
+    if (!gdox_error_is_set(error)) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_SOURCE,
+            "read-back hashes do not match the image just written"
+        );
+    }
+    return false;
+}
+
+static bool evidence_is_complete(
+    const gdox_preservation_request *request,
+    const gdox_disc_evidence *evidence,
+    const gdox_preservation_map *map,
+    const gdox_preservation_result *result
+)
+{
+    return request->verify
+        && result->unreadable_sectors == 0U
+        && evidence->pfi_present
+        && evidence->dmi_present
+        && evidence->security_sector_present
+        && map != NULL
+        && map->source == GDOX_SECURITY_MAP_AUTHENTICATED_SS;
+}
+
+static void classify_preservation(
+    const gdox_preservation_request *request,
+    const gdox_disc_evidence *evidence,
+    const gdox_preservation_map *map,
+    gdox_preservation_result *result
+)
+{
+    if (map != NULL && map->expected_hash_mask != 0U) {
+        result->expected_hashes_match =
+            expected_hashes_match(map, &result->hashes) ? 1 : 0;
+    }
+    if (request->format == GDOX_PRESERVATION_XISO_COMPACT) {
+        result->status = GDOX_PRESERVATION_PLAYABLE_XISO;
+    } else if (evidence_is_complete(request, evidence, map, result)) {
+        result->status = GDOX_PRESERVATION_REDUMP_EVIDENCE_COMPLETE;
+    } else {
+        result->status = GDOX_PRESERVATION_REDUMP_CANDIDATE;
+    }
+}
+
+static void cleanup_preservation(
+    writer_state *state,
+    const gdox_preservation_request *request,
+    const char *part_path,
+    gdox_preservation_result *result,
+    bool success
+)
+{
+    gdox_error cleanup_error;
+
+    gdox_hash_stream_destroy(state->hashes);
+    if (state->file != NULL) {
+        (void)gdox_preservation_file_close(state->file, &cleanup_error);
+    }
+    if (success) {
+        return;
+    }
+    if (!request->keep_partial) {
+        (void)gdox_preservation_path_remove(part_path);
+    }
+    free(result->unreadable_ranges);
+    result->unreadable_ranges = NULL;
+    result->unreadable_range_count = 0U;
+}
+
 bool gdox_preservation_run(
     const gdox_preservation_request *request,
     const gdox_preservation_input *input,
@@ -544,8 +679,6 @@ bool gdox_preservation_run(
     writer_state state;
     uint64_t sectors;
     uint64_t total_bytes;
-    gdox_hashes verified;
-    gdox_error cleanup_error;
     bool success = false;
 
     memset(&state, 0, sizeof(state));
@@ -602,47 +735,15 @@ bool gdox_preservation_run(
         true
     );
 
-    if (!gdox_preservation_file_create(part_path, &state.file, error)
-        || !gdox_hash_stream_create(&state.hashes, error)
-        || !write_image(&state, error)) {
+    if (!write_and_verify_preservation(
+        part_path,
+        total_bytes,
+        &state,
+        error
+    )) {
         goto cleanup;
     }
-    gdox_hash_stream_destroy(state.hashes);
-    state.hashes = NULL;
-    if (!gdox_preservation_file_sync_close(state.file, error)) {
-        state.file = NULL;
-        goto cleanup;
-    }
-    state.file = NULL;
-    if (request->verify) {
-        state.started = current_seconds();
-        state.last_progress = 0.0;
-        if (!hash_file(part_path, total_bytes, &state, &verified, error)
-            || !hashes_equal(&verified, &result->hashes)) {
-            if (!gdox_error_is_set(error)) {
-                gdox_error_set(error, GDOX_ERROR_INVALID_SOURCE, "read-back hashes do not match the image just written");
-            }
-            goto cleanup;
-        }
-        result->readback_verified = true;
-    }
-    if (map != NULL && map->expected_hash_mask != 0U) {
-        result->expected_hashes_match =
-            expected_hashes_match(map, &result->hashes) ? 1 : 0;
-    }
-    if (request->format == GDOX_PRESERVATION_XISO_COMPACT) {
-        result->status = GDOX_PRESERVATION_PLAYABLE_XISO;
-    } else if (request->verify
-        && result->unreadable_sectors == 0U
-        && evidence.pfi_present
-        && evidence.dmi_present
-        && evidence.security_sector_present
-        && map != NULL
-        && map->source == GDOX_SECURITY_MAP_AUTHENTICATED_SS) {
-        result->status = GDOX_PRESERVATION_REDUMP_EVIDENCE_COMPLETE;
-    } else {
-        result->status = GDOX_PRESERVATION_REDUMP_CANDIDATE;
-    }
+    classify_preservation(request, &evidence, map, result);
     report_progress(
         &state,
         GDOX_PRESERVATION_FINALIZING,
@@ -663,18 +764,7 @@ bool gdox_preservation_run(
     success = true;
 
 cleanup:
-    gdox_hash_stream_destroy(state.hashes);
-    if (state.file != NULL) {
-        (void)gdox_preservation_file_close(state.file, &cleanup_error);
-    }
-    if (!success) {
-        if (!request->keep_partial) {
-            (void)gdox_preservation_path_remove(part_path);
-        }
-        free(result->unreadable_ranges);
-        result->unreadable_ranges = NULL;
-        result->unreadable_range_count = 0U;
-    }
+    cleanup_preservation(&state, request, part_path, result, success);
     free(part_path);
     return success;
 }

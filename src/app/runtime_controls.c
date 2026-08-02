@@ -5,6 +5,53 @@
 #include <stdlib.h>
 #include <string.h>
 
+static bool enqueue_request(
+    gdox_runtime *runtime,
+    const gdox_runtime_request_entry *request
+)
+{
+    if (gdox_runtime_request_enqueue(&runtime->requests, request)) {
+        return true;
+    }
+    gdox_runtime_copy_text(
+        runtime->snapshot.notice,
+        sizeof(runtime->snapshot.notice),
+        "Runtime is busy; try that action again"
+    );
+    return false;
+}
+
+static bool enqueue_simple_request(
+    gdox_runtime *runtime,
+    gdox_runtime_request_kind kind
+)
+{
+    const gdox_runtime_request_entry request = {.kind = kind};
+    return enqueue_request(runtime, &request);
+}
+
+static bool persist_preferences(
+    gdox_runtime *runtime,
+    const gdox_preferences *preferences
+)
+{
+    gdox_error error;
+
+    if (gdox_preferences_save(preferences, &error)) {
+        return true;
+    }
+    if (gdox_mutex_lock(&runtime->mutex)) {
+        (void)snprintf(
+            runtime->snapshot.notice,
+            sizeof(runtime->snapshot.notice),
+            "Could not save settings: %.132s",
+            error.message
+        );
+        gdox_mutex_unlock(&runtime->mutex);
+    }
+    return false;
+}
+
 static bool import_firmware(
     gdox_runtime *runtime,
     const char *path,
@@ -28,31 +75,26 @@ static bool import_firmware(
     gdox_runtime_copy_text(
         executable_override,
         sizeof(executable_override),
-        runtime->snapshot.xemu_override
+        runtime->snapshot.settings.xemu_override
     );
     gdox_runtime_copy_text(
         hdd_override,
         sizeof(hdd_override),
-        runtime->snapshot.hdd_override
+        runtime->snapshot.settings.hdd_override
     );
     gdox_mutex_unlock(&runtime->mutex);
     imported = detect_kind
         ? gdox_runtime_bundle_import_firmware_auto(
-            path,
-            executable_override,
-            hdd_override,
-            &kind,
-            &bundle,
-            &error
-        )
+              path, executable_override, hdd_override, &kind, &bundle, &error
+          )
         : gdox_runtime_bundle_import_firmware(
-            requested_kind,
-            path,
-            executable_override,
-            hdd_override,
-            &bundle,
-            &error
-        );
+              requested_kind,
+              path,
+              executable_override,
+              hdd_override,
+              &bundle,
+              &error
+          );
     if (!imported) {
         if (gdox_mutex_lock(&runtime->mutex)) {
             (void)snprintf(
@@ -72,35 +114,25 @@ static bool import_firmware(
         gdox_runtime_copy_text(
             runtime->snapshot.notice,
             sizeof(runtime->snapshot.notice),
-            kind == GDOX_FIRMWARE_MCPX
-                ? "MCPX boot ROM imported"
-                : "Xbox BIOS imported"
+            kind == GDOX_FIRMWARE_MCPX ? "MCPX boot ROM imported"
+                                       : "Xbox BIOS imported"
         );
         gdox_mutex_unlock(&runtime->mutex);
     }
     return true;
 }
 
-bool gdox_runtime_import_firmware(
-    gdox_runtime *runtime,
-    const char *path
-)
+bool gdox_runtime_import_firmware(gdox_runtime *runtime, const char *path)
 {
     return import_firmware(runtime, path, true, GDOX_FIRMWARE_MCPX);
 }
 
-bool gdox_runtime_import_mcpx(
-    gdox_runtime *runtime,
-    const char *path
-)
+bool gdox_runtime_import_mcpx(gdox_runtime *runtime, const char *path)
 {
     return import_firmware(runtime, path, false, GDOX_FIRMWARE_MCPX);
 }
 
-bool gdox_runtime_import_bios(
-    gdox_runtime *runtime,
-    const char *path
-)
+bool gdox_runtime_import_bios(gdox_runtime *runtime, const char *path)
 {
     return import_firmware(runtime, path, false, GDOX_FIRMWARE_FLASH);
 }
@@ -112,9 +144,7 @@ void gdox_runtime_destroy(gdox_runtime *runtime)
     }
     atomic_store_explicit(&runtime->stopping, true, memory_order_release);
     atomic_store_explicit(
-        &runtime->preservation_cancelled,
-        true,
-        memory_order_release
+        &runtime->preservation_cancelled, true, memory_order_release
     );
     if (runtime->thread_started) {
         (void)gdox_thread_join(&runtime->thread);
@@ -140,57 +170,56 @@ void gdox_runtime_copy_snapshot(
 void gdox_runtime_set_auto_start(gdox_runtime *runtime, bool enabled)
 {
     gdox_preferences preferences;
-    gdox_error ignored;
 
     if (runtime != NULL && gdox_mutex_lock(&runtime->mutex)) {
-        runtime->snapshot.auto_start = enabled;
-        gdox_runtime_preferences_from_snapshot(&runtime->snapshot, &preferences);
+        runtime->snapshot.settings.auto_start = enabled;
+        gdox_runtime_preferences_from_snapshot(
+            &runtime->snapshot, &preferences
+        );
         gdox_mutex_unlock(&runtime->mutex);
-        (void)gdox_preferences_save(&preferences, &ignored);
+        (void)persist_preferences(runtime, &preferences);
     }
 }
 
 void gdox_runtime_request(gdox_runtime *runtime, gdox_runtime_command command)
 {
-    uint32_t bit = 0U;
+    gdox_runtime_request_kind kind = GDOX_RUNTIME_REQUEST_NONE;
     if (runtime == NULL) {
         return;
     }
     switch (command) {
         case GDOX_RUNTIME_START:
-            bit = GDOX_RUNTIME_COMMAND_START;
+            kind = GDOX_RUNTIME_REQUEST_START;
             break;
         case GDOX_RUNTIME_RESTART:
-            bit = GDOX_RUNTIME_COMMAND_RESTART;
+            kind = GDOX_RUNTIME_REQUEST_RESTART;
             break;
         case GDOX_RUNTIME_CLOSE:
-            bit = GDOX_RUNTIME_COMMAND_CLOSE;
+            kind = GDOX_RUNTIME_REQUEST_CLOSE;
             break;
         case GDOX_RUNTIME_EJECT:
-            bit = GDOX_RUNTIME_COMMAND_EJECT;
+            kind = GDOX_RUNTIME_REQUEST_EJECT;
             break;
         case GDOX_RUNTIME_CANCEL_PRESERVATION:
             atomic_store_explicit(
-                &runtime->preservation_cancelled,
-                true,
-                memory_order_release
+                &runtime->preservation_cancelled, true, memory_order_release
             );
             return;
         case GDOX_RUNTIME_USE_PHYSICAL_DISC:
-            bit = GDOX_RUNTIME_COMMAND_USE_PHYSICAL;
+            kind = GDOX_RUNTIME_REQUEST_USE_PHYSICAL;
             break;
     }
     if (gdox_mutex_lock(&runtime->mutex)) {
-        runtime->commands |= bit;
+        (void)enqueue_simple_request(runtime, kind);
         gdox_mutex_unlock(&runtime->mutex);
     }
 }
 
-bool gdox_runtime_open_disc_image(
-    gdox_runtime *runtime,
-    const char *path
-)
+bool gdox_runtime_open_disc_image(gdox_runtime *runtime, const char *path)
 {
+    gdox_runtime_request_entry request = {
+        .kind = GDOX_RUNTIME_REQUEST_OPEN_IMAGE,
+    };
     size_t path_bytes;
     bool accepted = false;
 
@@ -198,15 +227,13 @@ bool gdox_runtime_open_disc_image(
         return false;
     }
     path_bytes = strlen(path);
-    if (path_bytes == 0U
-        || path_bytes >= sizeof(runtime->pending_image_path)) {
+    if (path_bytes == 0U || path_bytes >= sizeof(request.path)) {
         return false;
     }
+    memcpy(request.path, path, path_bytes + 1U);
     if (gdox_mutex_lock(&runtime->mutex)) {
         if (runtime->snapshot.phase != GDOX_RUNTIME_PRESERVING) {
-            memcpy(runtime->pending_image_path, path, path_bytes + 1U);
-            runtime->commands |= GDOX_RUNTIME_COMMAND_OPEN_IMAGE;
-            accepted = true;
+            accepted = enqueue_request(runtime, &request);
         }
         gdox_mutex_unlock(&runtime->mutex);
     }
@@ -220,6 +247,11 @@ bool gdox_runtime_begin_preservation(
     bool verify
 )
 {
+    gdox_runtime_request_entry request = {
+        .kind = GDOX_RUNTIME_REQUEST_PRESERVE,
+        .preservation_format = format,
+        .preservation_verify = verify,
+    };
     size_t path_bytes;
     bool accepted = false;
 
@@ -229,29 +261,23 @@ bool gdox_runtime_begin_preservation(
         return false;
     }
     path_bytes = strlen(output_path);
-    if (path_bytes == 0U
-        || path_bytes >= sizeof(runtime->pending_preservation_path)) {
+    if (path_bytes == 0U || path_bytes >= sizeof(request.path)) {
         return false;
     }
+    memcpy(request.path, output_path, path_bytes + 1U);
     if (gdox_mutex_lock(&runtime->mutex)) {
         if (runtime->snapshot.can_preserve
             && runtime->snapshot.phase != GDOX_RUNTIME_PRESERVING) {
-            runtime->pending_preservation_format = format;
-            runtime->pending_preservation_verify = verify;
-            memcpy(
-                runtime->pending_preservation_path,
-                output_path,
-                path_bytes + 1U
-            );
-            atomic_store_explicit(
-                &runtime->preservation_cancelled,
-                false,
-                memory_order_release
-            );
-            runtime->commands |= GDOX_RUNTIME_COMMAND_PRESERVE;
-            runtime->snapshot.can_preserve = false;
-            runtime->snapshot.can_cancel_preservation = true;
-            accepted = true;
+            accepted = enqueue_request(runtime, &request);
+            if (accepted) {
+                atomic_store_explicit(
+                    &runtime->preservation_cancelled,
+                    false,
+                    memory_order_release
+                );
+                runtime->snapshot.can_preserve = false;
+                runtime->snapshot.can_cancel_preservation = true;
+            }
         }
         gdox_mutex_unlock(&runtime->mutex);
     }
@@ -269,7 +295,6 @@ void gdox_runtime_set_display(
 )
 {
     gdox_preferences preferences;
-    gdox_error ignored;
 
     if (runtime == NULL || internal_resolution_scale < 1U
         || internal_resolution_scale > 10U
@@ -277,32 +302,32 @@ void gdox_runtime_set_display(
             && aspect != GDOX_EMULATOR_ASPECT_WIDESCREEN
             && aspect != GDOX_EMULATOR_ASPECT_FOUR_THREE
             && aspect != GDOX_EMULATOR_ASPECT_NATIVE)
-        || (fit != GDOX_EMULATOR_FIT_CENTER
-            && fit != GDOX_EMULATOR_FIT_SCALE
+        || (fit != GDOX_EMULATOR_FIT_CENTER && fit != GDOX_EMULATOR_FIT_SCALE
             && fit != GDOX_EMULATOR_FIT_STRETCH)
-        || window_width < 640U || window_width > 7680U
-        || window_height < 480U || window_height > 4320U) {
+        || window_width < 640U || window_width > 7680U || window_height < 480U
+        || window_height > 4320U) {
         return;
     }
     if (gdox_mutex_lock(&runtime->mutex)) {
-        runtime->snapshot.internal_resolution_scale =
+        runtime->snapshot.settings.internal_resolution_scale =
             internal_resolution_scale;
-        runtime->snapshot.display_aspect = aspect;
-        runtime->snapshot.display_fit = fit;
-        runtime->snapshot.fullscreen = fullscreen;
-        runtime->snapshot.window_width = window_width;
-        runtime->snapshot.window_height = window_height;
-        runtime->commands |= GDOX_RUNTIME_COMMAND_APPLY_DISPLAY;
-        gdox_runtime_preferences_from_snapshot(&runtime->snapshot, &preferences);
+        runtime->snapshot.settings.display_aspect = aspect;
+        runtime->snapshot.settings.display_fit = fit;
+        runtime->snapshot.settings.fullscreen = fullscreen;
+        runtime->snapshot.settings.window_width = window_width;
+        runtime->snapshot.settings.window_height = window_height;
+        (void)enqueue_simple_request(
+            runtime, GDOX_RUNTIME_REQUEST_APPLY_DISPLAY
+        );
+        gdox_runtime_preferences_from_snapshot(
+            &runtime->snapshot, &preferences
+        );
         gdox_mutex_unlock(&runtime->mutex);
-        (void)gdox_preferences_save(&preferences, &ignored);
+        (void)persist_preferences(runtime, &preferences);
     }
 }
 
-bool gdox_runtime_set_xemu_override(
-    gdox_runtime *runtime,
-    const char *path
-)
+bool gdox_runtime_set_xemu_override(gdox_runtime *runtime, const char *path)
 {
     gdox_runtime_bundle_status bundle;
     gdox_preferences preferences;
@@ -320,17 +345,13 @@ bool gdox_runtime_set_xemu_override(
     gdox_runtime_copy_text(
         hdd_override,
         sizeof(hdd_override),
-        runtime->snapshot.hdd_override
+        runtime->snapshot.settings.hdd_override
     );
     gdox_mutex_unlock(&runtime->mutex);
     if (strlen(selected) >= GDOX_EMULATOR_PATH_CAPACITY
-        || strchr(selected, '\n') != NULL
-        || strchr(selected, '\r') != NULL
+        || strchr(selected, '\n') != NULL || strchr(selected, '\r') != NULL
         || !gdox_runtime_bundle_prepare(
-            selected,
-            hdd_override,
-            &bundle,
-            &error
+            selected, hdd_override, &bundle, &error
         )) {
         if (error.code == GDOX_ERROR_NONE) {
             gdox_error_set(
@@ -352,9 +373,7 @@ bool gdox_runtime_set_xemu_override(
     }
     if (!bundle.xemu_available || !bundle.configuration_ready) {
         gdox_error_set(
-            &error,
-            GDOX_ERROR_NOT_FOUND,
-            "selected xemu could not be prepared"
+            &error, GDOX_ERROR_NOT_FOUND, "selected xemu could not be prepared"
         );
         if (gdox_mutex_lock(&runtime->mutex)) {
             gdox_runtime_copy_text(
@@ -371,8 +390,8 @@ bool gdox_runtime_set_xemu_override(
     }
     runtime->bundle = bundle;
     gdox_runtime_copy_text(
-        runtime->snapshot.xemu_override,
-        sizeof(runtime->snapshot.xemu_override),
+        runtime->snapshot.settings.xemu_override,
+        sizeof(runtime->snapshot.settings.xemu_override),
         selected
     );
     gdox_runtime_copy_bundle_status(&runtime->snapshot, &bundle);
@@ -385,20 +404,16 @@ bool gdox_runtime_set_xemu_override(
     gdox_runtime_copy_text(
         runtime->snapshot.notice,
         sizeof(runtime->snapshot.notice),
-        selected[0] == '\0'
-            ? "Using the xemu included with GDOX"
-            : "Using your selected xemu"
+        selected[0] == '\0' ? "Using the xemu included with GDOX"
+                            : "Using your selected xemu"
     );
-    runtime->commands |= GDOX_RUNTIME_COMMAND_APPLY_DISPLAY;
+    (void)enqueue_simple_request(runtime, GDOX_RUNTIME_REQUEST_APPLY_DISPLAY);
     gdox_runtime_preferences_from_snapshot(&runtime->snapshot, &preferences);
     gdox_mutex_unlock(&runtime->mutex);
-    return gdox_preferences_save(&preferences, &error);
+    return persist_preferences(runtime, &preferences);
 }
 
-bool gdox_runtime_set_hdd_override(
-    gdox_runtime *runtime,
-    const char *path
-)
+bool gdox_runtime_set_hdd_override(gdox_runtime *runtime, const char *path)
 {
     gdox_runtime_bundle_status bundle;
     gdox_preferences preferences;
@@ -416,17 +431,13 @@ bool gdox_runtime_set_hdd_override(
     gdox_runtime_copy_text(
         executable_override,
         sizeof(executable_override),
-        runtime->snapshot.xemu_override
+        runtime->snapshot.settings.xemu_override
     );
     gdox_mutex_unlock(&runtime->mutex);
     if (strlen(selected) >= GDOX_EMULATOR_PATH_CAPACITY
-        || strchr(selected, '\n') != NULL
-        || strchr(selected, '\r') != NULL
+        || strchr(selected, '\n') != NULL || strchr(selected, '\r') != NULL
         || !gdox_runtime_bundle_prepare(
-            executable_override,
-            selected,
-            &bundle,
-            &error
+            executable_override, selected, &bundle, &error
         )) {
         if (error.code == GDOX_ERROR_NONE) {
             gdox_error_set(
@@ -462,8 +473,8 @@ bool gdox_runtime_set_hdd_override(
     }
     runtime->bundle = bundle;
     gdox_runtime_copy_text(
-        runtime->snapshot.hdd_override,
-        sizeof(runtime->snapshot.hdd_override),
+        runtime->snapshot.settings.hdd_override,
+        sizeof(runtime->snapshot.settings.hdd_override),
         selected
     );
     gdox_runtime_copy_bundle_status(&runtime->snapshot, &bundle);
@@ -476,14 +487,13 @@ bool gdox_runtime_set_hdd_override(
     gdox_runtime_copy_text(
         runtime->snapshot.notice,
         sizeof(runtime->snapshot.notice),
-        selected[0] == '\0'
-            ? "Using the Xbox hard disk included with GDOX"
-            : "Using your selected Xbox hard disk"
+        selected[0] == '\0' ? "Using the Xbox hard disk included with GDOX"
+                            : "Using your selected Xbox hard disk"
     );
-    runtime->commands |= GDOX_RUNTIME_COMMAND_APPLY_DISPLAY;
+    (void)enqueue_simple_request(runtime, GDOX_RUNTIME_REQUEST_APPLY_DISPLAY);
     gdox_runtime_preferences_from_snapshot(&runtime->snapshot, &preferences);
     gdox_mutex_unlock(&runtime->mutex);
-    return gdox_preferences_save(&preferences, &error);
+    return persist_preferences(runtime, &preferences);
 }
 
 bool gdox_runtime_set_preservation_directory(
@@ -496,18 +506,17 @@ bool gdox_runtime_set_preservation_directory(
 
     if (runtime == NULL || path == NULL || path[0] == '\0'
         || strlen(path) >= GDOX_EMULATOR_PATH_CAPACITY
-        || strchr(path, '\n') != NULL
-        || strchr(path, '\r') != NULL
+        || strchr(path, '\n') != NULL || strchr(path, '\r') != NULL
         || !gdox_storage_ensure_directory(path, &error)
         || !gdox_mutex_lock(&runtime->mutex)) {
         return false;
     }
     gdox_runtime_copy_text(
-        runtime->snapshot.preservation_directory,
-        sizeof(runtime->snapshot.preservation_directory),
+        runtime->snapshot.settings.preservation_directory,
+        sizeof(runtime->snapshot.settings.preservation_directory),
         path
     );
     gdox_runtime_preferences_from_snapshot(&runtime->snapshot, &preferences);
     gdox_mutex_unlock(&runtime->mutex);
-    return gdox_preferences_save(&preferences, &error);
+    return persist_preferences(runtime, &preferences);
 }

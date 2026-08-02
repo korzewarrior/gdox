@@ -110,7 +110,6 @@ void draw_preservation_progress(
 }
 
 }
-
 void draw_preserve(gdox_app &app, const gdox_app_snapshot &snapshot)
 {
     static int format = 0;
@@ -182,8 +181,8 @@ void draw_preserve(gdox_app &app, const gdox_app_snapshot &snapshot)
     ImGui::TextColored(
         muted,
         "%s",
-        snapshot.preservation_directory[0] != '\0'
-            ? snapshot.preservation_directory
+        snapshot.settings.preservation_directory[0] != '\0'
+            ? snapshot.settings.preservation_directory
             : "Choose a folder before preserving"
     );
     if (ImGui::Button("Choose folder...", ImVec2(148.0F, 34.0F))) {
@@ -219,7 +218,7 @@ void draw_preserve(gdox_app &app, const gdox_app_snapshot &snapshot)
     }
     std::string output_path;
     const bool output_ready = build_output_path(
-        snapshot.preservation_directory,
+        snapshot.settings.preservation_directory,
         filename.data(),
         output_path
     );

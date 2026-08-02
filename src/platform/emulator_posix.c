@@ -2,7 +2,7 @@
 
 #include "gdox/emulator.h"
 
-#include "platform/emulator_configuration.h"
+#include "core/emulator_configuration.h"
 #include "platform/portable_sync.h"
 
 #include <errno.h>
@@ -433,21 +433,22 @@ static bool read_text_file(const char *path, char **text, gdox_error *error)
     char *data;
     size_t completed = 0U;
 
-    if (stat(path, &status) != 0 || !S_ISREG(status.st_mode)
+    file = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    if (file < 0) {
+        gdox_error_set(error, GDOX_ERROR_IO, "could not open xemu configuration");
+        return false;
+    }
+    if (fstat(file, &status) != 0 || !S_ISREG(status.st_mode)
         || status.st_size < 0
         || status.st_size > (off_t)16 * 1024 * 1024) {
+        (void)close(file);
         gdox_error_set(error, GDOX_ERROR_INVALID_SOURCE, "xemu configuration is unavailable or too large");
         return false;
     }
     data = malloc((size_t)status.st_size + 1U);
     if (data == NULL) {
+        (void)close(file);
         gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate xemu configuration");
-        return false;
-    }
-    file = open(path, O_RDONLY | O_CLOEXEC);
-    if (file < 0) {
-        free(data);
-        gdox_error_set(error, GDOX_ERROR_IO, "could not open xemu configuration");
         return false;
     }
     while (completed < (size_t)status.st_size) {
@@ -534,7 +535,8 @@ bool gdox_emulator_prepare(
 
     gdox_error_clear(error);
     if (options == NULL || !executable_file(options->executable)
-        || !regular_file(options->configuration)) {
+        || options->configuration == NULL
+        || options->configuration[0] == '\0') {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "valid xemu paths are required");
         return false;
     }

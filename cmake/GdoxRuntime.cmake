@@ -1,0 +1,24 @@
+add_library(
+    gdox_desktop_runtime
+    STATIC
+        src/app/app.c
+        src/app/runtime.c
+        src/app/runtime_controls.c
+        src/app/runtime_media.c
+        src/app/runtime_preservation.c
+        $<TARGET_OBJECTS:gdox_application_support>
+)
+add_library(gdox::runtime ALIAS gdox_desktop_runtime)
+target_include_directories(
+    gdox_desktop_runtime
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(
+    gdox_desktop_runtime
+    PUBLIC
+        gdox::services
+        gdox::optical
+)
+gdox_enable_c_warnings(gdox_desktop_runtime)

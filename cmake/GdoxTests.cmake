@@ -2,6 +2,7 @@ add_executable(
     gdox_tests
     tests/test_disc.c
     tests/test_emulator.c
+    tests/test_gamepad_input_policy.c
     tests/test_hash.c
     tests/test_hdd_cache.c
     tests/test_main.c
@@ -10,16 +11,16 @@ add_executable(
     tests/test_preferences.c
     tests/test_preservation_naming.c
     tests/test_preserve.c
-    tests/test_protocol.c
     tests/test_runtime_bundle.c
+    tests/test_runtime_commands.c
     tests/test_scsi_transport.c
     tests/test_security.c
-    tests/test_session.c
     tests/test_source.c
     tests/test_xdvdfs.c
+    src/ui/gamepad_input_policy.c
     src/platform/scsi_transport.c
 )
-target_link_libraries(gdox_tests PRIVATE gdox::core)
+target_link_libraries(gdox_tests PRIVATE gdox::services)
 target_sources(
     gdox_tests
     PRIVATE $<TARGET_OBJECTS:gdox_application_support>
@@ -39,7 +40,6 @@ endif()
 gdox_enable_c_warnings(gdox_tests)
 set(
     GDOX_TEST_GROUPS
-    protocol
     disc
     emulator
     hash
@@ -50,15 +50,19 @@ set(
     preservation_naming
     preserve
     runtime_bundle
+    runtime_commands
     scsi_transport
     security
-    session
     source
     xdvdfs
 )
 foreach(group IN LISTS GDOX_TEST_GROUPS)
     add_test(NAME core.${group} COMMAND gdox_tests ${group})
 endforeach()
+add_test(
+    NAME ui.gamepad_input_policy
+    COMMAND gdox_tests gamepad_input_policy
+)
 
 if(GDOX_BUILD_OPTICAL)
     add_executable(
@@ -144,5 +148,63 @@ if(GDOX_BUILD_OPTICAL)
     add_test(
         NAME optical.asus_nr09
         COMMAND gdox_asus_nr09_tests
+    )
+
+    add_executable(
+        gdox_mmc_commands_tests
+        tests/test_mmc_commands.c
+    )
+    target_include_directories(
+        gdox_mmc_commands_tests
+        PRIVATE
+            tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(
+        gdox_mmc_commands_tests
+        PRIVATE gdox::optical
+    )
+    gdox_enable_c_warnings(gdox_mmc_commands_tests)
+    add_test(
+        NAME optical.mmc_commands
+        COMMAND gdox_mmc_commands_tests
+    )
+
+    add_executable(
+        gdox_optical_registry_tests
+        tests/test_optical_registry.c
+    )
+    target_include_directories(
+        gdox_optical_registry_tests
+        PRIVATE
+            tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(
+        gdox_optical_registry_tests
+        PRIVATE gdox::optical
+    )
+    gdox_enable_c_warnings(gdox_optical_registry_tests)
+    add_test(
+        NAME optical.registry
+        COMMAND gdox_optical_registry_tests
+    )
+
+    add_executable(
+        gdox_runtime_request_tests
+        tests/test_runtime_requests.c
+    )
+    target_include_directories(
+        gdox_runtime_request_tests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(
+        gdox_runtime_request_tests
+        PRIVATE gdox::runtime
+    )
+    gdox_enable_c_warnings(gdox_runtime_request_tests)
+    add_test(
+        NAME runtime.requests
+        COMMAND gdox_runtime_request_tests
     )
 endif()

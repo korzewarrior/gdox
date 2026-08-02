@@ -495,43 +495,140 @@ static bool send_export_info(
     );
 }
 
+static bool read_option_request(
+    gdox_socket client,
+    uint32_t *option,
+    uint8_t **payload,
+    uint32_t *payload_length
+)
+{
+    uint8_t header[16];
+
+    *payload = NULL;
+    if (!socket_read_exact(client, header, sizeof(header))
+        || read_be_u64(header) != NBD_OPTS_MAGIC) {
+        socket_error_set(GDOX_SOCKET_PROTOCOL);
+        return false;
+    }
+    *option = read_be_u32(header + 8U);
+    *payload_length = read_be_u32(header + 12U);
+    if (*payload_length > NBD_MAX_OPTION_SIZE) {
+        socket_error_set(GDOX_SOCKET_PROTOCOL);
+        return false;
+    }
+    if (*payload_length == 0U) {
+        return true;
+    }
+    *payload = malloc(*payload_length);
+    if (*payload == NULL) {
+        socket_error_set(GDOX_SOCKET_NO_MEMORY);
+        return false;
+    }
+    if (!socket_read_exact(client, *payload, *payload_length)) {
+        free(*payload);
+        *payload = NULL;
+        return false;
+    }
+    return true;
+}
+
+static bool export_name_matches(
+    const gdox_nbd_export *exported,
+    const uint8_t *name,
+    size_t name_bytes
+)
+{
+    const size_t expected_bytes = strlen(exported->export_name);
+
+    return name_bytes == expected_bytes
+        && (name_bytes == 0U
+            || (name != NULL
+                && memcmp(name, exported->export_name, name_bytes) == 0));
+}
+
+static bool negotiate_export_name(
+    const gdox_nbd_export *exported,
+    gdox_socket client,
+    const uint8_t *payload,
+    uint32_t payload_length,
+    bool no_zeroes
+)
+{
+    uint8_t response[10];
+    uint8_t zeroes[124] = {0};
+
+    if (!export_name_matches(exported, payload, payload_length)) {
+        socket_error_set(GDOX_SOCKET_PERMISSION);
+        return false;
+    }
+    put_be_u64(response, gdox_disc_length(&exported->disc));
+    put_be_u16(response + 8U, NBD_EXPORT_FLAGS);
+    return socket_write_all(client, response, sizeof(response))
+        && (no_zeroes || socket_write_all(client, zeroes, sizeof(zeroes)));
+}
+
+static bool negotiate_info(
+    const gdox_nbd_export *exported,
+    gdox_socket client,
+    uint32_t option,
+    const uint8_t *payload,
+    uint32_t payload_length,
+    bool *ready
+)
+{
+    const uint8_t *name = NULL;
+    size_t name_bytes = 0U;
+    bool result;
+
+    *ready = false;
+    if (!parse_info_name(payload, payload_length, &name, &name_bytes)) {
+        return send_option_reply(
+            client,
+            option,
+            NBD_REP_ERR_INVALID,
+            (const uint8_t *)"invalid info request",
+            20U
+        );
+    }
+    if (!export_name_matches(exported, name, name_bytes)) {
+        return send_option_reply(
+            client,
+            option,
+            NBD_REP_ERR_UNKNOWN,
+            (const uint8_t *)"unknown export",
+            14U
+        );
+    }
+    result = send_export_info(
+        client,
+        option,
+        gdox_disc_length(&exported->disc)
+    ) && send_option_reply(client, option, NBD_REP_ACK, NULL, 0U);
+    *ready = result && option == NBD_OPT_GO;
+    return result;
+}
+
 static bool negotiate(
     gdox_nbd_export *exported,
     gdox_socket client,
     bool no_zeroes
 )
 {
-    uint8_t header[16];
-
     for (;;) {
         uint32_t option;
         uint32_t payload_length;
         uint8_t *payload = NULL;
-        bool result = true;
+        bool ready = false;
+        bool result;
 
-        if (!socket_read_exact(client, header, sizeof(header))
-            || read_be_u64(header) != NBD_OPTS_MAGIC) {
-            socket_error_set(GDOX_SOCKET_PROTOCOL);
+        if (!read_option_request(
+                client,
+                &option,
+                &payload,
+                &payload_length
+            )) {
             return false;
         }
-        option = read_be_u32(header + 8U);
-        payload_length = read_be_u32(header + 12U);
-        if (payload_length > NBD_MAX_OPTION_SIZE) {
-            socket_error_set(GDOX_SOCKET_PROTOCOL);
-            return false;
-        }
-        if (payload_length != 0U) {
-            payload = malloc(payload_length);
-            if (payload == NULL) {
-                socket_error_set(GDOX_SOCKET_NO_MEMORY);
-                return false;
-            }
-            if (!socket_read_exact(client, payload, payload_length)) {
-                free(payload);
-                return false;
-            }
-        }
-
         if (option == NBD_OPT_ABORT) {
             result = send_option_reply(client, option, NBD_REP_ACK, NULL, 0U);
             free(payload);
@@ -541,183 +638,246 @@ static bool negotiate(
             return false;
         }
         if (option == NBD_OPT_EXPORT_NAME) {
-            uint8_t response[10];
-            uint8_t zeroes[124] = {0};
-            if (payload_length != strlen(exported->export_name)
-                || (payload_length != 0U
-                    && (payload == NULL
-                        || memcmp(
-                            payload,
-                            exported->export_name,
-                            payload_length
-                        ) != 0))) {
-                free(payload);
-                socket_error_set(GDOX_SOCKET_PERMISSION);
-                return false;
-            }
-            put_be_u64(response, gdox_disc_length(&exported->disc));
-            put_be_u16(response + 8U, NBD_EXPORT_FLAGS);
-            result = socket_write_all(client, response, sizeof(response))
-                && (no_zeroes || socket_write_all(client, zeroes, sizeof(zeroes)));
+            result = negotiate_export_name(
+                exported,
+                client,
+                payload,
+                payload_length,
+                no_zeroes
+            );
             free(payload);
             return result;
         }
         if (option == NBD_OPT_INFO || option == NBD_OPT_GO) {
-            const uint8_t *name = NULL;
-            size_t name_bytes = 0U;
-            if (!parse_info_name(payload, payload_length, &name, &name_bytes)) {
-                result = send_option_reply(
-                    client,
-                    option,
-                    NBD_REP_ERR_INVALID,
-                    (const uint8_t *)"invalid info request",
-                    20U
-                );
-            } else if (name_bytes != strlen(exported->export_name)
-                || memcmp(name, exported->export_name, name_bytes) != 0) {
-                result = send_option_reply(
-                    client,
-                    option,
-                    NBD_REP_ERR_UNKNOWN,
-                    (const uint8_t *)"unknown export",
-                    14U
-                );
-            } else {
-                result = send_export_info(client, option, gdox_disc_length(&exported->disc))
-                    && send_option_reply(client, option, NBD_REP_ACK, NULL, 0U);
-                if (result && option == NBD_OPT_GO) {
-                    free(payload);
-                    return true;
-                }
-            }
+            result = negotiate_info(
+                exported,
+                client,
+                option,
+                payload,
+                payload_length,
+                &ready
+            );
         } else {
             result = send_option_reply(client, option, NBD_REP_ERR_UNSUP, NULL, 0U);
         }
         free(payload);
+        if (ready) {
+            return true;
+        }
         if (!result) {
             return false;
         }
     }
 }
 
+typedef struct {
+    uint16_t flags;
+    uint16_t command;
+    uint64_t handle;
+    uint64_t offset;
+    uint32_t length;
+} nbd_request;
+
+static bool parse_request(const uint8_t input[28], nbd_request *request)
+{
+    if (read_be_u32(input) != NBD_REQUEST_MAGIC) {
+        socket_error_set(GDOX_SOCKET_PROTOCOL);
+        return false;
+    }
+    request->flags = read_be_u16(input + 4U);
+    request->command = read_be_u16(input + 6U);
+    request->handle = read_be_u64(input + 8U);
+    request->offset = read_be_u64(input + 16U);
+    request->length = read_be_u32(input + 24U);
+    return true;
+}
+
+static bool reserve_request_buffer(
+    uint8_t **buffer,
+    size_t *capacity,
+    uint32_t length
+)
+{
+    uint8_t *resized;
+
+    if (length <= *capacity || length > NBD_MAX_BUFFER_SIZE) {
+        return true;
+    }
+    resized = realloc(*buffer, length);
+    if (resized == NULL && length != 0U) {
+        socket_error_set(GDOX_SOCKET_NO_MEMORY);
+        return false;
+    }
+    *buffer = resized;
+    *capacity = length;
+    return true;
+}
+
+static void report_slow_read(
+    const nbd_request *request,
+    uint64_t started_ms
+)
+{
+    const uint64_t finished_ms = gdox_monotonic_ms();
+    const uint64_t elapsed_ms =
+        finished_ms >= started_ms ? finished_ms - started_ms : 0U;
+
+    if (elapsed_ms < NBD_SLOW_READ_MS) {
+        return;
+    }
+    (void)fprintf(
+        stderr,
+        "GDOX: slow live read at sector %" PRIu64
+        " (%u bytes, %" PRIu64 " ms)\n",
+        request->offset / GDOX_LOGICAL_SECTOR_BYTES,
+        request->length,
+        elapsed_ms
+    );
+    (void)fflush(stderr);
+}
+
+static bool report_read_failure(
+    gdox_nbd_export *exported,
+    gdox_socket client,
+    const nbd_request *request,
+    const gdox_error *read_error
+)
+{
+    char message[GDOX_ERROR_MESSAGE_CAPACITY];
+
+    (void)snprintf(
+        message,
+        sizeof(message),
+        "disc read failed at sector %" PRIu64
+        " (byte offset %" PRIu64 ", %u bytes): %.240s",
+        request->offset / GDOX_LOGICAL_SECTOR_BYTES,
+        request->offset,
+        request->length,
+        read_error->message
+    );
+    (void)fprintf(stderr, "GDOX: %s\n", message);
+    (void)fflush(stderr);
+    record_runtime_error(exported, message);
+    return send_simple_reply(
+        client,
+        NBD_EIO,
+        request->handle,
+        NULL,
+        0U
+    );
+}
+
+static bool transmit_read(
+    gdox_nbd_export *exported,
+    gdox_socket client,
+    const nbd_request *request,
+    uint8_t *buffer
+)
+{
+    const uint64_t disc_bytes = gdox_disc_length(&exported->disc);
+    const uint64_t started_ms = gdox_monotonic_ms();
+    gdox_error read_error;
+
+    if (request->length > NBD_MAX_BUFFER_SIZE
+        || request->offset > disc_bytes
+        || request->length > disc_bytes - request->offset) {
+        return send_simple_reply(
+            client,
+            NBD_EINVAL,
+            request->handle,
+            NULL,
+            0U
+        );
+    }
+    if (!read_disc_request(
+            exported,
+            request->offset,
+            buffer,
+            request->length,
+            &read_error
+        )) {
+        return report_read_failure(exported, client, request, &read_error);
+    }
+    report_slow_read(request, started_ms);
+    return send_simple_reply(
+        client,
+        0U,
+        request->handle,
+        buffer,
+        request->length
+    );
+}
+
+static bool transmit_write(
+    gdox_socket client,
+    const nbd_request *request,
+    uint8_t *buffer
+)
+{
+    if (request->length > NBD_MAX_BUFFER_SIZE) {
+        socket_error_set(GDOX_SOCKET_PROTOCOL);
+        return false;
+    }
+    if (request->length != 0U
+        && !socket_read_exact(client, buffer, request->length)) {
+        return false;
+    }
+    return send_simple_reply(
+        client,
+        NBD_EPERM,
+        request->handle,
+        NULL,
+        0U
+    );
+}
+
 static bool transmit(gdox_nbd_export *exported, gdox_socket client)
 {
-    uint8_t request[28];
+    uint8_t input[28];
     uint8_t *buffer = NULL;
     size_t buffer_capacity = 0U;
+    bool result = false;
 
     for (;;) {
-        uint16_t flags;
-        uint16_t command;
-        uint64_t handle;
-        uint64_t offset;
-        uint32_t length;
+        nbd_request request;
 
-        if (!socket_read_exact(client, request, sizeof(request))) {
-            free(buffer);
-            return socket_error_get() == GDOX_SOCKET_CONNECTION_RESET;
+        if (!socket_read_exact(client, input, sizeof(input))) {
+            result = socket_error_get() == GDOX_SOCKET_CONNECTION_RESET;
+            break;
         }
-        if (read_be_u32(request) != NBD_REQUEST_MAGIC) {
-            free(buffer);
-            socket_error_set(GDOX_SOCKET_PROTOCOL);
-            return false;
+        if (!parse_request(input, &request)) {
+            break;
         }
-        flags = read_be_u16(request + 4U);
-        command = read_be_u16(request + 6U);
-        handle = read_be_u64(request + 8U);
-        offset = read_be_u64(request + 16U);
-        length = read_be_u32(request + 24U);
-        if (command == NBD_CMD_DISC) {
-            free(buffer);
-            return true;
+        if (request.command == NBD_CMD_DISC) {
+            result = true;
+            break;
         }
-        if (length > buffer_capacity && length <= NBD_MAX_BUFFER_SIZE) {
-            uint8_t *resized = realloc(buffer, length);
-            if (resized == NULL && length != 0U) {
-                free(buffer);
-                socket_error_set(GDOX_SOCKET_NO_MEMORY);
-                return false;
-            }
-            buffer = resized;
-            buffer_capacity = length;
+        if (!reserve_request_buffer(
+                &buffer,
+                &buffer_capacity,
+                request.length
+            )) {
+            break;
         }
-        if (command == NBD_CMD_READ && flags == 0U) {
-            const uint64_t disc_bytes = gdox_disc_length(&exported->disc);
-            const uint64_t started_ms = gdox_monotonic_ms();
-            gdox_error read_error;
-            const bool valid =
-                length <= NBD_MAX_BUFFER_SIZE
-                && offset <= disc_bytes
-                && length <= disc_bytes - offset;
-            if (!valid) {
-                if (!send_simple_reply(client, NBD_EINVAL, handle, NULL, 0U)) {
-                    free(buffer);
-                    return false;
-                }
-            } else if (read_disc_request(
-                    exported,
-                    offset,
-                    buffer,
-                    length,
-                    &read_error
-                )) {
-                const uint64_t finished_ms = gdox_monotonic_ms();
-                const uint64_t elapsed_ms =
-                    finished_ms >= started_ms ? finished_ms - started_ms : 0U;
-                if (elapsed_ms >= NBD_SLOW_READ_MS) {
-                    (void)fprintf(
-                        stderr,
-                        "GDOX: slow live read at sector %" PRIu64
-                        " (%u bytes, %" PRIu64 " ms)\n",
-                        offset / GDOX_LOGICAL_SECTOR_BYTES,
-                        length,
-                        elapsed_ms
-                    );
-                    (void)fflush(stderr);
-                }
-                if (!send_simple_reply(client, 0U, handle, buffer, length)) {
-                    free(buffer);
-                    return false;
-                }
-            } else {
-                char message[GDOX_ERROR_MESSAGE_CAPACITY];
-                (void)snprintf(
-                    message,
-                    sizeof(message),
-                    "disc read failed at sector %" PRIu64
-                    " (byte offset %" PRIu64 ", %u bytes): %.240s",
-                    offset / GDOX_LOGICAL_SECTOR_BYTES,
-                    offset,
-                    length,
-                    read_error.message
-                );
-                (void)fprintf(stderr, "GDOX: %s\n", message);
-                (void)fflush(stderr);
-                record_runtime_error(exported, message);
-                if (!send_simple_reply(client, NBD_EIO, handle, NULL, 0U)) {
-                    free(buffer);
-                    return false;
-                }
-            }
-        } else if (command == NBD_CMD_WRITE) {
-            if (length > NBD_MAX_BUFFER_SIZE) {
-                free(buffer);
-                socket_error_set(GDOX_SOCKET_PROTOCOL);
-                return false;
-            }
-            if (length != 0U && !socket_read_exact(client, buffer, length)) {
-                free(buffer);
-                return false;
-            }
-            if (!send_simple_reply(client, NBD_EPERM, handle, NULL, 0U)) {
-                free(buffer);
-                return false;
-            }
-        } else if (!send_simple_reply(client, NBD_EINVAL, handle, NULL, 0U)) {
-            free(buffer);
-            return false;
+        if (request.command == NBD_CMD_READ && request.flags == 0U) {
+            result = transmit_read(exported, client, &request, buffer);
+        } else if (request.command == NBD_CMD_WRITE) {
+            result = transmit_write(client, &request, buffer);
+        } else {
+            result = send_simple_reply(
+                client,
+                NBD_EINVAL,
+                request.handle,
+                NULL,
+                0U
+            );
+        }
+        if (!result) {
+            break;
         }
     }
+    free(buffer);
+    return result;
 }
 
 static bool configure_client_socket(gdox_socket client)

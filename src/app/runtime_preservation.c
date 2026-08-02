@@ -54,54 +54,61 @@ static void preservation_progress(
     }
 }
 
-bool gdox_runtime_run_preservation(
-    gdox_runtime *runtime,
-    gdox_runtime_snapshot *snapshot,
+typedef struct preservation_session {
+    gdox_sector_source whole;
+    gdox_sector_source partition;
+    gdox_sector_source patched;
+    gdox_sector_source compact;
+    gdox_sector_source *source;
+    gdox_xdvdfs_volume volume;
+    gdox_xdvdfs_metadata metadata;
+    gdox_byte_patch *patches;
+    size_t patch_count;
+    gdox_xdvdfs_compact_stats compact_stats;
+    gdox_preservation_result result;
+    bool result_available;
+} preservation_session;
+
+static void preservation_session_initialize(preservation_session *session)
+{
+    memset(session, 0, sizeof(*session));
+    session->source = &session->whole;
+    session->metadata.default_xbe_index = GDOX_XDVDFS_NO_ENTRY;
+}
+
+static bool read_preservation_request(
+    const gdox_runtime_request_entry *queued,
+    gdox_preservation_format *format,
+    bool *verify,
+    char output_path[GDOX_EMULATOR_PATH_CAPACITY],
     gdox_error *error
 )
 {
-    gdox_sector_source whole = {0};
-    gdox_sector_source partition = {0};
-    gdox_sector_source patched = {0};
-    gdox_sector_source compact = {0};
-    gdox_sector_source *source = &whole;
-    gdox_xdvdfs_volume volume;
-    gdox_xdvdfs_volume partition_volume;
-    gdox_xdvdfs_metadata metadata;
-    gdox_byte_patch *patches = NULL;
-    size_t patch_count = 0U;
-    gdox_xdvdfs_compact_stats compact_stats = {0};
-    gdox_preservation_request request;
-    gdox_preservation_input input;
-    gdox_preservation_result result = {0};
-    gdox_error cleanup_error;
-    gdox_preservation_format format;
-    bool verify;
-    char output_path[sizeof(runtime->pending_preservation_path)];
-    bool success = false;
-    bool result_available = false;
-    bool closed = true;
-
-    memset(&metadata, 0, sizeof(metadata));
-    metadata.default_xbe_index = GDOX_XDVDFS_NO_ENTRY;
-    gdox_error_clear(&cleanup_error);
-    if (!gdox_mutex_lock(&runtime->mutex)) {
+    if (queued == NULL || queued->kind != GDOX_RUNTIME_REQUEST_PRESERVE
+        || queued->path[0] == '\0') {
         gdox_error_set(
             error,
-            GDOX_ERROR_INTERNAL,
-            "could not read preservation request"
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "preservation request is unavailable"
         );
         return false;
     }
-    format = runtime->pending_preservation_format;
-    verify = runtime->pending_preservation_verify;
+    *format = queued->preservation_format;
+    *verify = queued->preservation_verify;
     gdox_runtime_copy_text(
         output_path,
-        sizeof(output_path),
-        runtime->pending_preservation_path
+        GDOX_EMULATOR_PATH_CAPACITY,
+        queued->path
     );
-    gdox_mutex_unlock(&runtime->mutex);
+    return true;
+}
 
+static void publish_preservation_start(
+    gdox_runtime *runtime,
+    gdox_runtime_snapshot *snapshot,
+    const char *output_path
+)
+{
     snapshot->phase = GDOX_RUNTIME_PRESERVING;
     snapshot->preservation_complete = false;
     snapshot->can_start = false;
@@ -130,111 +137,173 @@ bool gdox_runtime_run_preservation(
         output_path
     );
     gdox_runtime_publish(runtime, snapshot);
+}
 
-    if (!gdox_optical_open(
+static bool inspect_preservation_source(
+    gdox_runtime *runtime,
+    preservation_session *session,
+    gdox_error *error
+)
+{
+    return gdox_optical_open(
             runtime->optical_drive,
             3U,
             30000U,
-            &whole,
+            &session->whole,
             error
         )
-        || !gdox_xdvdfs_find_volume(&whole, &volume, error)
-        || !gdox_xdvdfs_inspect(&whole, &volume, &metadata, error)) {
-        goto cleanup;
+        && gdox_xdvdfs_find_volume(
+            &session->whole,
+            &session->volume,
+            error
+        )
+        && gdox_xdvdfs_inspect(
+            &session->whole,
+            &session->volume,
+            &session->metadata,
+            error
+        );
+}
+
+static bool build_compact_source(
+    preservation_session *session,
+    gdox_error *error
+)
+{
+    gdox_xdvdfs_volume partition_volume;
+
+    if (!gdox_xdvdfs_collect_media_patches(
+            &session->whole,
+            &session->metadata,
+            &session->patches,
+            &session->patch_count,
+            error
+        ) || !gdox_source_make_partition(
+            &session->whole,
+            session->volume.base_lba,
+            &session->partition,
+            error
+        ) || !gdox_source_make_patched(
+            &session->partition,
+            session->patches,
+            session->patch_count,
+            &session->patched,
+            error
+        )) {
+        return false;
     }
-    if (format == GDOX_PRESERVATION_XISO_COMPACT) {
-        if (!gdox_xdvdfs_collect_media_patches(
-                &whole,
-                &metadata,
-                &patches,
-                &patch_count,
-                error
-            )
-            || !gdox_source_make_partition(
-                &whole,
-                volume.base_lba,
-                &partition,
-                error
-            )
-            || !gdox_source_make_patched(
-                &partition,
-                patches,
-                patch_count,
-                &patched,
-                error
-            )) {
-            goto cleanup;
-        }
-        partition_volume = volume;
-        partition_volume.base_lba = 0U;
-        if (!gdox_source_make_compact_xiso(
-                &patched,
-                &partition_volume,
-                &compact,
-                &compact_stats,
-                error
-            )) {
-            goto cleanup;
-        }
-        source = &compact;
+    partition_volume = session->volume;
+    partition_volume.base_lba = 0U;
+    if (!gdox_source_make_compact_xiso(
+            &session->patched,
+            &partition_volume,
+            &session->compact,
+            &session->compact_stats,
+            error
+        )) {
+        return false;
     }
-    request = (gdox_preservation_request){
+    session->source = &session->compact;
+    return true;
+}
+
+static bool run_preservation(
+    gdox_runtime *runtime,
+    preservation_session *session,
+    gdox_preservation_format format,
+    const char *output_path,
+    bool verify,
+    gdox_error *error
+)
+{
+    const gdox_preservation_request request = {
         format,
         output_path,
         verify,
         false,
         NULL,
     };
-    input = (gdox_preservation_input){
-        source,
-        format == GDOX_PRESERVATION_REDUMP ? 0U : volume.base_lba,
-        metadata.title != NULL ? metadata.title : "Original Xbox disc",
-        metadata.title_id_present,
-        metadata.title_id,
+    const gdox_preservation_input input = {
+        session->source,
+        format == GDOX_PRESERVATION_REDUMP
+            ? 0U
+            : session->volume.base_lba,
+        session->metadata.title != NULL
+            ? session->metadata.title
+            : "Original Xbox disc",
+        session->metadata.title_id_present,
+        session->metadata.title_id,
         "validated physical optical source",
-        patch_count,
+        session->patch_count,
         0U,
         format == GDOX_PRESERVATION_XISO_COMPACT,
     };
+
     if (!gdox_preservation_run(
             &request,
             &input,
             preservation_is_cancelled,
             preservation_progress,
             runtime,
-            &result,
+            &session->result,
             error
         )) {
-        goto cleanup;
+        return false;
     }
-    success = true;
-    result_available = true;
+    session->result_available = true;
+    return true;
+}
 
-cleanup:
-    free(patches);
-    gdox_xdvdfs_metadata_destroy(&metadata);
-    if (gdox_source_is_valid(&compact)) {
-        closed = gdox_source_close(&compact, &cleanup_error);
-    } else if (gdox_source_is_valid(&patched)) {
-        closed = gdox_source_close(&patched, &cleanup_error);
-    } else if (gdox_source_is_valid(&partition)) {
-        closed = gdox_source_close(&partition, &cleanup_error);
-    } else if (gdox_source_is_valid(&whole)) {
-        closed = gdox_source_close(&whole, &cleanup_error);
+static bool close_preservation_source(
+    preservation_session *session,
+    gdox_error *error
+)
+{
+    if (gdox_source_is_valid(&session->compact)) {
+        return gdox_source_close(&session->compact, error);
     }
-    if (!closed) {
+    if (gdox_source_is_valid(&session->patched)) {
+        return gdox_source_close(&session->patched, error);
+    }
+    if (gdox_source_is_valid(&session->partition)) {
+        return gdox_source_close(&session->partition, error);
+    }
+    if (gdox_source_is_valid(&session->whole)) {
+        return gdox_source_close(&session->whole, error);
+    }
+    return true;
+}
+
+static bool preservation_session_finish(
+    preservation_session *session,
+    bool success,
+    gdox_error *error
+)
+{
+    gdox_error cleanup_error;
+
+    gdox_error_clear(&cleanup_error);
+    free(session->patches);
+    gdox_xdvdfs_metadata_destroy(&session->metadata);
+    if (!close_preservation_source(session, &cleanup_error)) {
         if (success) {
             *error = cleanup_error;
         }
         success = false;
     }
-    if (!success) {
-        if (result_available) {
-            gdox_preservation_result_destroy(&result);
-        }
-        return false;
+    if (!success && session->result_available) {
+        gdox_preservation_result_destroy(&session->result);
+        session->result_available = false;
     }
+    return success;
+}
 
+static void publish_preservation_complete(
+    gdox_runtime *runtime,
+    gdox_runtime_snapshot *snapshot,
+    const gdox_preservation_result *result
+)
+{
     gdox_runtime_copy_snapshot(runtime, snapshot);
     snapshot->phase = GDOX_RUNTIME_PRESERVED;
     snapshot->preservation_complete = true;
@@ -250,13 +319,13 @@ cleanup:
         sizeof(snapshot->status),
         "Preservation complete"
     );
-    if (result.expected_hashes_match == 1) {
+    if (result->expected_hashes_match == 1) {
         gdox_runtime_copy_text(
             snapshot->notice,
             sizeof(snapshot->notice),
             "Verified image matches every available catalog hash"
         );
-    } else if (result.unreadable_sectors == 0U) {
+    } else if (result->unreadable_sectors == 0U) {
         gdox_runtime_copy_text(
             snapshot->notice,
             sizeof(snapshot->notice),
@@ -267,11 +336,55 @@ cleanup:
             snapshot->notice,
             sizeof(snapshot->notice),
             "Image completed with %llu unexpected unreadable sectors",
-            (unsigned long long)result.unreadable_sectors
+            (unsigned long long)result->unreadable_sectors
         );
     }
     gdox_runtime_publish(runtime, snapshot);
-    gdox_preservation_result_destroy(&result);
+}
+
+bool gdox_runtime_run_preservation(
+    gdox_runtime *runtime,
+    gdox_runtime_snapshot *snapshot,
+    const gdox_runtime_request_entry *queued_request,
+    gdox_error *error
+)
+{
+    preservation_session session;
+    gdox_preservation_format format;
+    bool verify;
+    char output_path[GDOX_EMULATOR_PATH_CAPACITY];
+    bool success;
+
+    preservation_session_initialize(&session);
+    if (!read_preservation_request(
+            queued_request,
+            &format,
+            &verify,
+            output_path,
+            error
+        )) {
+        return false;
+    }
+    publish_preservation_start(runtime, snapshot, output_path);
+    success = inspect_preservation_source(runtime, &session, error);
+    if (success && format == GDOX_PRESERVATION_XISO_COMPACT) {
+        success = build_compact_source(&session, error);
+    }
+    if (success) {
+        success = run_preservation(
+            runtime,
+            &session,
+            format,
+            output_path,
+            verify,
+            error
+        );
+    }
+    if (!preservation_session_finish(&session, success, error)) {
+        return false;
+    }
+    publish_preservation_complete(runtime, snapshot, &session.result);
+    gdox_preservation_result_destroy(&session.result);
     runtime->preservation_hold = true;
     return true;
 }

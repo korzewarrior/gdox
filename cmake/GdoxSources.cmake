@@ -22,13 +22,10 @@ set(
 # Core services used by the desktop preservation and emulator workflow.
 set(
     GDOX_DESKTOP_CORE_SOURCES
-    "${GDOX_ROOT}/src/core/emulator_configuration.c"
     "${GDOX_ROOT}/src/core/hash.c"
     "${GDOX_ROOT}/src/core/media_image.c"
     "${GDOX_ROOT}/src/core/preserve.c"
     "${GDOX_ROOT}/src/core/preservation_catalog.c"
     "${GDOX_ROOT}/src/core/preservation_manifest.c"
-    "${GDOX_ROOT}/src/core/protocol.c"
     "${GDOX_ROOT}/src/core/security.c"
-    "${GDOX_ROOT}/src/core/session.c"
 )

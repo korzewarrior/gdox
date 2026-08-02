@@ -5,6 +5,7 @@ add_library(
     STATIC
         src/platform/asus_nr09_source.c
         src/platform/gp08_source.c
+        src/platform/mmc_commands.c
         src/platform/mt1887_source.c
         src/platform/mt1887_profile.c
         src/platform/optical.c
@@ -13,7 +14,7 @@ add_library(
 )
 add_library(gdox::optical ALIAS gdox_optical)
 target_include_directories(gdox_optical PRIVATE src)
-target_link_libraries(gdox_optical PUBLIC gdox::core)
+target_link_libraries(gdox_optical PUBLIC gdox::media)
 if(NOT WIN32)
     target_link_libraries(gdox_optical PRIVATE Threads::Threads)
 endif()

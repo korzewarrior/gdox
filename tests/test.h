@@ -21,9 +21,9 @@ extern int gdox_test_failures;
         }                                                                                      \
     } while (false)
 
-void gdox_test_protocol(void);
 void gdox_test_disc(void);
 void gdox_test_emulator(void);
+void gdox_test_gamepad_input_policy(void);
 void gdox_test_hash(void);
 void gdox_test_hdd_cache(void);
 void gdox_test_nbd(void);
@@ -32,9 +32,9 @@ void gdox_test_preferences(void);
 void gdox_test_preservation_naming(void);
 void gdox_test_preserve(void);
 void gdox_test_runtime_bundle(void);
+void gdox_test_runtime_commands(void);
 void gdox_test_scsi_transport(void);
 void gdox_test_security(void);
-void gdox_test_session(void);
 void gdox_test_source(void);
 void gdox_test_xdvdfs(void);
 

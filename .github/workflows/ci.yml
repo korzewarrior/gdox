@@ -5,11 +5,15 @@ on:
     branches: [main]
   pull_request:
 
+permissions: {}
+
 jobs:
   source-policy:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Validate release tooling and repository privacy
         run: |
           python -m py_compile scripts/*.py
@@ -20,31 +24,84 @@ jobs:
           bash -n packaging/install-device-access.sh
           sh -n packaging/linux/gdox packaging/linux/install.sh
           python scripts/audit_architecture.py
+          python scripts/audit_original_xbox_release.py
           python scripts/audit_release.py
+          python scripts/audit_version.py
           git diff --check
 
   sanitize:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cmake ninja-build libssl-dev
+          sudo apt-get install --yes cmake ninja-build libusb-1.0-0-dev libssl-dev
       - name: Build and test with ASan and UBSan
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DBUILD_TESTING=ON \
             -DGDOX_BUILD_UI=OFF \
-            -DGDOX_BUILD_OPTICAL=OFF \
+            -DGDOX_BUILD_OPTICAL=ON \
             -DGDOX_WARNINGS_AS_ERRORS=ON \
             -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
           cmake --build build --parallel
           ctest --test-dir build --output-on-failure
 
+  android:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Validate Android patch sets
+        run: |
+          xemu_root=$(scripts/prepare_android_emulator.sh)
+          sdl2_root=$(scripts/prepare_android_sdl2.sh)
+          python scripts/android_patchset.py \
+            "$xemu_root" android/emulator/patches --validate
+          python scripts/android_patchset.py \
+            "$sdl2_root" android/emulator/sdl2/patches --validate
+      - name: Build Android native media library
+        run: |
+          . android/dependencies.lock
+          libusb_root="$RUNNER_TEMP/libusb"
+          git clone --filter=blob:none --no-checkout \
+            "$LIBUSB_REPOSITORY" "$libusb_root"
+          git -C "$libusb_root" checkout --detach "$LIBUSB_REVISION"
+          ndk_root=${ANDROID_NDK_ROOT:-${ANDROID_NDK_LATEST_HOME:-}}
+          test -n "$ndk_root"
+          cmake -S android/native -B build-android-native -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ndk_root/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DGDOX_LIBUSB_SOURCE_DIR="$libusb_root"
+          cmake --build build-android-native --parallel
+      - name: Run Android JVM unit tests
+        run: |
+          . android/dependencies.lock
+          xemu_root=$(scripts/prepare_android_emulator.sh)
+          sdl2_root=$(scripts/prepare_android_sdl2.sh)
+          cd "$xemu_root/android"
+          ./gradlew --no-daemon testDebugUnitTest \
+            -PgdoxVersion="$(python "$GITHUB_WORKSPACE/scripts/project_version.py")" \
+            -PgdoxSourceDir="$GITHUB_WORKSPACE" \
+            -PgdoxLibusbSourceDir="$RUNNER_TEMP/libusb" \
+            -PgdoxSdl2SourceDir="$sdl2_root" \
+            -Pkotlin.compiler.execution.strategy=in-process
+
   build:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -57,7 +114,7 @@ jobs:
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -73,9 +130,11 @@ jobs:
           --build-dir "dist/.build/${{ matrix.target }}"
 
   windows:
+    permissions:
+      contents: read
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build and test with MSVC
         shell: cmd
         run: >-

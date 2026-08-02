@@ -184,7 +184,6 @@ bool draw_root(gdox_app &app, bool gaming_mode)
 }
 
 }
-
 bool initialize_dialogs()
 {
     file_dialogs_ready = NFD_Init() == NFD_OKAY;
@@ -308,8 +307,8 @@ void choose_preservation_folder(
     }
     nfdu8char_t *path = nullptr;
     nfdpickfolderu8args_t arguments{};
-    arguments.defaultPath = snapshot.preservation_directory[0] != '\0'
-        ? snapshot.preservation_directory
+    arguments.defaultPath = snapshot.settings.preservation_directory[0] != '\0'
+        ? snapshot.settings.preservation_directory
         : nullptr;
     const nfdresult_t result = NFD_PickFolderU8_With(&path, &arguments);
     if (result == NFD_OKAY) {

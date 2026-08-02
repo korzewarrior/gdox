@@ -162,11 +162,10 @@ static int usb_identity(
     return 0;
 }
 
-static int service_is_supported_drive(
+static int service_supported_identity(
     io_service_t service,
-    GdoxMacDriveIdentity identity)
+    gdox_usb_bot_identity *identity)
 {
-    gdox_usb_bot_identity requested;
     int vendor_id = 0;
     int product_id = 0;
     char vendor[32];
@@ -174,8 +173,9 @@ static int service_is_supported_drive(
     char revision[32];
     char interconnect[32];
     gdox_usb_bot_observed_identity observed;
+    size_t identity_index;
 
-    if (!usb_identity(identity, &requested)
+    if (identity == NULL
         || !service_ancestor_number(
             service,
             CFSTR("idVendor"),
@@ -219,8 +219,32 @@ static int service_is_supported_drive(
         model,
         revision,
     };
-    return strcmp(interconnect, "USB") == 0
-        && gdox_usb_bot_identity_matches(requested, &observed);
+    if (strcmp(interconnect, "USB") != 0) {
+        return 0;
+    }
+    for (identity_index = 0U;
+         identity_index < GDOX_USB_BOT_IDENTITY_COUNT;
+         ++identity_index) {
+        const gdox_usb_bot_identity candidate =
+            (gdox_usb_bot_identity)identity_index;
+        if (gdox_usb_bot_identity_matches(candidate, &observed)) {
+            *identity = candidate;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int service_is_supported_drive(
+    io_service_t service,
+    GdoxMacDriveIdentity identity)
+{
+    gdox_usb_bot_identity requested;
+    gdox_usb_bot_identity observed;
+
+    return usb_identity(identity, &requested)
+        && service_supported_identity(service, &observed)
+        && requested == observed;
 }
 
 static io_service_t find_supported_drive(GdoxMacDriveIdentity identity)
@@ -272,32 +296,60 @@ static io_service_t find_supported_media(GdoxMacDriveIdentity identity)
     return selected;
 }
 
-int gdox_macos_scsi_observe(
-    int requested,
-    int *drive_present,
-    int *media_present)
+static int service_has_media(io_service_t drive)
 {
-    GdoxMacDriveIdentity identity =
-        requested_identity(requested);
-    io_service_t drive;
-    io_service_t media;
+    io_iterator_t iterator = IO_OBJECT_NULL;
+    io_service_t service;
+    kern_return_t result = IORegistryEntryCreateIterator(
+        drive,
+        kIOServicePlane,
+        kIORegistryIterateRecursively,
+        &iterator);
 
-    if (identity == kGdoxMacDriveUnknown
-        || drive_present == NULL
-        || media_present == NULL) {
-        return 1;
+    if (result != KERN_SUCCESS) return 0;
+    while ((service = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
+        const int is_media = IOObjectConformsTo(service, "IOMedia") != 0U;
+        IOObjectRelease(service);
+        if (is_media) {
+            IOObjectRelease(iterator);
+            return 1;
+        }
     }
-    *drive_present = 0;
-    *media_present = 0;
-    drive = find_supported_drive(identity);
-    if (drive == IO_OBJECT_NULL) return 0;
-    *drive_present = 1;
-    IOObjectRelease(drive);
-    media = find_supported_media(identity);
-    if (media != IO_OBJECT_NULL) {
-        *media_present = 1;
-        IOObjectRelease(media);
+    IOObjectRelease(iterator);
+    return 0;
+}
+
+int gdox_macos_scsi_observe_all(
+    int drive_present[GDOX_USB_BOT_IDENTITY_COUNT],
+    int media_present[GDOX_USB_BOT_IDENTITY_COUNT])
+{
+    io_iterator_t iterator = IO_OBJECT_NULL;
+    io_service_t service;
+    size_t index;
+    kern_return_t result;
+
+    if (drive_present == NULL) return 1;
+    for (index = 0U; index < GDOX_USB_BOT_IDENTITY_COUNT; ++index) {
+        drive_present[index] = 0;
+        if (media_present != NULL) media_present[index] = 0;
     }
+    result = IOServiceGetMatchingServices(
+        kIOMainPortDefault,
+        IOServiceMatching("IODVDServices"),
+        &iterator);
+    if (result != KERN_SUCCESS) return 1;
+    while ((service = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
+        gdox_usb_bot_identity identity;
+        if (service_supported_identity(service, &identity)) {
+            const size_t identity_index = (size_t)identity;
+            drive_present[identity_index] = 1;
+            if (media_present != NULL) {
+                media_present[identity_index] = service_has_media(service);
+            }
+        }
+        IOObjectRelease(service);
+    }
+    IOObjectRelease(iterator);
     return 0;
 }
 

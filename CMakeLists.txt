@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 project(
     gdox
-    VERSION 0.1.3
+    VERSION 0.1.4
     DESCRIPTION "Play and preserve original Xbox discs"
     LANGUAGES C CXX
 )
@@ -43,6 +43,7 @@ include(GdoxSources)
 include(GdoxCore)
 if(GDOX_BUILD_OPTICAL)
     include(GdoxOptical)
+    include(GdoxRuntime)
 endif()
 if(BUILD_TESTING)
     include(GdoxTests)

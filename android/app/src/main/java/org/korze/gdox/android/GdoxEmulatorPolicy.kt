@@ -7,26 +7,10 @@ import android.util.Log
 import java.io.File
 import java.util.Locale
 
-internal data class GdoxResolvedGraphics(
-  val renderer: String,
-  val surfaceScale: Int,
-  val aspectRatio: String,
-  val filtering: String,
-  val vsync: Boolean,
-  val displayFrameRate: Float,
-  val profileName: String
-)
-
 internal const val GDOX_RESTART_EXTRA =
   "org.korze.gdox.extra.RESTART_GAME"
 
 internal object GdoxEmulatorPolicy {
-  private data class GameProfile(
-    val name: String,
-    val surfaceScale: Int,
-    val displayFrameRate: Float = defaultDisplayFrameRate
-  )
-
   const val surfaceScaleKey = "gdox_surface_scale"
   const val aspectRatioKey = "gdox_aspect_ratio"
   const val filteringKey = "gdox_filtering"
@@ -38,67 +22,23 @@ internal object GdoxEmulatorPolicy {
 
   private const val cacheSignatureKey = "gdox_emulator_cache_signature"
   private const val cacheEpoch = 2
-  private const val defaultDisplayFrameRate = 60f
-  private val gameProfiles = mapOf(
-    0x42530005L to GameProfile(
-      name = "Morrowind compatibility",
-      surfaceScale = 1,
-      displayFrameRate = 30f
-    ),
-    0x4D530004L to GameProfile(
-      name = "Halo performance",
-      surfaceScale = 1,
-      displayFrameRate = 30f
-    ),
-    0x4D5300D1L to GameProfile(
-      name = "Fable performance",
-      surfaceScale = 1,
-      displayFrameRate = 30f
-    )
-  )
 
   fun resolve(
     preferences: SharedPreferences,
     titleId: Long?
-  ): GdoxResolvedGraphics {
-    val renderer = "vulkan"
-    var scale = preferences.getInt(surfaceScaleKey, 1).coerceIn(1, 4)
-    val aspect = preferences.getString(aspectRatioKey, "4:3")
-      .takeIf { it == "4:3" || it == "16:9" }
-      ?: "4:3"
-    val filtering = preferences.getString(filteringKey, "linear")
-      .takeIf { it == "linear" || it == "nearest" }
-      ?: "linear"
-    val vsync = preferences.getBoolean(vsyncKey, false)
-    var profile = "User settings"
-    var displayFrameRate = defaultDisplayFrameRate
-
-    val gameProfile = if (
-      preferences.getBoolean(compatibilityProfilesKey, true)
-    ) {
-      titleId?.let(gameProfiles::get)
-    } else {
-      null
-    }
-    if (gameProfile != null) {
-      scale = gameProfile.surfaceScale
-      displayFrameRate = if (vsync) {
-        defaultDisplayFrameRate
-      } else {
-        gameProfile.displayFrameRate
-      }
-      profile = gameProfile.name
-    }
-    return GdoxResolvedGraphics(
-      renderer,
-      scale,
-      aspect,
-      filtering,
-      vsync,
-      displayFrameRate,
-      profile
-    )
-  }
+  ): GdoxResolvedGraphics = GdoxGraphicsPolicy.resolve(
+    GdoxGraphicsPreferences(
+      surfaceScale = preferences.getInt(surfaceScaleKey, 1),
+      aspectRatio = preferences.getString(aspectRatioKey, "4:3") ?: "4:3",
+      filtering = preferences.getString(filteringKey, "linear") ?: "linear",
+      vsync = preferences.getBoolean(vsyncKey, false),
+      compatibilityProfiles = preferences.getBoolean(
+        compatibilityProfilesKey,
+        true
+      )
+    ),
+    titleId
+  )
 
   fun activate(
     context: Context,

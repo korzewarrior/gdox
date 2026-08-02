@@ -1,6 +1,6 @@
 # Development
 
-This document describes the gdox 0.1.3 source tree.
+This document describes the current gdox source tree.
 
 ## Toolchain
 
@@ -51,7 +51,7 @@ boundaries, and fail-closed validation for disc geometry and device identity.
 ## Release builds
 
 ```sh
-python scripts/build_linux_packages.py --version 0.1.3
+python scripts/build_linux_packages.py
 python scripts/build_release.py --target aarch64-apple-darwin
 ```
 

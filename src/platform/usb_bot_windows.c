@@ -571,82 +571,38 @@ bool gdox_usb_bot_open(
     return true;
 }
 
-bool gdox_usb_bot_present(
-    gdox_usb_bot_identity requested_identity,
-    bool *drive_present,
-    gdox_error *error
+static bool observed_device_identity(
+    HANDLE device,
+    DEVINST device_instance,
+    gdox_usb_bot_identity *observed_identity
 )
 {
-    HANDLE device;
+    size_t identity_index;
 
-    gdox_error_clear(error);
-    if (drive_present == NULL) {
-        gdox_error_set(
-            error,
-            GDOX_ERROR_INVALID_ARGUMENT,
-            "optical presence output is required"
-        );
-        return false;
+    for (identity_index = 0U;
+         identity_index < GDOX_USB_BOT_IDENTITY_COUNT;
+         ++identity_index) {
+        const gdox_usb_bot_identity identity =
+            (gdox_usb_bot_identity)identity_index;
+
+        if (device_usb_identity_matches(device_instance, identity)
+            && device_identity_matches(device, identity)) {
+            *observed_identity = identity;
+            return true;
+        }
     }
-    *drive_present = false;
-    if (gdox_usb_bot_identity_get(requested_identity) == NULL) {
-        gdox_error_set(
-            error,
-            GDOX_ERROR_UNSUPPORTED,
-            "Windows observer does not support this USB optical mechanism"
-        );
-        return false;
-    }
-    device = open_validated_device(requested_identity, 0U);
-    if (device != INVALID_HANDLE_VALUE) {
-        *drive_present = true;
-        (void)CloseHandle(device);
-    }
-    return true;
+    return false;
 }
 
-bool gdox_usb_bot_observe(
-    gdox_usb_bot_identity requested_identity,
-    bool *drive_present,
-    bool *media_status_known,
-    bool *media_present,
-    gdox_error *error
+static void observe_windows_media(
+    HANDLE device,
+    gdox_usb_bot_observation *observation
 )
 {
     static const uint8_t ready_cdb[6] = {0};
-    HANDLE device;
     gdox_windows_scsi_packet result = {0};
     gdox_error ignored;
 
-    gdox_error_clear(error);
-    if (drive_present == NULL || media_status_known == NULL
-        || media_present == NULL) {
-        gdox_error_set(
-            error,
-            GDOX_ERROR_INVALID_ARGUMENT,
-            "optical observation outputs are required"
-        );
-        return false;
-    }
-    *drive_present = false;
-    *media_status_known = false;
-    *media_present = false;
-    if (gdox_usb_bot_identity_get(requested_identity) == NULL) {
-        gdox_error_set(
-            error,
-            GDOX_ERROR_UNSUPPORTED,
-            "Windows observer does not support this USB optical mechanism"
-        );
-        return false;
-    }
-    device = open_validated_device(
-        requested_identity,
-        GENERIC_READ | GENERIC_WRITE
-    );
-    if (device == INVALID_HANDLE_VALUE) {
-        return true;
-    }
-    *drive_present = true;
     gdox_error_clear(&ignored);
     if (execute_command(
             device,
@@ -661,16 +617,199 @@ bool gdox_usb_bot_observe(
             &result,
             &ignored
         )) {
-        *media_status_known = true;
-        *media_present = true;
+        observation->media_status_known = true;
+        observation->media_present = true;
     } else if ((result.sense[2] & 0x0fU) == 0x02U
         && (result.sense[12] == 0x3aU
             || (result.sense[12] == 0x04U
                 && result.sense[13] == 0x01U))) {
-        *media_status_known = true;
-        *media_present = false;
+        observation->media_status_known = true;
     }
-    (void)CloseHandle(device);
+}
+
+static void observe_windows_device(
+    HANDLE device,
+    DEVINST device_instance,
+    bool command_access,
+    gdox_usb_bot_observation observations[GDOX_USB_BOT_IDENTITY_COUNT]
+)
+{
+    gdox_usb_bot_identity identity;
+    gdox_usb_bot_observation *observation;
+
+    if (!observed_device_identity(device, device_instance, &identity)) {
+        return;
+    }
+    observation = &observations[(size_t)identity];
+    observation->drive_present = true;
+    if (command_access) {
+        observe_windows_media(device, observation);
+    }
+}
+
+static bool observe_windows_devices(
+    gdox_usb_bot_observation observations[GDOX_USB_BOT_IDENTITY_COUNT],
+    bool query_media,
+    gdox_error *error
+)
+{
+    HDEVINFO devices;
+    DWORD index;
+
+    devices = SetupDiGetClassDevsW(
+        &gdox_cdrom_interface,
+        NULL,
+        NULL,
+        DIGCF_PRESENT | DIGCF_DEVICEINTERFACE
+    );
+    if (devices == INVALID_HANDLE_VALUE) {
+        set_windows_transport_error(
+            error,
+            "enumerate Windows optical drives",
+            GetLastError()
+        );
+        return false;
+    }
+    for (index = 0U;; ++index) {
+        SP_DEVICE_INTERFACE_DATA interface_data = {0};
+        SP_DEVICE_INTERFACE_DETAIL_DATA_W *detail;
+        SP_DEVINFO_DATA device_info = {0};
+        DWORD required = 0U;
+        HANDLE device;
+        bool command_access = query_media;
+
+        interface_data.cbSize = sizeof(interface_data);
+        if (!SetupDiEnumDeviceInterfaces(
+                devices,
+                NULL,
+                &gdox_cdrom_interface,
+                index,
+                &interface_data
+            )) {
+            break;
+        }
+        (void)SetupDiGetDeviceInterfaceDetailW(
+            devices,
+            &interface_data,
+            NULL,
+            0U,
+            &required,
+            NULL
+        );
+        if (required < sizeof(*detail)) {
+            continue;
+        }
+        detail = malloc((size_t)required);
+        if (detail == NULL) {
+            (void)SetupDiDestroyDeviceInfoList(devices);
+            gdox_error_set(
+                error,
+                GDOX_ERROR_INTERNAL,
+                "could not allocate Windows optical device detail"
+            );
+            return false;
+        }
+        detail->cbSize = sizeof(*detail);
+        device_info.cbSize = sizeof(device_info);
+        if (!SetupDiGetDeviceInterfaceDetailW(
+                devices,
+                &interface_data,
+                detail,
+                required,
+                NULL,
+                &device_info
+            )) {
+            free(detail);
+            continue;
+        }
+        device = CreateFileW(
+            detail->DevicePath,
+            query_media ? GENERIC_READ | GENERIC_WRITE : 0U,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            NULL,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            NULL
+        );
+        if (device == INVALID_HANDLE_VALUE && query_media) {
+            command_access = false;
+            device = CreateFileW(
+                detail->DevicePath,
+                0U,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                NULL,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                NULL
+            );
+        }
+        free(detail);
+        if (device == INVALID_HANDLE_VALUE) {
+            continue;
+        }
+        observe_windows_device(
+            device,
+            device_info.DevInst,
+            command_access,
+            observations
+        );
+        (void)CloseHandle(device);
+    }
+    (void)SetupDiDestroyDeviceInfoList(devices);
+    return true;
+}
+
+bool gdox_usb_bot_observe_all(
+    gdox_usb_bot_observation observations[GDOX_USB_BOT_IDENTITY_COUNT],
+    gdox_error *error
+)
+{
+    gdox_error_clear(error);
+    if (observations == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "optical observations output is required"
+        );
+        return false;
+    }
+    memset(
+        observations,
+        0,
+        sizeof(*observations) * GDOX_USB_BOT_IDENTITY_COUNT
+    );
+    return observe_windows_devices(observations, true, error);
+}
+
+bool gdox_usb_bot_present_all(
+    bool drive_present[GDOX_USB_BOT_IDENTITY_COUNT],
+    gdox_error *error
+)
+{
+    gdox_usb_bot_observation
+        observations[GDOX_USB_BOT_IDENTITY_COUNT] = {0};
+    size_t index;
+
+    gdox_error_clear(error);
+    if (drive_present == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "optical presence output is required"
+        );
+        return false;
+    }
+    memset(
+        drive_present,
+        0,
+        sizeof(*drive_present) * GDOX_USB_BOT_IDENTITY_COUNT
+    );
+    if (!observe_windows_devices(observations, false, error)) {
+        return false;
+    }
+    for (index = 0U; index < GDOX_USB_BOT_IDENTITY_COUNT; ++index) {
+        drive_present[index] = observations[index].drive_present;
+    }
     return true;
 }
 

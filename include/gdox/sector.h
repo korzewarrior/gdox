@@ -1,0 +1,6 @@
+#ifndef GDOX_SECTOR_H
+#define GDOX_SECTOR_H
+
+#define GDOX_LOGICAL_SECTOR_BYTES 2048U
+
+#endif

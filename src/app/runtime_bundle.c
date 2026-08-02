@@ -1,7 +1,7 @@
 #include "app/runtime_bundle.h"
 
 #include "gdox/hash.h"
-#include "platform/emulator_configuration.h"
+#include "core/emulator_configuration.h"
 #include "platform/user_storage.h"
 
 #include <stdint.h>
@@ -361,74 +361,88 @@ static bool inspect_external_configuration(
     return true;
 }
 
-bool gdox_runtime_bundle_prepare(
-    const char *executable_override,
-    const char *hdd_override,
+typedef struct runtime_bundle_paths {
+    char configuration[GDOX_EMULATOR_PATH_CAPACITY];
+    char hdd[GDOX_EMULATOR_PATH_CAPACITY];
+    char mcpx[GDOX_EMULATOR_PATH_CAPACITY];
+    char flash[GDOX_EMULATOR_PATH_CAPACITY];
+} runtime_bundle_paths;
+
+typedef enum hdd_preparation {
+    HDD_PREPARATION_FAILED = 0,
+    HDD_PREPARATION_READY,
+    HDD_PREPARATION_USE_EXTERNAL_CONFIGURATION
+} hdd_preparation;
+
+static bool select_executable(
+    const char *override,
     gdox_runtime_bundle_status *status,
     gdox_error *error
 )
 {
-    char hdd_template[GDOX_EMULATOR_PATH_CAPACITY];
-    char default_executable[GDOX_EMULATOR_PATH_CAPACITY];
-    char managed_configuration[GDOX_EMULATOR_PATH_CAPACITY];
-    char managed_hdd[GDOX_EMULATOR_PATH_CAPACITY];
-    char managed_mcpx[GDOX_EMULATOR_PATH_CAPACITY];
-    char managed_flash[GDOX_EMULATOR_PATH_CAPACITY];
-    const char *active_hdd;
-    char *configuration = NULL;
-    char *original_configuration = NULL;
-    bool managed_found = false;
-    bool managed_hdd_found;
-    uint64_t hdd_bytes;
-    bool success = false;
-
-    gdox_error_clear(error);
-    if (status == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "runtime bundle status is required");
-        return false;
-    }
-    memset(status, 0, sizeof(*status));
-    status->custom_executable =
-        executable_override != NULL && executable_override[0] != '\0';
-    status->custom_hdd =
-        hdd_override != NULL && hdd_override[0] != '\0';
+    status->custom_executable = override != NULL && override[0] != '\0';
     if (status->custom_executable) {
-        if (!gdox_emulator_validate_executable(executable_override, error)
-            || !copy_path(status->executable, executable_override, error)) {
-            return false;
-        }
-    } else if (!gdox_emulator_discover_executable(status->executable, error)) {
-        if (error->code == GDOX_ERROR_NOT_FOUND) {
-            gdox_error_clear(error);
-            return true;
-        }
-        return false;
+        status->xemu_available =
+            gdox_emulator_validate_executable(override, error)
+            && copy_path(status->executable, override, error);
+        return status->xemu_available;
     }
-    status->xemu_available = true;
-    if (!managed_path(
-            "xemu/xemu.toml",
-            managed_configuration,
-            error
-        ) || !managed_path(
-            "xemu/xbox_hdd.qcow2",
-            managed_hdd,
-            error
-        ) || !managed_path(
+    if (gdox_emulator_discover_executable(status->executable, error)) {
+        status->xemu_available = true;
+        return true;
+    }
+    if (error->code == GDOX_ERROR_NOT_FOUND) {
+        gdox_error_clear(error);
+        return true;
+    }
+    return false;
+}
+
+static bool resolve_managed_paths(
+    runtime_bundle_paths *paths,
+    gdox_error *error
+)
+{
+    return managed_path("xemu/xemu.toml", paths->configuration, error)
+        && managed_path("xemu/xbox_hdd.qcow2", paths->hdd, error)
+        && managed_path(
             "xemu/firmware/mcpx_1.0.bin",
-            managed_mcpx,
+            paths->mcpx,
             error
-        ) || !managed_path(
-            "xemu/firmware/bios.bin",
-            managed_flash,
-            error
-        )) {
-        return false;
+        )
+        && managed_path("xemu/firmware/bios.bin", paths->flash, error);
+}
+
+static bool find_hdd_for_executable(
+    const char *executable,
+    char hdd_template[GDOX_EMULATOR_PATH_CAPACITY],
+    gdox_error *error
+)
+{
+    char default_executable[GDOX_EMULATOR_PATH_CAPACITY];
+
+    if (find_hdd_template(executable, hdd_template)) {
+        return true;
     }
-    active_hdd = status->custom_hdd
-        ? hdd_override
-        : managed_hdd;
-    managed_hdd_found = gdox_storage_file_size(active_hdd, &hdd_bytes);
-    if (managed_hdd_found && hdd_bytes == 0U) {
+    return gdox_emulator_discover_executable(default_executable, error)
+        && strcmp(default_executable, executable) != 0
+        && find_hdd_template(default_executable, hdd_template);
+}
+
+static hdd_preparation prepare_hdd(
+    const gdox_runtime_bundle_status *status,
+    const runtime_bundle_paths *paths,
+    const char *active_hdd,
+    gdox_error *error
+)
+{
+    char hdd_template[GDOX_EMULATOR_PATH_CAPACITY];
+    uint64_t hdd_bytes;
+
+    if (gdox_storage_file_size(active_hdd, &hdd_bytes)) {
+        if (hdd_bytes != 0U) {
+            return HDD_PREPARATION_READY;
+        }
         gdox_error_set(
             error,
             GDOX_ERROR_INVALID_SOURCE,
@@ -436,41 +450,106 @@ bool gdox_runtime_bundle_prepare(
                 ? "selected Xbox hard disk is empty"
                 : "managed xemu hard disk is empty"
         );
-        return false;
+        return HDD_PREPARATION_FAILED;
     }
-    if (!managed_hdd_found) {
-        if (status->custom_hdd) {
-            gdox_error_set(
-                error,
-                GDOX_ERROR_NOT_FOUND,
-                "selected Xbox hard disk is unavailable"
-            );
-            return false;
-        }
-        const bool selected_template =
-            find_hdd_template(status->executable, hdd_template);
-        const bool default_template =
-            !selected_template
-            && gdox_emulator_discover_executable(default_executable, error)
-            && strcmp(default_executable, status->executable) != 0
-            && find_hdd_template(default_executable, hdd_template);
-        if (!selected_template && !default_template) {
-            gdox_error_clear(error);
-            return inspect_external_configuration(status, error);
-        }
-        if (!gdox_storage_copy_private(
-                hdd_template,
-                managed_hdd,
-                false,
-                error
-            )) {
-            return false;
-        }
+    if (status->custom_hdd) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_NOT_FOUND,
+            "selected Xbox hard disk is unavailable"
+        );
+        return HDD_PREPARATION_FAILED;
     }
-    status->bundled = !status->custom_executable;
-    status->hdd_ready = true;
+    if (!find_hdd_for_executable(status->executable, hdd_template, error)) {
+        gdox_error_clear(error);
+        return HDD_PREPARATION_USE_EXTERNAL_CONFIGURATION;
+    }
+    return gdox_storage_copy_private(
+        hdd_template,
+        paths->hdd,
+        false,
+        error
+    ) ? HDD_PREPARATION_READY : HDD_PREPARATION_FAILED;
+}
+
+static char *duplicate_configuration(
+    const char *configuration,
+    gdox_error *error
+)
+{
+    const size_t bytes = strlen(configuration) + 1U;
+    char *copy = malloc(bytes);
+
+    if (copy == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INTERNAL,
+            "could not retain xemu configuration"
+        );
+        return NULL;
+    }
+    memcpy(copy, configuration, bytes);
+    return copy;
+}
+
+static bool configure_runtime_files(
+    char **configuration,
+    const runtime_bundle_paths *paths,
+    const char *active_hdd,
+    const gdox_runtime_bundle_status *status,
+    gdox_error *error
+)
+{
+    return set_file_if_ready(
+            configuration,
+            "hdd_path",
+            active_hdd,
+            true,
+            error
+        )
+        && set_file_if_ready(
+            configuration,
+            "bootrom_path",
+            paths->mcpx,
+            status->mcpx_ready,
+            error
+        )
+        && set_file_if_ready(
+            configuration,
+            "flashrom_path",
+            paths->flash,
+            status->flash_ready,
+            error
+        );
+}
+
+static bool publish_bundle_paths(
+    gdox_runtime_bundle_status *status,
+    const runtime_bundle_paths *paths,
+    const char *active_hdd,
+    gdox_error *error
+)
+{
+    return copy_path(status->configuration, paths->configuration, error)
+        && copy_path(status->mcpx, paths->mcpx, error)
+        && copy_path(status->flash, paths->flash, error)
+        && copy_path(status->hdd, active_hdd, error);
+}
+
+static bool prepare_configuration(
+    gdox_runtime_bundle_status *status,
+    const runtime_bundle_paths *paths,
+    const char *active_hdd,
+    gdox_error *error
+)
+{
+    char *configuration = NULL;
+    char *original = NULL;
+    bool managed_found = false;
+    bool success = false;
+
     if (!read_configuration(
-            managed_configuration,
+            paths->configuration,
             &configuration,
             &managed_found,
             error
@@ -478,57 +557,33 @@ bool gdox_runtime_bundle_prepare(
             GDOX_FIRMWARE_MCPX,
             "bootrom_path",
             configuration,
-            managed_mcpx,
+            paths->mcpx,
             &status->mcpx_ready,
             error
         ) || !adopt_configured_firmware(
             GDOX_FIRMWARE_FLASH,
             "flashrom_path",
             configuration,
-            managed_flash,
+            paths->flash,
             &status->flash_ready,
             error
         )) {
         goto cleanup;
     }
-    original_configuration = malloc(strlen(configuration) + 1U);
-    if (original_configuration == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not retain xemu configuration");
-        goto cleanup;
-    }
-    memcpy(
-        original_configuration,
-        configuration,
-        strlen(configuration) + 1U
-    );
-    if (!set_file_if_ready(
+    original = duplicate_configuration(configuration, error);
+    if (original == NULL
+        || !configure_runtime_files(
             &configuration,
-            "hdd_path",
+            paths,
             active_hdd,
-            true,
+            status,
             error
         )) {
         goto cleanup;
     }
-    if (!set_file_if_ready(
-            &configuration,
-            "bootrom_path",
-            managed_mcpx,
-            status->mcpx_ready,
-            error
-        ) || !set_file_if_ready(
-            &configuration,
-            "flashrom_path",
-            managed_flash,
-            status->flash_ready,
-            error
-        )) {
-        goto cleanup;
-    }
-    if ((!managed_found
-            || strcmp(configuration, original_configuration) != 0)
+    if ((!managed_found || strcmp(configuration, original) != 0)
         && !gdox_storage_write_private(
-            managed_configuration,
+            paths->configuration,
             (const uint8_t *)configuration,
             strlen(configuration),
             true,
@@ -536,22 +591,59 @@ bool gdox_runtime_bundle_prepare(
         )) {
         goto cleanup;
     }
-    if (!copy_path(
-            status->configuration,
-            managed_configuration,
-            error
-        ) || !copy_path(status->mcpx, managed_mcpx, error)
-        || !copy_path(status->flash, managed_flash, error)
-        || !copy_path(status->hdd, active_hdd, error)) {
+    if (!publish_bundle_paths(status, paths, active_hdd, error)) {
         goto cleanup;
     }
     status->configuration_ready = true;
     success = true;
 
 cleanup:
-    free(original_configuration);
+    free(original);
     free(configuration);
     return success;
+}
+
+bool gdox_runtime_bundle_prepare(
+    const char *executable_override,
+    const char *hdd_override,
+    gdox_runtime_bundle_status *status,
+    gdox_error *error
+)
+{
+    runtime_bundle_paths paths;
+    const char *active_hdd;
+    hdd_preparation hdd;
+
+    gdox_error_clear(error);
+    if (status == NULL) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "runtime bundle status is required");
+        return false;
+    }
+    memset(status, 0, sizeof(*status));
+    status->custom_hdd =
+        hdd_override != NULL && hdd_override[0] != '\0';
+    if (!select_executable(executable_override, status, error)) {
+        return false;
+    }
+    if (!status->xemu_available) {
+        return true;
+    }
+    if (!resolve_managed_paths(&paths, error)) {
+        return false;
+    }
+    active_hdd = status->custom_hdd
+        ? hdd_override
+        : paths.hdd;
+    hdd = prepare_hdd(status, &paths, active_hdd, error);
+    if (hdd == HDD_PREPARATION_FAILED) {
+        return false;
+    }
+    if (hdd == HDD_PREPARATION_USE_EXTERNAL_CONFIGURATION) {
+        return inspect_external_configuration(status, error);
+    }
+    status->bundled = !status->custom_executable;
+    status->hdd_ready = true;
+    return prepare_configuration(status, &paths, active_hdd, error);
 }
 
 bool gdox_runtime_bundle_import_firmware(

@@ -140,7 +140,6 @@ void source_actions_spacing()
 }
 
 }
-
 void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
 {
     static constexpr std::array<const char *, 4> aspect_labels = {
@@ -172,17 +171,17 @@ void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
         1080U,
         1440U,
     };
-    int scale = snapshot.internal_resolution_scale;
+    int scale = snapshot.settings.internal_resolution_scale;
     int scale_index = scale - 1;
-    int aspect = static_cast<int>(snapshot.display_aspect);
-    int fit = static_cast<int>(snapshot.display_fit);
+    int aspect = static_cast<int>(snapshot.settings.display_aspect);
+    int fit = static_cast<int>(snapshot.settings.display_fit);
     int resolution = 0;
-    bool fullscreen = snapshot.fullscreen;
+    bool fullscreen = snapshot.settings.fullscreen;
     bool display_changed = false;
 
     for (std::size_t index = 0U; index < widths.size(); ++index) {
-        if (snapshot.window_width == widths[index]
-            && snapshot.window_height == heights[index]) {
+        if (snapshot.settings.window_width == widths[index]
+            && snapshot.settings.window_height == heights[index]) {
             resolution = static_cast<int>(index);
             break;
         }
@@ -267,7 +266,7 @@ void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
 
     ImGui::TextUnformatted("Startup");
     ImGui::Separator();
-    bool auto_start = snapshot.auto_start;
+    bool auto_start = snapshot.settings.auto_start;
     if (ImGui::Checkbox("Auto start on insert", &auto_start)) {
         gdox_app_set_auto_start(&app, auto_start);
     }
@@ -312,7 +311,7 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
     if (ImGui::Button("Choose xemu...", ImVec2(142.0F, 34.0F))) {
         choose_xemu(app);
     }
-    if (snapshot.xemu_override[0] != '\0') {
+    if (snapshot.settings.xemu_override[0] != '\0') {
         ImGui::SameLine();
         if (ImGui::Button("Use included", ImVec2(122.0F, 34.0F))) {
             if (!gdox_app_set_xemu_override(&app, "")) {
@@ -345,7 +344,7 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
     if (ImGui::Button("Choose hard disk...", ImVec2(170.0F, 34.0F))) {
         choose_hdd(app);
     }
-    if (snapshot.hdd_override[0] != '\0') {
+    if (snapshot.settings.hdd_override[0] != '\0') {
         ImGui::SameLine();
         if (ImGui::Button("Use included", ImVec2(122.0F, 34.0F))) {
             if (!gdox_app_set_hdd_override(&app, "")) {
@@ -359,7 +358,7 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
     path_row(
         "preservation",
         "Preservation folder",
-        snapshot.preservation_directory,
+        snapshot.settings.preservation_directory,
         "Choose a folder before preserving"
     );
     if (ImGui::Button("Choose folder...", ImVec2(148.0F, 34.0F))) {

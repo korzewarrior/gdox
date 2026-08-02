@@ -167,6 +167,39 @@ bool gdox_user_data_path(
     return user_path(STORAGE_DATA, relative, output, error);
 }
 
+static bool parent_directory_cursor(
+    wchar_t *path,
+    wchar_t *final_slash,
+    wchar_t **cursor,
+    gdox_error *error
+)
+{
+    *cursor = path;
+    if (path[0] != L'\0' && path[1] == L':') {
+        *cursor = path + 3U;
+        return true;
+    }
+    if (path[0] != L'\\' || path[1] != L'\\') {
+        return true;
+    }
+
+    *cursor = wcschr(path + 2U, L'\\');
+    if (*cursor != NULL) {
+        *cursor = wcschr(*cursor + 1U, L'\\');
+    }
+    if (*cursor == NULL) {
+        *final_slash = L'\\';
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "user storage UNC path has no directory"
+        );
+        return false;
+    }
+    ++*cursor;
+    return true;
+}
+
 static bool create_parent_directories(
     wchar_t *path,
     gdox_error *error
@@ -182,21 +215,8 @@ static bool create_parent_directories(
         return true;
     }
     *slash = L'\0';
-    cursor = path;
-    if (path[0] != L'\0' && path[1] == L':') {
-        cursor = path + 3U;
-    } else if (path[0] == L'\\' && path[1] == L'\\') {
-        cursor = path + 2U;
-        cursor = wcschr(cursor, L'\\');
-        if (cursor != NULL) {
-            cursor = wcschr(cursor + 1U, L'\\');
-        }
-        if (cursor == NULL) {
-            *slash = L'\\';
-            gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "user storage UNC path has no directory");
-            return false;
-        }
-        ++cursor;
+    if (!parent_directory_cursor(path, slash, &cursor, error)) {
+        return false;
     }
     while (cursor != NULL && *cursor != L'\0') {
         wchar_t *next = wcschr(cursor, L'\\');

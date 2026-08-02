@@ -11,9 +11,9 @@ typedef struct test_group {
 } test_group;
 
 static const test_group groups[] = {
-    {"protocol", gdox_test_protocol},
     {"disc", gdox_test_disc},
     {"emulator", gdox_test_emulator},
+    {"gamepad_input_policy", gdox_test_gamepad_input_policy},
     {"hash", gdox_test_hash},
     {"hdd_cache", gdox_test_hdd_cache},
     {"nbd", gdox_test_nbd},
@@ -22,9 +22,9 @@ static const test_group groups[] = {
     {"preservation_naming", gdox_test_preservation_naming},
     {"preserve", gdox_test_preserve},
     {"runtime_bundle", gdox_test_runtime_bundle},
+    {"runtime_commands", gdox_test_runtime_commands},
     {"scsi_transport", gdox_test_scsi_transport},
     {"security", gdox_test_security},
-    {"session", gdox_test_session},
     {"source", gdox_test_source},
     {"xdvdfs", gdox_test_xdvdfs},
 };

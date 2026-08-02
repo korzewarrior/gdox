@@ -9,7 +9,7 @@ full-disc preservation image.
 
 ## now
 
-0.1.3 is an active development release. current system: original xbox.
+GDOX is an active development release. current system: original xbox.
 
 linux, steam deck, macos, and windows builds are available. android is in
 development.
@@ -32,4 +32,4 @@ ctest --preset dev --output-on-failure
 [contributing](CONTRIBUTING.md) /
 [status](docs/STATUS.md) /
 [safety](docs/SAFETY.md) /
-[license](https://github.com/korzewarrior/license)
+[license](LICENSE)

@@ -1,6 +1,6 @@
 #include "core/preservation_internal.h"
 
-#include "platform/preservation_io.h"
+#include "core/ports/preservation_io.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -123,6 +123,34 @@ static bool text_format(text_buffer *text, const char *format, ...)
     return true;
 }
 
+static bool text_json_byte(text_buffer *text, unsigned char value)
+{
+    switch (value) {
+        case '"':
+            return text_append(text, "\\\"");
+        case '\\':
+            return text_append(text, "\\\\");
+        case '\b':
+            return text_append(text, "\\b");
+        case '\f':
+            return text_append(text, "\\f");
+        case '\n':
+            return text_append(text, "\\n");
+        case '\r':
+            return text_append(text, "\\r");
+        case '\t':
+            return text_append(text, "\\t");
+        default:
+            if (value < 0x20U) {
+                return text_format(text, "\\u%04X", (unsigned int)value);
+            }
+            {
+                const char encoded[2] = {(char)value, '\0'};
+                return text_append(text, encoded);
+            }
+    }
+}
+
 static bool text_json_string(text_buffer *text, const char *input)
 {
     const unsigned char *cursor;
@@ -135,55 +163,8 @@ static bool text_json_string(text_buffer *text, const char *input)
         return false;
     }
     while (*cursor != 0U) {
-        const unsigned char value = *cursor++;
-        switch (value) {
-            case '"':
-                if (!text_append(text, "\\\"")) {
-                    return false;
-                }
-                break;
-            case '\\':
-                if (!text_append(text, "\\\\")) {
-                    return false;
-                }
-                break;
-            case '\b':
-                if (!text_append(text, "\\b")) {
-                    return false;
-                }
-                break;
-            case '\f':
-                if (!text_append(text, "\\f")) {
-                    return false;
-                }
-                break;
-            case '\n':
-                if (!text_append(text, "\\n")) {
-                    return false;
-                }
-                break;
-            case '\r':
-                if (!text_append(text, "\\r")) {
-                    return false;
-                }
-                break;
-            case '\t':
-                if (!text_append(text, "\\t")) {
-                    return false;
-                }
-                break;
-            default:
-                if (value < 0x20U) {
-                    if (!text_format(text, "\\u%04X", (unsigned int)value)) {
-                        return false;
-                    }
-                } else {
-                    char encoded[2] = {(char)value, '\0'};
-                    if (!text_append(text, encoded)) {
-                        return false;
-                    }
-                }
-                break;
+        if (!text_json_byte(text, *cursor++)) {
+            return false;
         }
     }
     return text_append(text, "\"");
@@ -352,6 +333,33 @@ static bool append_ranges(
     return text_append(text, "]");
 }
 
+static const char *json_boolean(bool value)
+{
+    return value ? "true" : "false";
+}
+
+static bool append_optional_title_id(
+    text_buffer *text,
+    const gdox_preservation_input *input
+)
+{
+    if (!input->title_id_present) {
+        return text_append(text, "null");
+    }
+    return text_format(text, "\"%08X\"", input->title_id);
+}
+
+static bool append_optional_hash_match(
+    text_buffer *text,
+    int expected_hashes_match
+)
+{
+    if (expected_hashes_match < 0) {
+        return text_append(text, "null");
+    }
+    return text_append(text, json_boolean(expected_hashes_match != 0));
+}
+
 static bool build_manifest(
     const gdox_preservation_request *request,
     const gdox_preservation_input *input,
@@ -383,9 +391,7 @@ static bool build_manifest(
         )
         || !text_json_string(text, input->title)
         || !text_append(text, ",\n  \"title_id\":")
-        || (input->title_id_present
-            ? !text_format(text, "\"%08X\"", input->title_id)
-            : !text_append(text, "null"))
+        || !append_optional_title_id(text, input)
         || !text_append(text, ",\n  \"source\":")
         || !text_json_string(text, input->source_description)
         || !text_format(
@@ -407,20 +413,15 @@ static bool build_manifest(
             (unsigned long long)result->bytes,
             (unsigned long long)(result->bytes / GDOX_LOGICAL_SECTOR_BYTES),
             GDOX_LOGICAL_SECTOR_BYTES,
-            result->readback_verified ? "true" : "false",
-            input->filesystem_inventory_verified ? "true" : "false",
-            request->format == GDOX_PRESERVATION_REDUMP
+            json_boolean(result->readback_verified),
+            json_boolean(input->filesystem_inventory_verified),
+            json_boolean(
+                request->format == GDOX_PRESERVATION_REDUMP
                     && result->bytes
                         == GDOX_XGD1_REDUMP_SECTORS * GDOX_LOGICAL_SECTOR_BYTES
-                ? "true"
-                : "false"
+            )
         )
-        || (result->expected_hashes_match < 0
-            ? !text_append(text, "null")
-            : !text_append(
-                text,
-                result->expected_hashes_match != 0 ? "true" : "false"
-            ))
+        || !append_optional_hash_match(text, result->expected_hashes_match)
         || !text_format(
             text,
             ",\"ss_present\":%s,\"ss_authenticated\":%s},\n"
@@ -429,15 +430,17 @@ static bool build_manifest(
             "  \"hashes\":{\"crc32\":\"%s\",\"md5\":\"%s\","
             "\"sha1\":\"%s\",\"sha256\":\"%s\"},\n"
             "  \"unreadable_ranges\":",
-            result->evidence.security_sector_present ? "true" : "false",
-            ss_authenticated ? "true" : "false",
-            request->format == GDOX_PRESERVATION_XISO_COMPACT
+            json_boolean(result->evidence.security_sector_present),
+            json_boolean(ss_authenticated),
+            json_boolean(
+                request->format == GDOX_PRESERVATION_XISO_COMPACT
                     && input->filesystem_inventory_verified
-                ? "true"
-                : "false",
-            (unsigned long long)(request->format == GDOX_PRESERVATION_XISO_COMPACT
-                ? input->media_patches
-                : 0U),
+            ),
+            (unsigned long long)(
+                request->format == GDOX_PRESERVATION_XISO_COMPACT
+                    ? input->media_patches
+                    : 0U
+            ),
             crc32,
             md5,
             sha1,
@@ -463,10 +466,10 @@ static bool build_manifest(
             text,
             ",\n  \"evidence\":{\"pfi\":%s,\"dmi\":%s,"
             "\"security_sector\":%s,\"security_ranges_valid\":%s,\"note\":",
-            result->evidence.pfi_present ? "true" : "false",
-            result->evidence.dmi_present ? "true" : "false",
-            result->evidence.security_sector_present ? "true" : "false",
-            ss_authenticated ? "true" : "false"
+            json_boolean(result->evidence.pfi_present),
+            json_boolean(result->evidence.dmi_present),
+            json_boolean(result->evidence.security_sector_present),
+            json_boolean(ss_authenticated)
         )
         || !text_json_string(text, result->evidence.note)
         || !text_append(text, "}")) {
@@ -480,9 +483,9 @@ static bool build_manifest(
                 "\"coordinate_space\":\"canonical-iso-lba\","
                 "\"title\":",
                 map_source_slug(map->source),
-                map->source == GDOX_SECURITY_MAP_AUTHENTICATED_SS
-                    ? "true"
-                    : "false"
+                json_boolean(
+                    map->source == GDOX_SECURITY_MAP_AUTHENTICATED_SS
+                )
             )
             || !text_json_string(text, map->title)
             || !text_append(text, ",\"mastering_id\":")

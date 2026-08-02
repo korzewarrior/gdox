@@ -157,6 +157,54 @@ static bool probe_descriptor(
     return true;
 }
 
+static bool inspect_descriptor_batch(
+    const uint8_t *batch,
+    uint32_t blocks,
+    uint64_t lba,
+    gdox_xdvdfs_volume *volume,
+    bool *matched,
+    gdox_error *error
+)
+{
+    uint32_t index;
+
+    *matched = false;
+    for (index = 0U; index < blocks; ++index) {
+        const uint8_t *sector =
+            batch + (size_t)index * GDOX_LOGICAL_SECTOR_BYTES;
+        if (descriptor_magic_valid(sector)) {
+            *matched = true;
+            return parse_descriptor(sector, lba + index, volume, error);
+        }
+    }
+    return true;
+}
+
+static bool probe_descriptor_batch(
+    gdox_sector_source *source,
+    uint64_t lba,
+    uint32_t blocks,
+    gdox_xdvdfs_volume *volume
+)
+{
+    uint32_t index;
+
+    for (index = 0U; index < blocks; ++index) {
+        bool found = false;
+        gdox_error probe_error;
+        if (probe_descriptor(
+            source,
+            lba + index,
+            volume,
+            &found,
+            &probe_error
+        ) && found) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool scan_range(
     gdox_sector_source *source,
     uint64_t start,
@@ -184,41 +232,25 @@ static bool scan_range(
         gdox_error read_error;
 
         if (gdox_source_read(source, lba, blocks, batch, bytes, &read_error)) {
-            uint32_t index;
-            for (index = 0U; index < blocks; ++index) {
-                const uint8_t *sector =
-                    batch + (size_t)index * GDOX_LOGICAL_SECTOR_BYTES;
-                if (descriptor_magic_valid(sector)) {
-                    const bool parsed = parse_descriptor(
-                        sector,
-                        lba + index,
-                        volume,
-                        error
-                    );
-                    free(batch);
-                    if (parsed) {
-                        *found = true;
-                    }
-                    return parsed;
-                }
+            bool matched;
+            const bool valid = inspect_descriptor_batch(
+                batch,
+                blocks,
+                lba,
+                volume,
+                &matched,
+                error
+            );
+            if (matched) {
+                free(batch);
+                *found = valid;
+                return valid;
             }
-        } else if (blocks > 1U) {
-            uint32_t index;
-            for (index = 0U; index < blocks; ++index) {
-                bool probe_found = false;
-                gdox_error probe_error;
-                if (probe_descriptor(
-                        source,
-                        lba + index,
-                        volume,
-                        &probe_found,
-                        &probe_error
-                    ) && probe_found) {
-                    free(batch);
-                    *found = true;
-                    return true;
-                }
-            }
+        } else if (blocks > 1U
+            && probe_descriptor_batch(source, lba, blocks, volume)) {
+            free(batch);
+            *found = true;
+            return true;
         }
         lba += blocks;
     }
@@ -397,6 +429,130 @@ static char *join_path(const char *parent, const char *name)
     return path;
 }
 
+typedef struct directory_reader {
+    const uint8_t *data;
+    uint32_t size;
+    const char *parent;
+    uint8_t *visited;
+    offset_vector *pending;
+    entry_vector *entries;
+} directory_reader;
+
+static bool directory_data_is_empty(const uint8_t *data, uint32_t size)
+{
+    size_t index;
+
+    if (size < 14U) {
+        return false;
+    }
+    for (index = 0U; index < 14U; ++index) {
+        if (data[index] != 0xffU) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static uint16_t directory_u16(const uint8_t *data, size_t offset)
+{
+    return (uint16_t)(
+        (uint16_t)data[offset]
+            | (uint16_t)((uint16_t)data[offset + 1U] << 8U)
+    );
+}
+
+static bool process_directory_entry(
+    directory_reader *reader,
+    size_t offset,
+    gdox_error *error
+)
+{
+    gdox_xdvdfs_entry entry = {0};
+    uint32_t entry_sector;
+    uint32_t entry_size;
+    uint16_t left;
+    uint16_t right;
+    size_t name_bytes;
+    size_t slot;
+
+    if (offset % 4U != 0U || offset > (size_t)reader->size
+        || (size_t)reader->size - offset < 14U) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_VOLUME,
+            "directory entry is truncated"
+        );
+        return false;
+    }
+    slot = offset / 4U;
+    if (reader->visited[slot] != 0U) {
+        return true;
+    }
+    reader->visited[slot] = 1U;
+    left = directory_u16(reader->data, offset);
+    right = directory_u16(reader->data, offset + 2U);
+    if (!read_le_u32(
+        reader->data,
+        reader->size,
+        offset + 4U,
+        &entry_sector
+    ) || !read_le_u32(
+        reader->data,
+        reader->size,
+        offset + 8U,
+        &entry_size
+    )) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_VOLUME,
+            "directory entry is truncated"
+        );
+        return false;
+    }
+    entry.attributes = reader->data[offset + 12U];
+    name_bytes = reader->data[offset + 13U];
+    if (name_bytes == 0U
+        || name_bytes > (size_t)reader->size - offset - 14U) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_VOLUME,
+            "directory name is invalid"
+        );
+        return false;
+    }
+    entry.name = display_name(reader->data + offset + 14U, name_bytes);
+    if (entry.name == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INTERNAL,
+            "could not allocate directory name"
+        );
+        return false;
+    }
+    entry.path = join_path(reader->parent, entry.name);
+    if (entry.path == NULL) {
+        entry_destroy(&entry);
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INTERNAL,
+            "could not allocate directory path"
+        );
+        return false;
+    }
+    entry.start_sector = entry_sector;
+    entry.size = entry_size;
+    if (!entry_vector_push(reader->entries, entry, error)) {
+        entry_destroy(&entry);
+        return false;
+    }
+    if (left != 0U
+        && !offset_vector_push(reader->pending, (size_t)left * 4U, error)) {
+        return false;
+    }
+    return right == 0U
+        || offset_vector_push(reader->pending, (size_t)right * 4U, error);
+}
+
 static bool read_directory(
     gdox_sector_source *source,
     const gdox_xdvdfs_volume *volume,
@@ -414,6 +570,7 @@ static bool read_directory(
     uint8_t *visited;
     size_t visited_bytes;
     offset_vector pending = {0};
+    directory_reader reader;
     bool success = false;
 
     if (size == 0U || size > GDOX_XDVDFS_MAX_DIRECTORY_BYTES) {
@@ -436,16 +593,9 @@ static bool read_directory(
         free(data);
         return false;
     }
-    {
-        bool empty = size >= 14U;
-        size_t index;
-        for (index = 0U; empty && index < 14U; ++index) {
-            empty = data[index] == 0xffU;
-        }
-        if (empty) {
-            free(data);
-            return true;
-        }
+    if (directory_data_is_empty(data, size)) {
+        free(data);
+        return true;
     }
 
     visited_bytes = ((size_t)size + 3U) / 4U;
@@ -458,68 +608,21 @@ static bool read_directory(
     if (!offset_vector_push(&pending, 0U, error)) {
         goto cleanup;
     }
+    reader = (directory_reader){
+        data,
+        size,
+        parent,
+        visited,
+        &pending,
+        entries,
+    };
     while (pending.count != 0U) {
-        size_t offset;
-        size_t slot;
-        uint16_t left;
-        uint16_t right;
-        uint32_t entry_sector;
-        uint32_t entry_size;
-        uint8_t attributes;
-        size_t name_bytes;
-        gdox_xdvdfs_entry entry = {0};
-
         --pending.count;
-        offset = pending.items[pending.count];
-        if (offset % 4U != 0U || offset > (size_t)size || (size_t)size - offset < 14U) {
-            gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME, "directory entry is truncated");
-            goto cleanup;
-        }
-        slot = offset / 4U;
-        if (visited[slot] != 0U) {
-            continue;
-        }
-        visited[slot] = 1U;
-        left = (uint16_t)(
-            (uint16_t)data[offset] | (uint16_t)((uint16_t)data[offset + 1U] << 8U)
-        );
-        right = (uint16_t)(
-            (uint16_t)data[offset + 2U]
-            | (uint16_t)((uint16_t)data[offset + 3U] << 8U)
-        );
-        if (!read_le_u32(data, size, offset + 4U, &entry_sector)
-            || !read_le_u32(data, size, offset + 8U, &entry_size)) {
-            gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME, "directory entry is truncated");
-            goto cleanup;
-        }
-        attributes = data[offset + 12U];
-        name_bytes = data[offset + 13U];
-        if (name_bytes == 0U || name_bytes > (size_t)size - offset - 14U) {
-            gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME, "directory name is invalid");
-            goto cleanup;
-        }
-        entry.name = display_name(data + offset + 14U, name_bytes);
-        if (entry.name == NULL) {
-            gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate directory name");
-            goto cleanup;
-        }
-        entry.path = join_path(parent, entry.name);
-        if (entry.path == NULL) {
-            entry_destroy(&entry);
-            gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate directory path");
-            goto cleanup;
-        }
-        entry.start_sector = entry_sector;
-        entry.size = entry_size;
-        entry.attributes = attributes;
-        if (!entry_vector_push(entries, entry, error)) {
-            entry_destroy(&entry);
-            goto cleanup;
-        }
-        if (left != 0U && !offset_vector_push(&pending, (size_t)left * 4U, error)) {
-            goto cleanup;
-        }
-        if (right != 0U && !offset_vector_push(&pending, (size_t)right * 4U, error)) {
+        if (!process_directory_entry(
+            &reader,
+            pending.items[pending.count],
+            error
+        )) {
             goto cleanup;
         }
     }
@@ -626,6 +729,209 @@ static void directory_vector_destroy(directory_vector *directories, size_t first
     memset(directories, 0, sizeof(*directories));
 }
 
+typedef struct xbe_collection {
+    gdox_sector_source *source;
+    const gdox_xdvdfs_volume *volume;
+    directory_vector directories;
+    directory_identity *visited;
+    size_t visited_count;
+    entry_vector *xbes;
+    uint64_t highest;
+} xbe_collection;
+
+static bool initialize_xbe_collection(
+    xbe_collection *collection,
+    gdox_error *error
+)
+{
+    const uint64_t root_blocks =
+        ((uint64_t)collection->volume->root_directory_size
+            + GDOX_LOGICAL_SECTOR_BYTES - 1U)
+        / GDOX_LOGICAL_SECTOR_BYTES;
+    const uint64_t root_end =
+        (uint64_t)collection->volume->root_directory_sector + root_blocks;
+    directory_job root = {
+        collection->volume->root_directory_sector,
+        collection->volume->root_directory_size,
+        NULL,
+        0U,
+    };
+
+    if (root_end > collection->highest) {
+        collection->highest = root_end;
+    }
+    root.parent_path = malloc(1U);
+    if (root.parent_path == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INTERNAL,
+            "could not allocate root path"
+        );
+        return false;
+    }
+    root.parent_path[0] = '\0';
+    if (!directory_vector_push(&collection->directories, root, error)) {
+        free(root.parent_path);
+        return false;
+    }
+    collection->visited = malloc(
+        GDOX_XDVDFS_MAX_DIRECTORIES * sizeof(*collection->visited)
+    );
+    if (collection->visited == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INTERNAL,
+            "could not allocate directory identities"
+        );
+        return false;
+    }
+    return true;
+}
+
+static bool update_highest_entry(
+    xbe_collection *collection,
+    const gdox_xdvdfs_entry *entry,
+    gdox_error *error
+)
+{
+    const uint64_t entry_blocks =
+        ((uint64_t)entry->size + GDOX_LOGICAL_SECTOR_BYTES - 1U)
+        / GDOX_LOGICAL_SECTOR_BYTES;
+    const uint64_t entry_end =
+        (uint64_t)entry->start_sector + entry_blocks;
+
+    if (entry_end
+        > gdox_source_sector_count(collection->source)
+            - collection->volume->base_lba) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_VOLUME,
+            "XDVDFS entry extent exceeds the source"
+        );
+        return false;
+    }
+    if (entry_end > collection->highest) {
+        collection->highest = entry_end;
+    }
+    return true;
+}
+
+static bool enqueue_child_directory(
+    xbe_collection *collection,
+    gdox_xdvdfs_entry *entry,
+    size_t parent_depth,
+    gdox_error *error
+)
+{
+    directory_job child;
+
+    if (parent_depth >= GDOX_XDVDFS_MAX_DIRECTORY_DEPTH) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_VOLUME,
+            "XDVDFS directory nesting limit exceeded"
+        );
+        return false;
+    }
+    if (directory_seen(
+        collection->visited,
+        collection->visited_count,
+        entry->start_sector,
+        entry->size
+    )) {
+        return true;
+    }
+    collection->visited[collection->visited_count] = (directory_identity){
+        entry->start_sector,
+        entry->size,
+    };
+    ++collection->visited_count;
+    child = (directory_job){
+        entry->start_sector,
+        entry->size,
+        entry->path,
+        parent_depth + 1U,
+    };
+    entry->path = NULL;
+    if (!directory_vector_push(&collection->directories, child, error)) {
+        free(child.parent_path);
+        return false;
+    }
+    return true;
+}
+
+static bool collect_xbe_entry(
+    xbe_collection *collection,
+    gdox_xdvdfs_entry *entry,
+    size_t parent_depth,
+    gdox_error *error
+)
+{
+    gdox_xdvdfs_entry moved;
+
+    if (!update_highest_entry(collection, entry, error)) {
+        return false;
+    }
+    if (is_directory(entry)) {
+        return enqueue_child_directory(
+            collection,
+            entry,
+            parent_depth,
+            error
+        );
+    }
+    if (!has_xbe_extension(entry->name)) {
+        return true;
+    }
+    moved = *entry;
+    memset(entry, 0, sizeof(*entry));
+    if (!entry_vector_push(collection->xbes, moved, error)) {
+        entry_destroy(&moved);
+        return false;
+    }
+    return true;
+}
+
+static bool process_xbe_directory(
+    xbe_collection *collection,
+    size_t index,
+    gdox_error *error
+)
+{
+    directory_job *stored = &collection->directories.items[index];
+    const size_t depth = stored->depth;
+    entry_vector entries = {0};
+    size_t entry_index;
+
+    if (!read_directory(
+        collection->source,
+        collection->volume,
+        stored->start_sector,
+        stored->size,
+        stored->parent_path,
+        &entries,
+        error
+    )) {
+        entry_vector_destroy(&entries);
+        return false;
+    }
+    free(stored->parent_path);
+    stored->parent_path = NULL;
+    for (entry_index = 0U; entry_index < entries.count; ++entry_index) {
+        if (!collect_xbe_entry(
+            collection,
+            &entries.items[entry_index],
+            depth,
+            error
+        )) {
+            entry_vector_destroy(&entries);
+            return false;
+        }
+    }
+    entry_vector_destroy(&entries);
+    return true;
+}
+
 static bool collect_xbe_entries(
     gdox_sector_source *source,
     const gdox_xdvdfs_volume *volume,
@@ -634,142 +940,36 @@ static bool collect_xbe_entries(
     gdox_error *error
 )
 {
-    directory_vector directories = {0};
-    directory_identity *visited = NULL;
-    size_t visited_count = 0U;
-    size_t next = 0U;
-    directory_job root = {
-        volume->root_directory_sector,
-        volume->root_directory_size,
-        NULL,
-        0U,
+    xbe_collection collection = {
+        .source = source,
+        .volume = volume,
+        .xbes = xbes,
+        .highest = GDOX_XDVDFS_VOLUME_DESCRIPTOR_SECTOR + 1U,
     };
+    size_t next = 0U;
     bool success = false;
-    uint64_t highest = GDOX_XDVDFS_VOLUME_DESCRIPTOR_SECTOR + 1U;
 
-    {
-        const uint64_t root_blocks =
-            ((uint64_t)volume->root_directory_size
-                + GDOX_LOGICAL_SECTOR_BYTES - 1U)
-            / GDOX_LOGICAL_SECTOR_BYTES;
-        const uint64_t root_end =
-            (uint64_t)volume->root_directory_sector + root_blocks;
-        if (root_end > highest) {
-            highest = root_end;
-        }
-    }
-
-    root.parent_path = malloc(1U);
-    if (root.parent_path == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate root path");
+    if (!initialize_xbe_collection(&collection, error)) {
+        directory_vector_destroy(&collection.directories, 0U);
         return false;
     }
-    root.parent_path[0] = '\0';
-    if (!directory_vector_push(&directories, root, error)) {
-        free(root.parent_path);
-        return false;
-    }
-    visited = malloc(GDOX_XDVDFS_MAX_DIRECTORIES * sizeof(*visited));
-    if (visited == NULL) {
-        directory_vector_destroy(&directories, 0U);
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate directory identities");
-        return false;
-    }
-
-    while (next < directories.count) {
-        directory_job *job = &directories.items[next];
-        entry_vector entries = {0};
-        size_t index;
-
-        if (!read_directory(
-                source,
-                volume,
-                job->start_sector,
-                job->size,
-                job->parent_path,
-                &entries,
-                error
-            )) {
-            entry_vector_destroy(&entries);
+    while (next < collection.directories.count) {
+        if (!process_xbe_directory(&collection, next, error)) {
             goto cleanup;
         }
-        free(job->parent_path);
-        job->parent_path = NULL;
-        for (index = 0U; index < entries.count; ++index) {
-            gdox_xdvdfs_entry *entry = &entries.items[index];
-            const uint64_t entry_blocks =
-                ((uint64_t)entry->size + GDOX_LOGICAL_SECTOR_BYTES - 1U)
-                / GDOX_LOGICAL_SECTOR_BYTES;
-            const uint64_t entry_end =
-                (uint64_t)entry->start_sector + entry_blocks;
-            if (entry_end > gdox_source_sector_count(source) - volume->base_lba) {
-                gdox_error_set(
-                    error,
-                    GDOX_ERROR_INVALID_VOLUME,
-                    "XDVDFS entry extent exceeds the source"
-                );
-                entry_vector_destroy(&entries);
-                goto cleanup;
-            }
-            if (entry_end > highest) {
-                highest = entry_end;
-            }
-            if (is_directory(entry)) {
-                directory_job child;
-                if (job->depth >= GDOX_XDVDFS_MAX_DIRECTORY_DEPTH) {
-                    gdox_error_set(
-                        error,
-                        GDOX_ERROR_INVALID_VOLUME,
-                        "XDVDFS directory nesting limit exceeded"
-                    );
-                    entry_vector_destroy(&entries);
-                    goto cleanup;
-                }
-                if (directory_seen(
-                        visited,
-                        visited_count,
-                        entry->start_sector,
-                        entry->size
-                    )) {
-                    continue;
-                }
-                visited[visited_count].start_sector = entry->start_sector;
-                visited[visited_count].size = entry->size;
-                ++visited_count;
-                child.start_sector = entry->start_sector;
-                child.size = entry->size;
-                child.parent_path = entry->path;
-                child.depth = job->depth + 1U;
-                entry->path = NULL;
-                if (!directory_vector_push(&directories, child, error)) {
-                    free(child.parent_path);
-                    entry_vector_destroy(&entries);
-                    goto cleanup;
-                }
-            } else if (has_xbe_extension(entry->name)) {
-                gdox_xdvdfs_entry moved = *entry;
-                memset(entry, 0, sizeof(*entry));
-                if (!entry_vector_push(xbes, moved, error)) {
-                    entry_destroy(&moved);
-                    entry_vector_destroy(&entries);
-                    goto cleanup;
-                }
-            }
-        }
-        entry_vector_destroy(&entries);
         ++next;
     }
     if (xbes->count > 1U) {
         qsort(xbes->items, xbes->count, sizeof(*xbes->items), compare_entries);
     }
     if (highest_used_sector != NULL) {
-        *highest_used_sector = highest;
+        *highest_used_sector = collection.highest;
     }
     success = true;
 
 cleanup:
-    free(visited);
-    directory_vector_destroy(&directories, next);
+    free(collection.visited);
+    directory_vector_destroy(&collection.directories, next);
     return success;
 }
 

@@ -1,4 +1,5 @@
 #include "ui/presentation.hpp"
+#include "ui/gamepad_input_policy.h"
 
 #include "raylib.h"
 #include "rlImGui.h"
@@ -65,6 +66,12 @@ void select_adjacent_page(gdox_app &app, int direction)
 
 void set_gamepad_navigation(ImGuiIO &io, bool enabled)
 {
+    const bool currently_enabled =
+        (io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) != 0;
+
+    if (currently_enabled == enabled) {
+        return;
+    }
     if (enabled) {
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     } else {
@@ -88,30 +95,20 @@ bool gamepad_buttons_released()
     return true;
 }
 
-}
+struct window_state {
+    bool window_hidden = false;
+    gdox_gamepad_input_policy gamepad{};
+};
 
-#if defined(_WIN32)
-extern "C" int WinMain(void *, void *, char *, int)
-#else
-int main()
-#endif
+float initialize_window(bool deck)
 {
-    gdox_app app{};
-    const bool deck = gaming_mode();
-    bool deck_window_hidden = false;
-    bool deck_input_armed = true;
-    bool quit_requested = false;
-    gdox_app_initialize(&app);
-
     unsigned int flags =
         FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_MSAA_4X_HINT;
-    if (deck) {
-        flags |= FLAG_WINDOW_UNDECORATED;
-    } else {
-        flags |= FLAG_WINDOW_HIGHDPI;
-    }
+
+    flags |= deck ? FLAG_WINDOW_UNDECORATED : FLAG_WINDOW_HIGHDPI;
     SetConfigFlags(flags);
     InitWindow(deck ? 1280 : desktop_width, deck ? 800 : desktop_height, "GDOX");
+
     const float interface_scale = deck ? 1.0F : desktop_interface_scale();
     if (!deck && interface_scale > 1.0F) {
         SetWindowSize(
@@ -127,91 +124,156 @@ int main()
         SetExitKey(KEY_NULL);
     }
     SetTargetFPS(60);
+    return interface_scale;
+}
+
+void initialize_imgui(bool deck, float interface_scale)
+{
     rlImGuiSetup(true);
     ImGuiIO &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    if (!deck) {
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-    }
     io.ConfigNavCursorVisibleAlways = deck;
     io.ConfigNavEscapeClearFocusItem = !deck;
     gdox::ui::initialize_presentation();
-    if (deck || interface_scale > 1.0F) {
-        ImGuiStyle &style = ImGui::GetStyle();
-        style.ScaleAllSizes(deck ? 1.18F : interface_scale);
-        style.FontScaleMain = deck ? 1.20F : interface_scale;
-        if (deck) {
-            ImGui::SetNavCursorVisible(true);
-        }
+    if (!deck && interface_scale <= 1.0F) {
+        return;
     }
+
+    ImGuiStyle &style = ImGui::GetStyle();
+    style.ScaleAllSizes(deck ? 1.18F : interface_scale);
+    style.FontScaleMain = deck ? 1.20F : interface_scale;
+    if (deck) {
+        ImGui::SetNavCursorVisible(true);
+    }
+}
+
+bool wait_while_emulator_owns_display(
+    bool deck,
+    bool emulator_running,
+    window_state &state
+)
+{
+    if (!deck || !emulator_running) {
+        return false;
+    }
+    if (!state.window_hidden) {
+        SetWindowState(FLAG_WINDOW_HIDDEN);
+        state.window_hidden = true;
+    }
+    WaitTime(0.025);
+    return true;
+}
+
+void restore_deck_window(bool deck, window_state &state, ImGuiIO &io)
+{
+    if (!deck || !state.window_hidden) {
+        return;
+    }
+    ClearWindowState(FLAG_WINDOW_HIDDEN);
+    ImGui::SetNavCursorVisible(true);
+    io.ClearInputKeys();
+    state.window_hidden = false;
+}
+
+void update_gamepad_input(
+    bool emulator_running,
+    window_state &state,
+    ImGuiIO &io
+)
+{
+    const bool focused = IsWindowFocused();
+    const bool buttons_released =
+        !emulator_running && gamepad_buttons_released();
+
+    gdox_gamepad_input_update(
+        &state.gamepad,
+        emulator_running,
+        focused,
+        buttons_released
+    );
+    set_gamepad_navigation(io, state.gamepad.navigation_enabled);
+}
+
+void handle_page_navigation(
+    bool deck,
+    const window_state &state,
+    gdox_app &app
+)
+{
+    if (!deck || !state.gamepad.navigation_enabled) {
+        return;
+    }
+    if (IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_TRIGGER_1)) {
+        select_adjacent_page(app, -1);
+    }
+    if (IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_TRIGGER_1)) {
+        select_adjacent_page(app, 1);
+    }
+}
+
+void import_dropped_files(gdox_app &app)
+{
+    if (!IsFileDropped()) {
+        return;
+    }
+    const FilePathList dropped = LoadDroppedFiles();
+    for (unsigned int index = 0U; index < dropped.count; ++index) {
+        (void)gdox_app_import_firmware(&app, dropped.paths[index]);
+    }
+    UnloadDroppedFiles(dropped);
+}
+
+bool draw_frame(gdox_app &app, bool deck)
+{
+    BeginDrawing();
+    ClearBackground(background);
+    rlImGuiBegin();
+    const bool quit_requested = gdox::ui::draw_application(app, deck);
+    rlImGuiEnd();
+    EndDrawing();
+    return quit_requested;
+}
+
+}
+
+#if defined(_WIN32)
+extern "C" int WinMain(void *, void *, char *, int)
+#else
+int main()
+#endif
+{
+    gdox_app app{};
+    const bool deck = gaming_mode();
+    window_state ui_state;
+    bool quit_requested = false;
+    gdox_app_initialize(&app);
+    gdox_gamepad_input_initialize(&ui_state.gamepad);
+
+    const float interface_scale = initialize_window(deck);
+    initialize_imgui(deck, interface_scale);
+    ImGuiIO &io = ImGui::GetIO();
 
     while (!quit_requested) {
         gdox_app_tick(&app);
         const gdox_app_snapshot *snapshot = gdox_app_snapshot_get(&app);
         const bool xemu_running = snapshot != nullptr && snapshot->can_close;
 
-        if (deck && xemu_running) {
-            if (!deck_window_hidden) {
-                set_gamepad_navigation(io, false);
-                deck_input_armed = false;
-                SetWindowState(FLAG_WINDOW_HIDDEN);
-                deck_window_hidden = true;
-            }
-            WaitTime(0.025);
+        update_gamepad_input(xemu_running, ui_state, io);
+        if (wait_while_emulator_owns_display(
+                deck,
+                xemu_running,
+                ui_state
+            )) {
             continue;
         }
-
-        if (deck && deck_window_hidden) {
-            ClearWindowState(FLAG_WINDOW_HIDDEN);
-            ImGui::SetNavCursorVisible(true);
-            io.ClearInputKeys();
-            deck_window_hidden = false;
-        }
-
+        restore_deck_window(deck, ui_state, io);
         if (WindowShouldClose()) {
             break;
         }
-
-        if (deck) {
-            const bool focused = IsWindowFocused();
-            if (!focused) {
-                deck_input_armed = false;
-            } else if (!deck_input_armed && gamepad_buttons_released()) {
-                deck_input_armed = true;
-            }
-            set_gamepad_navigation(io, focused && deck_input_armed);
-        }
-
-        if (deck
-            && deck_input_armed
-            && IsGamepadButtonPressed(
-                0,
-                GAMEPAD_BUTTON_LEFT_TRIGGER_1
-            )) {
-            select_adjacent_page(app, -1);
-        }
-        if (deck
-            && deck_input_armed
-            && IsGamepadButtonPressed(
-                0,
-                GAMEPAD_BUTTON_RIGHT_TRIGGER_1
-            )) {
-            select_adjacent_page(app, 1);
-        }
-        if (IsFileDropped()) {
-            const FilePathList dropped = LoadDroppedFiles();
-            for (unsigned int index = 0U; index < dropped.count; ++index) {
-                (void)gdox_app_import_firmware(&app, dropped.paths[index]);
-            }
-            UnloadDroppedFiles(dropped);
-        }
-        BeginDrawing();
-        ClearBackground(background);
-        rlImGuiBegin();
-        quit_requested = gdox::ui::draw_application(app, deck);
-        rlImGuiEnd();
-        EndDrawing();
+        handle_page_navigation(deck, ui_state, app);
+        import_dropped_files(app);
+        quit_requested = draw_frame(app, deck);
     }
 
     gdox_app_shutdown(&app);

@@ -12,6 +12,7 @@ import sys
 
 sys.dont_write_bytecode = True
 from release_paths import cache_root, output_root
+from project_version import validated_project_version
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -67,13 +68,20 @@ def run_in_builder(runtime: str, arguments: list[str]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", required=True)
+    parser.add_argument(
+        "--version",
+        help="release version; defaults to and must match the CMake project",
+    )
     parser.add_argument(
         "--linux-only",
         action="store_true",
         help="skip the Steam Deck archive",
     )
     arguments = parser.parse_args()
+    try:
+        version = validated_project_version(arguments.version)
+    except (OSError, RuntimeError, ValueError) as error:
+        parser.error(str(error))
     runtime = container_runtime()
 
     command(
@@ -107,7 +115,7 @@ def main() -> None:
                 "python3",
                 "scripts/package_release.py",
                 "--version",
-                arguments.version,
+                version,
                 "--target",
                 target,
                 "--artifact",

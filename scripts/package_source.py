@@ -13,6 +13,7 @@ import tarfile
 
 sys.dont_write_bytecode = True
 from release_paths import output_root
+from project_version import validated_project_version
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,14 +35,20 @@ def tracked_files() -> list[Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", required=True)
+    parser.add_argument(
+        "--version",
+        help="release version; defaults to and must match the CMake project",
+    )
     parser.add_argument(
         "--output",
         default=output_root() / "release",
         type=Path,
     )
     args = parser.parse_args()
-    version = args.version.removeprefix("v")
+    try:
+        version = validated_project_version(args.version)
+    except (OSError, RuntimeError, ValueError) as error:
+        parser.error(str(error))
     name = f"gdox-{version}-source"
     output = args.output / f"{name}.tar.gz"
     args.output.mkdir(parents=True, exist_ok=True)

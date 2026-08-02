@@ -1,4 +1,4 @@
-#include "platform/emulator_configuration.h"
+#include "core/emulator_configuration.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -133,6 +133,127 @@ static bool append_assignment(
         && text_append(output, "\n", 1U, error);
 }
 
+typedef struct toml_update {
+    text_buffer output;
+    const char *section;
+    const char *key;
+    const char *value;
+    bool in_section;
+    bool saw_section;
+    bool saw_key;
+} toml_update;
+
+static bool append_line_break_if_needed(
+    text_buffer *output,
+    gdox_error *error
+)
+{
+    return output->bytes == 0U || output->data[output->bytes - 1U] == '\n'
+        || text_append(output, "\n", 1U, error);
+}
+
+static bool enter_toml_line(
+    toml_update *update,
+    const char *line,
+    size_t line_bytes,
+    gdox_error *error
+)
+{
+    const bool target_section =
+        line_is_section(line, line_bytes, update->section);
+    const bool any_section = line_is_any_section(line, line_bytes);
+
+    if (any_section && update->in_section && !target_section
+        && !update->saw_key) {
+        if (!append_assignment(
+            &update->output,
+            update->key,
+            update->value,
+            error
+        )) {
+            return false;
+        }
+        update->saw_key = true;
+    }
+    if (target_section && update->saw_section) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_SOURCE,
+            "xemu configuration repeats a display section"
+        );
+        return false;
+    }
+    if (target_section) {
+        update->saw_section = true;
+        update->in_section = true;
+    } else if (any_section) {
+        update->in_section = false;
+    }
+    return true;
+}
+
+static bool write_toml_line(
+    toml_update *update,
+    const char *line,
+    size_t line_bytes,
+    size_t original_bytes,
+    gdox_error *error
+)
+{
+    if (!update->in_section
+        || !line_is_key(line, line_bytes, update->key)) {
+        return text_append(&update->output, line, original_bytes, error);
+    }
+    if (update->saw_key) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_SOURCE,
+            "xemu configuration repeats a display key"
+        );
+        return false;
+    }
+    update->saw_key = true;
+    return append_assignment(
+        &update->output,
+        update->key,
+        update->value,
+        error
+    );
+}
+
+static bool finish_toml_update(toml_update *update, gdox_error *error)
+{
+    if (update->in_section && !update->saw_key) {
+        return append_line_break_if_needed(&update->output, error)
+            && append_assignment(
+                &update->output,
+                update->key,
+                update->value,
+                error
+            );
+    }
+    if (update->saw_section) {
+        return true;
+    }
+    return append_line_break_if_needed(&update->output, error)
+        && (update->output.bytes == 0U
+            || text_append(&update->output, "\n", 1U, error))
+        && text_append(&update->output, "[", 1U, error)
+        && text_append(
+            &update->output,
+            update->section,
+            strlen(update->section),
+            error
+        )
+        && text_append(&update->output, "]\n", 2U, error)
+        && append_assignment(
+            &update->output,
+            update->key,
+            update->value,
+            error
+        );
+}
+
 static bool set_toml_key(
     const char *input,
     const char *section,
@@ -142,85 +263,37 @@ static bool set_toml_key(
     gdox_error *error
 )
 {
-    text_buffer output = {0};
+    toml_update update = {
+        .section = section,
+        .key = key,
+        .value = value,
+    };
     const char *cursor = input;
-    bool in_section = false;
-    bool saw_section = false;
-    bool saw_key = false;
 
     while (*cursor != '\0') {
         const char *newline = strchr(cursor, '\n');
         const size_t line_bytes =
             newline != NULL ? (size_t)(newline - cursor) : strlen(cursor);
         const size_t original_bytes = line_bytes + (newline != NULL ? 1U : 0U);
-        const bool target_section = line_is_section(cursor, line_bytes, section);
-        const bool any_section = line_is_any_section(cursor, line_bytes);
 
-        if (any_section && in_section && !target_section && !saw_key) {
-            if (!append_assignment(&output, key, value, error)) {
-                free(output.data);
-                return false;
-            }
-            saw_key = true;
-        }
-        if (target_section) {
-            if (saw_section) {
-                free(output.data);
-                gdox_error_set(error, GDOX_ERROR_INVALID_SOURCE, "xemu configuration repeats a display section");
-                return false;
-            }
-            saw_section = true;
-            in_section = true;
-        } else if (any_section) {
-            in_section = false;
-        }
-        if (in_section && line_is_key(cursor, line_bytes, key)) {
-            if (saw_key) {
-                free(output.data);
-                gdox_error_set(error, GDOX_ERROR_INVALID_SOURCE, "xemu configuration repeats a display key");
-                return false;
-            }
-            if (!append_assignment(&output, key, value, error)) {
-                free(output.data);
-                return false;
-            }
-            saw_key = true;
-        } else if (!text_append(&output, cursor, original_bytes, error)) {
-            free(output.data);
+        if (!enter_toml_line(&update, cursor, line_bytes, error)
+            || !write_toml_line(
+                &update,
+                cursor,
+                line_bytes,
+                original_bytes,
+                error
+            )) {
+            free(update.output.data);
             return false;
         }
         cursor += original_bytes;
     }
-    if (in_section && !saw_key) {
-        if (output.bytes != 0U && output.data[output.bytes - 1U] != '\n'
-            && !text_append(&output, "\n", 1U, error)) {
-            free(output.data);
-            return false;
-        }
-        if (!append_assignment(&output, key, value, error)) {
-            free(output.data);
-            return false;
-        }
+    if (!finish_toml_update(&update, error)) {
+        free(update.output.data);
+        return false;
     }
-    if (!saw_section) {
-        if (output.bytes != 0U && output.data[output.bytes - 1U] != '\n'
-            && !text_append(&output, "\n", 1U, error)) {
-            free(output.data);
-            return false;
-        }
-        if (output.bytes != 0U && !text_append(&output, "\n", 1U, error)) {
-            free(output.data);
-            return false;
-        }
-        if (!text_append(&output, "[", 1U, error)
-            || !text_append(&output, section, strlen(section), error)
-            || !text_append(&output, "]\n", 2U, error)
-            || !append_assignment(&output, key, value, error)) {
-            free(output.data);
-            return false;
-        }
-    }
-    *updated = output.data;
+    *updated = update.output.data;
     return true;
 }
 

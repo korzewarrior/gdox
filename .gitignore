@@ -1,5 +1,7 @@
 /dist/
 /build/
+/workspace/
+/site/
 /CMakeFiles/
 /imgui.ini
 __pycache__/

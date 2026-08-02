@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +14,7 @@ import sys
 sys.dont_write_bytecode = True
 from release_archive import copy_file, create_archive
 from release_paths import output_root
+from project_version import validated_project_version
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -248,19 +248,12 @@ def sign_macos(application: Path) -> None:
     run(["codesign", "--verify", "--deep", "--strict", str(application)])
 
 
-def semantic_version(value: str) -> str:
-    version = value.removeprefix("v")
-    if re.fullmatch(
-        r"[0-9]+(?:\.[0-9]+){2}(?:[-+][0-9A-Za-z.-]+)?",
-        version,
-    ) is None:
-        raise SystemExit("version must resemble 0.1.0 or 0.1.0-rc.1")
-    return version
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", required=True)
+    parser.add_argument(
+        "--version",
+        help="release version; defaults to and must match the CMake project",
+    )
     parser.add_argument("--target", required=True, choices=sorted(PLATFORMS))
     parser.add_argument("--artifact", required=True, type=Path)
     parser.add_argument(
@@ -275,7 +268,10 @@ def main() -> None:
     )
     arguments = parser.parse_args()
 
-    version = semantic_version(arguments.version)
+    try:
+        version = validated_project_version(arguments.version)
+    except (OSError, RuntimeError, ValueError) as error:
+        parser.error(str(error))
     target = arguments.target
     platform_name = PLATFORMS[target]
     package_name = f"gdox-{version}-{target}"

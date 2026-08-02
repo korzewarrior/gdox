@@ -15,6 +15,7 @@ import tarfile
 sys.dont_write_bytecode = True
 from android_patchset import source_files, validate_applied
 from release_paths import output_root
+from project_version import validated_project_version
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -157,9 +158,15 @@ def patch_digest(patch_root: Path) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="0.1.3")
+    parser.add_argument(
+        "--version",
+        help="release version; defaults to and must match the CMake project",
+    )
     args = parser.parse_args()
-    version = args.version.removeprefix("v")
+    try:
+        version = validated_project_version(args.version)
+    except (OSError, RuntimeError, ValueError) as error:
+        parser.error(str(error))
 
     xemu = prepared_source("prepare_android_emulator.sh")
     sdl2 = prepared_source("prepare_android_sdl2.sh")

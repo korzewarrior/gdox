@@ -62,6 +62,7 @@ add_library(
         android_disc.c
         ${GDOX_LIVE_DISC_SOURCES}
         ${GDOX_HDD_CACHE_SOURCES}
+        "${GDOX_ROOT}/src/platform/mmc_commands.c"
         "${GDOX_ROOT}/src/platform/mt1887_source.c"
         "${GDOX_ROOT}/src/platform/mt1887_profile.c"
         "${GDOX_ROOT}/src/platform/random_access_file_posix.c"

@@ -11,7 +11,14 @@ typedef enum gdox_usb_bot_identity {
     GDOX_USB_BOT_GP65,
     GDOX_USB_BOT_GP08,
     GDOX_USB_BOT_ASUS_NR09,
+    GDOX_USB_BOT_IDENTITY_COUNT,
 } gdox_usb_bot_identity;
+
+typedef struct gdox_usb_bot_observation {
+    bool drive_present;
+    bool media_status_known;
+    bool media_present;
+} gdox_usb_bot_observation;
 
 bool gdox_usb_bot_open(
     gdox_usb_bot_identity identity,
@@ -52,16 +59,12 @@ bool gdox_usb_bot_prepare_handoff(
     gdox_error *error
 );
 #endif
-bool gdox_usb_bot_present(
-    gdox_usb_bot_identity identity,
-    bool *drive_present,
+bool gdox_usb_bot_observe_all(
+    gdox_usb_bot_observation observations[GDOX_USB_BOT_IDENTITY_COUNT],
     gdox_error *error
 );
-bool gdox_usb_bot_observe(
-    gdox_usb_bot_identity identity,
-    bool *drive_present,
-    bool *media_status_known,
-    bool *media_present,
+bool gdox_usb_bot_present_all(
+    bool drive_present[GDOX_USB_BOT_IDENTITY_COUNT],
     gdox_error *error
 );
 bool gdox_usb_bot_restore_kernel_driver(

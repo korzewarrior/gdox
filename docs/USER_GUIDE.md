@@ -1,6 +1,6 @@
 # Original Xbox user guide
 
-This guide covers Original Xbox support in gdox 0.1.3.
+This guide covers current Original Xbox support in gdox.
 
 ## First run
 
