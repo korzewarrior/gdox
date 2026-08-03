@@ -96,6 +96,7 @@ typedef struct gdox_gp08_context {
     gdox_scsi_transport transport;
     gdox_mutex mutex;
     gdox_disc_evidence evidence;
+    gdox_mmc_media_tracker media_tracker;
     gdox_gp08_state stock;
     atomic_uint_fast64_t read_commands;
     atomic_uint_fast64_t read_sectors;
@@ -598,7 +599,43 @@ static bool ensure_live(gdox_gp08_context *context, gdox_error *error)
     return apply_live(context, error);
 }
 
-static bool recover_optical(gdox_gp08_context *context, gdox_error *error)
+static bool recovery_media_transitioned(
+    gdox_gp08_context *context,
+    uint64_t expected_generation,
+    gdox_error *error
+)
+{
+    (void)gdox_mmc_media_tracker_capture_transport_sense(
+        &context->transport,
+        GDOX_GP08_DEFAULT_TIMEOUT_MS,
+        &context->media_tracker
+    );
+    (void)gdox_mmc_poll_media_event(
+        &context->transport,
+        GDOX_GP08_DEFAULT_TIMEOUT_MS,
+        &context->media_tracker
+    );
+    if (!gdox_mmc_media_tracker_transitioned(
+            &context->media_tracker, expected_generation
+        )) {
+        return false;
+    }
+    gdox_error_set(
+        error,
+        GDOX_ERROR_NOT_FOUND,
+        context->media_tracker.pending_event
+                == GDOX_MEDIA_EVENT_EJECT_REQUEST
+            ? "physical eject requested"
+            : "physical media changed during optical read"
+    );
+    return true;
+}
+
+static bool recover_optical(
+    gdox_gp08_context *context,
+    uint64_t expected_generation,
+    gdox_error *error
+)
 {
     static const uint8_t load[6] = {0x1bU, 0U, 0U, 0U, 0x03U, 0U};
     uint32_t attempt;
@@ -608,17 +645,16 @@ static bool recover_optical(gdox_gp08_context *context, gdox_error *error)
     if (ladder_aborted(&context->abort, error)) {
         return false;
     }
+    if (recovery_media_transitioned(
+            context, expected_generation, error
+        )) {
+        return false;
+    }
     (void)gdox_scsi_transport_reset(&context->transport, &last);
-    {
-        uint8_t sense[18];
-        size_t transferred;
-        (void)gdox_mmc_request_sense(
-            &context->transport,
-            GDOX_GP08_DEFAULT_TIMEOUT_MS,
-            sense,
-            &transferred,
-            &last
-        );
+    if (recovery_media_transitioned(
+            context, expected_generation, error
+        )) {
+        return false;
     }
     (void)gdox_scsi_command_none(
         &context->transport,
@@ -628,6 +664,11 @@ static bool recover_optical(gdox_gp08_context *context, gdox_error *error)
         GDOX_GP08_DEFAULT_TIMEOUT_MS,
         &last
     );
+    if (recovery_media_transitioned(
+            context, expected_generation, error
+        )) {
+        return false;
+    }
     for (attempt = 0U; attempt < GDOX_GP08_READY_ATTEMPTS; ++attempt) {
         if (ladder_aborted(&context->abort, error)) {
             return false;
@@ -637,7 +678,17 @@ static bool recover_optical(gdox_gp08_context *context, gdox_error *error)
                 GDOX_GP08_DEFAULT_TIMEOUT_MS,
                 &last
             )) {
+            if (recovery_media_transitioned(
+                    context, expected_generation, error
+                )) {
+                return false;
+            }
             return ensure_live(context, error);
+        }
+        if (recovery_media_transitioned(
+                context, expected_generation, error
+            )) {
+            return false;
         }
         if (last.code == GDOX_ERROR_NOT_FOUND) {
             break;
@@ -658,6 +709,7 @@ static bool read_range_with_recovery(
     gdox_error *error
 )
 {
+    const uint64_t expected_generation = context->media_tracker.generation;
     uint32_t attempt;
     gdox_error last;
 
@@ -705,7 +757,7 @@ static bool read_range_with_recovery(
             break;
         }
         if (attempt < context->retries
-            && !recover_optical(context, &last)
+            && !recover_optical(context, expected_generation, &last)
             && (last.code == GDOX_ERROR_NOT_FOUND
                 || last.code == GDOX_ERROR_CANCELLED)) {
             break;
@@ -829,22 +881,33 @@ static bool gp08_read(
     return success;
 }
 
-static bool gp08_media_present(const void *raw_context)
+static void gp08_observe_media(
+    const void *raw_context,
+    gdox_media_observation *output
+)
 {
     gdox_gp08_context *context = (gdox_gp08_context *)raw_context;
-    gdox_error error;
-    bool present;
 
+    output->readiness = GDOX_MEDIA_READINESS_UNKNOWN;
+    output->generation = 0U;
+    output->event = GDOX_MEDIA_EVENT_NONE;
     if (!gdox_mutex_lock(&context->mutex)) {
-        return false;
+        return;
     }
-    present = gdox_mmc_test_unit_ready(
+    gdox_mmc_observe_media(
         &context->transport,
         GDOX_GP08_PRESENCE_TIMEOUT_MS,
-        &error
+        &context->media_tracker,
+        output
     );
     gdox_mutex_unlock(&context->mutex);
-    return present;
+}
+
+static bool gp08_media_present(const void *raw_context)
+{
+    gdox_media_observation observation;
+    gp08_observe_media(raw_context, &observation);
+    return observation.readiness == GDOX_MEDIA_READINESS_PRESENT;
 }
 
 static bool gp08_evidence(
@@ -893,11 +956,28 @@ static bool gp08_physical_read_stats(
 static bool gp08_close(void *raw_context, gdox_error *error)
 {
     gdox_gp08_context *context = raw_context;
-    gdox_error restore_error;
-    gdox_error close_error;
-    bool restored = true;
-    bool closed;
+    const bool closed = gdox_scsi_transport_close(
+        &context->transport, error
+    );
 
+    gdox_mutex_destroy(&context->mutex);
+    free(context);
+    return closed;
+}
+
+static void gp08_abort(void *raw_context)
+{
+    gdox_gp08_context *context = raw_context;
+    atomic_store_explicit(&context->abort, true, memory_order_release);
+}
+
+static bool gp08_prepare_close(void *raw_context, gdox_error *error)
+{
+    gdox_gp08_context *context = raw_context;
+    gdox_error restore_error;
+    bool restored = true;
+
+    gdox_error_clear(error);
     gdox_error_clear(&restore_error);
     if (gdox_mutex_lock(&context->mutex)) {
         if (context->active) {
@@ -909,26 +989,17 @@ static bool gp08_close(void *raw_context, gdox_error *error)
         gdox_mutex_unlock(&context->mutex);
     } else {
         restored = false;
-        gdox_error_set(&restore_error, GDOX_ERROR_INTERNAL, "could not lock GP08 transport during close");
+        gdox_error_set(
+            &restore_error,
+            GDOX_ERROR_INTERNAL,
+            "could not lock GP08 transport during close"
+        );
     }
-    gdox_mutex_destroy(&context->mutex);
-    closed = gdox_scsi_transport_close(&context->transport, &close_error);
-    free(context);
     if (!restored) {
         *error = restore_error;
         return false;
     }
-    if (!closed) {
-        *error = close_error;
-        return false;
-    }
-    return true;
-}
-
-static void gp08_abort(void *raw_context)
-{
-    gdox_gp08_context *context = raw_context;
-    atomic_store_explicit(&context->abort, true, memory_order_release);
+    return gdox_scsi_transport_prepare_close(&context->transport, error);
 }
 
 static const gdox_sector_source_ops gp08_source_ops = {
@@ -939,6 +1010,8 @@ static const gdox_sector_source_ops gp08_source_ops = {
     gp08_evidence,
     gp08_physical_read_stats,
     gp08_abort,
+    gp08_prepare_close,
+    gp08_observe_media,
 };
 
 static bool open_discovered_gp08(
@@ -977,7 +1050,16 @@ static bool open_validated_transport(
             )) {
             break;
         }
-        gdox_scsi_transport_destroy(transport);
+        {
+            const gdox_error operation_error = *error;
+            gdox_error close_error;
+
+            if (!gdox_scsi_transport_close(transport, &close_error)) {
+                *error = close_error;
+                return false;
+            }
+            *error = operation_error;
+        }
         if (error->code != GDOX_ERROR_TRANSPORT
             || attempt + 1U == GDOX_GP08_INQUIRY_ATTEMPTS) {
             return false;
@@ -985,22 +1067,63 @@ static bool open_validated_transport(
         gdox_sleep_ms(UINT32_C(100));
     }
     if (!identity_is_validated(identity)) {
-        gdox_scsi_transport_destroy(transport);
+        gdox_error operation_error;
+        gdox_error close_error;
+
         gdox_error_set(
-            error,
+            &operation_error,
             GDOX_ERROR_UNSUPPORTED,
             "USB device is not the validated HL-DT-ST GP08NU10 JE01 mechanism"
         );
+        if (!gdox_scsi_transport_close(transport, &close_error)) {
+            *error = close_error;
+        } else {
+            *error = operation_error;
+        }
         return false;
     }
     return true;
 }
 
-static void destroy_failed_open(gdox_gp08_context *context)
+static void retain_failed_open(
+    gdox_gp08_context *context,
+    gdox_sector_source *source
+)
 {
-    gdox_scsi_transport_destroy(&context->transport);
+    source->context = context;
+    source->ops = &gp08_source_ops;
+}
+
+static void cleanup_failed_open(
+    gdox_gp08_context *context,
+    gdox_sector_source *source,
+    const gdox_error *operation_error,
+    gdox_error *error
+)
+{
+    gdox_error restore_error;
+    gdox_error close_error;
+
+    if (context->active) {
+        if (!restore_stock_after_streaming(context, &restore_error)) {
+            retain_failed_open(context, source);
+            gdox_error_set(
+                error,
+                GDOX_ERROR_TRANSPORT,
+                "GP08 initialization failed and volatile-state restoration also failed; power-cycle the drive"
+            );
+            return;
+        }
+        context->active = false;
+    }
+    if (!gdox_scsi_transport_close(&context->transport, &close_error)) {
+        retain_failed_open(context, source);
+        *error = close_error;
+        return;
+    }
     gdox_mutex_destroy(&context->mutex);
     free(context);
+    *error = *operation_error;
 }
 
 static bool wait_for_ready(
@@ -1230,8 +1353,12 @@ bool gdox_gp08_source_open(
             &identity,
             error
         )) {
-        gdox_mutex_destroy(&context->mutex);
-        free(context);
+        if (gdox_scsi_transport_is_valid(&context->transport)) {
+            retain_failed_open(context, source);
+        } else {
+            gdox_mutex_destroy(&context->mutex);
+            free(context);
+        }
         return false;
     }
     if (!wait_for_ready(context, ready_timeout_ms, error)
@@ -1239,10 +1366,18 @@ bool gdox_gp08_source_open(
         || !validate_stock_state(context, error)
         || !apply_live_with_rollback(context, error)
         || !validate_live_descriptor(context, error)) {
-        destroy_failed_open(context);
+        const gdox_error operation_error = *error;
+        cleanup_failed_open(
+            context, source, &operation_error, error
+        );
         return false;
     }
     context->retries = read_retries;
+    gdox_mmc_media_tracker_begin_session(
+        &context->transport,
+        GDOX_GP08_DEFAULT_TIMEOUT_MS,
+        &context->media_tracker
+    );
     source->context = context;
     source->ops = &gp08_source_ops;
     return true;

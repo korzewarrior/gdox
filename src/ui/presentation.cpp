@@ -36,7 +36,10 @@ bool page_button(const char *label, bool selected, float width)
             ImVec4(0.15F, 0.17F, 0.18F, 1.0F)
         );
     }
-    const bool pressed = ImGui::Button(label, ImVec2(width, 34.0F));
+    const bool pressed = ImGui::Button(
+        label,
+        ImVec2(width, std::max(34.0F, ImGui::GetFrameHeight()))
+    );
     ImGui::PopStyleColor(2);
     return pressed;
 }
@@ -58,24 +61,82 @@ bool draw_header(gdox_app &app, const gdox_app_snapshot &snapshot)
         GDOX_APP_PAGE_SOURCES,
     };
 
-    const float title_y = ImGui::GetCursorPosY();
-    ImGui::SetWindowFontScale(2.10F);
-    ImGui::TextColored(accent, "GDOX");
-    ImGui::SetWindowFontScale(1.0F);
-    const float after_title_y = ImGui::GetCursorPosY();
-    const char *site_label = "gdox.korze.org";
+    const char *tagline =
+        "made by korze, with love, for gaming preservation everywhere";
+    const float row_x = ImGui::GetCursorPosX();
+    const float row_y = ImGui::GetCursorPosY();
+    const float content_width = ImGui::GetContentRegionAvail().x;
+    const float content_right = ImGui::GetWindowContentRegionMax().x;
+    const bool compact = content_width < 840.0F;
+    const float title_scale = compact ? 1.85F : 2.10F;
+    const float tagline_scale = compact ? 0.65F : 0.82F;
+    const float button_width = compact ? 58.0F : 62.0F;
+    const float button_height = ImGui::GetFrameHeight();
+    const char *site_label = compact ? "Site" : "gdox.korze.org";
     const char *discord_label = "Discord";
-    const float links_width = ImGui::CalcTextSize(site_label).x
-        + ImGui::CalcTextSize(discord_label).x
-        + ImGui::CalcTextSize("  ·  ").x
-        + 78.0F;
+    const float link_gap = 7.0F;
+    const float button_gap = 12.0F;
+    const float site_width = ImGui::CalcTextSize(site_label).x;
+    const float separator_width = ImGui::CalcTextSize("·").x;
+    const float discord_width = ImGui::CalcTextSize(discord_label).x;
+    const float links_width = site_width + link_gap + separator_width
+        + link_gap + discord_width;
+    const float actions_width = links_width + button_gap + button_width;
+    const float actions_x = content_right - actions_width;
+
+    ImGui::SetWindowFontScale(title_scale);
+    const ImVec2 title_size = ImGui::CalcTextSize("GDOX");
+    ImGui::SetWindowFontScale(tagline_scale);
+    const ImVec2 tagline_size = ImGui::CalcTextSize(tagline);
+    ImGui::SetWindowFontScale(1.0F);
+    const float brand_width = title_size.x + 14.0F + tagline_size.x;
+    const bool single_row = brand_width + 18.0F + actions_width
+        <= content_width;
+    const float brand_height = std::max(title_size.y, tagline_size.y);
+    const float actions_height = std::max(
+        button_height,
+        ImGui::GetTextLineHeight()
+    );
+    const float single_row_height = std::max(brand_height, actions_height);
+    const float brand_y = single_row
+        ? row_y + (single_row_height - brand_height) * 0.5F
+        : row_y;
+    const float actions_y = single_row
+        ? row_y + (single_row_height - actions_height) * 0.5F
+        : row_y + brand_height + 4.0F;
+    const float text_y = actions_y
+        + std::max(
+            0.0F,
+            (actions_height - ImGui::GetTextLineHeight()) * 0.5F
+        );
+    const float header_height = single_row
+        ? single_row_height
+        : brand_height + 4.0F + actions_height;
+
+    ImGui::SetWindowFontScale(title_scale);
     ImGui::SetCursorPos(ImVec2(
-        std::max(
-            ImGui::GetCursorPosX() + 118.0F,
-            ImGui::GetWindowContentRegionMax().x - links_width
-        ),
-        title_y + 12.0F
+        row_x,
+        brand_y + std::max(0.0F, (brand_height - title_size.y) * 0.5F)
     ));
+    ImGui::TextColored(accent, "GDOX");
+
+    ImGui::SetWindowFontScale(tagline_scale);
+    const float tagline_x = row_x + title_size.x + 14.0F;
+    ImGui::SetCursorPos(ImVec2(
+        tagline_x,
+        brand_y + std::max(
+            0.0F,
+            (brand_height - tagline_size.y) * 0.5F
+        )
+    ));
+    ImGui::TextColored(
+        ImVec4(0.38F, 0.41F, 0.43F, 1.0F),
+        "%s",
+        tagline
+    );
+
+    ImGui::SetWindowFontScale(1.0F);
+    ImGui::SetCursorPos(ImVec2(actions_x, text_y));
     ImGui::PushStyleColor(
         ImGuiCol_TextLink,
         ImVec4(0.62F, 0.66F, 0.68F, 1.0F)
@@ -90,9 +151,20 @@ bool draw_header(gdox_app &app, const gdox_app_snapshot &snapshot)
         OpenURL("https://discord.gg/TEzuUEJk4B");
     }
     ImGui::PopStyleColor();
-    ImGui::SameLine(0.0F, 12.0F);
-    const bool quit_requested = ImGui::Button("Quit", ImVec2(62.0F, 30.0F));
-    ImGui::SetCursorPosY(after_title_y);
+    ImGui::SetCursorPos(ImVec2(
+        content_right - button_width,
+        actions_y + (actions_height - button_height) * 0.5F
+    ));
+    ImGui::PushStyleVar(
+        ImGuiStyleVar_ButtonTextAlign,
+        ImVec2(0.5F, 0.5F)
+    );
+    const bool quit_requested = ImGui::Button(
+        "Quit",
+        ImVec2(button_width, button_height)
+    );
+    ImGui::PopStyleVar();
+    ImGui::SetCursorPos(ImVec2(row_x, row_y + header_height));
     ImGui::Dummy(ImVec2(0.0F, 4.0F));
 
     constexpr float gap = 8.0F;
@@ -117,27 +189,28 @@ bool draw_header(gdox_app &app, const gdox_app_snapshot &snapshot)
 void draw_footer(const gdox_app_snapshot &snapshot, bool gaming_mode)
 {
     ImGui::TextColored(muted, "%s", snapshot.status);
-    const char *controls = gaming_mode
-        ? "D-pad navigate  |  A select  |  LB/RB pages"
-        : "F11 xemu fullscreen  |  Ctrl+P pause";
-    const float controls_width = ImGui::CalcTextSize(controls).x;
-    ImGui::SameLine(
-        std::max(
-            ImGui::GetCursorPosX(),
-            ImGui::GetWindowContentRegionMax().x - controls_width
-        )
-    );
-    ImGui::TextColored(muted, "%s", controls);
-    ImGui::SetWindowFontScale(0.82F);
     if (ui_notice[0] != '\0') {
-        centered_text(ui_notice.data(), warning);
-    } else {
-        centered_text(
-            "made by korze, with love, for gaming preservation everywhere",
-            ImVec4(0.38F, 0.41F, 0.43F, 1.0F)
+        const float notice_width = ImGui::CalcTextSize(ui_notice.data()).x;
+        ImGui::SameLine(
+            std::max(
+                ImGui::GetCursorPosX(),
+                ImGui::GetWindowContentRegionMax().x - notice_width
+            )
         );
+        ImGui::TextColored(warning, "%s", ui_notice.data());
+    } else {
+        const char *controls = gaming_mode
+            ? "D-pad navigate  |  A select  |  LB/RB pages"
+            : "F11 playback fullscreen  |  Ctrl+P pause";
+        const float controls_width = ImGui::CalcTextSize(controls).x;
+        ImGui::SameLine(
+            std::max(
+                ImGui::GetCursorPosX(),
+                ImGui::GetWindowContentRegionMax().x - controls_width
+            )
+        );
+        ImGui::TextColored(muted, "%s", controls);
     }
-    ImGui::SetWindowFontScale(1.0F);
 }
 
 bool draw_root(gdox_app &app, bool gaming_mode)
@@ -259,7 +332,9 @@ void centered_text(const char *text, const ImVec4 &color)
 bool disc_is_present(const gdox_app_snapshot &snapshot)
 {
     if (snapshot.media_source == GDOX_MEDIA_DISC_IMAGE) {
-        return snapshot.image_layout != GDOX_MEDIA_IMAGE_NONE;
+        return snapshot.media_platform == GDOX_MEDIA_PLATFORM_XBOX_360
+            ? snapshot.x360_image_layout != GDOX_X360_IMAGE_LAYOUT_NONE
+            : snapshot.image_layout != GDOX_MEDIA_IMAGE_NONE;
     }
     return snapshot.phase == GDOX_APP_DISC_READY
         || snapshot.phase == GDOX_APP_PLAYING

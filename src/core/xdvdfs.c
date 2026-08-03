@@ -1,5 +1,7 @@
 #include "gdox/xdvdfs.h"
 
+#include "core/xdvdfs_directory_cache.h"
+
 #include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -20,12 +22,17 @@ static const uint8_t xdvdfs_magic[20] = {
 static const uint8_t xbe_media_check[8] = {
     0xe8U, 0xcaU, 0xfdU, 0xffU, 0xffU, 0x85U, 0xc0U, 0x7dU,
 };
-
 typedef struct entry_vector {
     gdox_xdvdfs_entry *items;
     size_t count;
     size_t capacity;
 } entry_vector;
+
+typedef struct extent_vector {
+    gdox_xdvdfs_file_extent *items;
+    size_t count;
+    size_t capacity;
+} extent_vector;
 
 typedef struct offset_vector {
     size_t *items;
@@ -184,25 +191,35 @@ static bool probe_descriptor_batch(
     gdox_sector_source *source,
     uint64_t lba,
     uint32_t blocks,
-    gdox_xdvdfs_volume *volume
+    gdox_xdvdfs_volume *volume,
+    bool *found,
+    gdox_error *error
 )
 {
     uint32_t index;
 
+    *found = false;
     for (index = 0U; index < blocks; ++index) {
-        bool found = false;
+        bool matched = false;
         gdox_error probe_error;
-        if (probe_descriptor(
-            source,
-            lba + index,
-            volume,
-            &found,
-            &probe_error
-        ) && found) {
+        if (!probe_descriptor(
+                source,
+                lba + index,
+                volume,
+                &matched,
+                &probe_error
+            )) {
+            if (error != NULL) {
+                *error = probe_error;
+            }
+            return false;
+        }
+        if (matched) {
+            *found = true;
             return true;
         }
     }
-    return false;
+    return true;
 }
 
 static bool scan_range(
@@ -246,11 +263,31 @@ static bool scan_range(
                 *found = valid;
                 return valid;
             }
-        } else if (blocks > 1U
-            && probe_descriptor_batch(source, lba, blocks, volume)) {
+        } else if (blocks > 1U) {
+            bool matched = false;
+
+            if (!probe_descriptor_batch(
+                    source,
+                    lba,
+                    blocks,
+                    volume,
+                    &matched,
+                    error
+                )) {
+                free(batch);
+                return false;
+            }
+            if (matched) {
+                free(batch);
+                *found = true;
+                return true;
+            }
+        } else {
             free(batch);
-            *found = true;
-            return true;
+            if (error != NULL) {
+                *error = read_error;
+            }
+            return false;
         }
         lba += blocks;
     }
@@ -283,16 +320,22 @@ bool gdox_xdvdfs_find_volume(
     for (index = 0U; index < 2U; ++index) {
         bool found = false;
         gdox_error probe_error;
-        if (preferred[index] < sectors
-            && probe_descriptor(
-                source,
-                preferred[index],
-                volume,
-                &found,
-                &probe_error
-            )
-            && found) {
-            return true;
+        if (preferred[index] < sectors) {
+            if (!probe_descriptor(
+                    source,
+                    preferred[index],
+                    volume,
+                    &found,
+                    &probe_error
+                )) {
+                if (error != NULL) {
+                    *error = probe_error;
+                }
+                return false;
+            }
+            if (found) {
+                return true;
+            }
         }
     }
 
@@ -315,7 +358,11 @@ bool gdox_xdvdfs_find_volume(
             return true;
         }
     }
-    gdox_error_set(error, GDOX_ERROR_NOT_FOUND, "Xbox game partition was not found");
+    gdox_error_set(
+        error,
+        GDOX_ERROR_INVALID_VOLUME,
+        "Xbox game partition was not found"
+    );
     return false;
 }
 
@@ -364,6 +411,37 @@ static bool entry_vector_push(
     }
     entries->items[entries->count] = entry;
     ++entries->count;
+    return true;
+}
+
+static bool extent_vector_push(
+    extent_vector *extents,
+    gdox_xdvdfs_file_extent extent,
+    gdox_error *error
+)
+{
+    gdox_xdvdfs_file_extent *resized;
+    size_t capacity;
+
+    if (extents->count >= GDOX_XDVDFS_MAX_ENTRIES) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME, "XDVDFS file extent limit exceeded");
+        return false;
+    }
+    if (extents->count == extents->capacity) {
+        capacity = extents->capacity == 0U ? 16U : extents->capacity * 2U;
+        if (capacity > GDOX_XDVDFS_MAX_ENTRIES) {
+            capacity = GDOX_XDVDFS_MAX_ENTRIES;
+        }
+        resized = realloc(extents->items, capacity * sizeof(*resized));
+        if (resized == NULL) {
+            gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate XDVDFS file extents");
+            return false;
+        }
+        extents->items = resized;
+        extents->capacity = capacity;
+    }
+    extents->items[extents->count] = extent;
+    ++extents->count;
     return true;
 }
 
@@ -556,6 +634,7 @@ static bool process_directory_entry(
 static bool read_directory(
     gdox_sector_source *source,
     const gdox_xdvdfs_volume *volume,
+    gdox_xdvdfs_directory_cache *directory_cache,
     uint32_t start_sector,
     uint32_t size,
     const char *parent,
@@ -594,6 +673,17 @@ static bool read_directory(
         return false;
     }
     if (directory_data_is_empty(data, size)) {
+        if (directory_cache != NULL
+            && !gdox_xdvdfs_directory_cache_retain(
+                directory_cache,
+                start_sector,
+                blocks,
+                &data,
+                error
+            )) {
+            free(data);
+            return false;
+        }
         free(data);
         return true;
     }
@@ -631,6 +721,16 @@ static bool read_directory(
 cleanup:
     free(pending.items);
     free(visited);
+    if (success && directory_cache != NULL
+        && !gdox_xdvdfs_directory_cache_retain(
+            directory_cache,
+            start_sector,
+            blocks,
+            &data,
+            error
+        )) {
+        success = false;
+    }
     free(data);
     return success;
 }
@@ -670,6 +770,44 @@ static int compare_entries(const void *left_value, const void *right_value)
     const gdox_xdvdfs_entry *left = left_value;
     const gdox_xdvdfs_entry *right = right_value;
     return ascii_case_compare(left->path, right->path);
+}
+
+static int compare_extents(const void *left_value, const void *right_value)
+{
+    const gdox_xdvdfs_file_extent *left = left_value;
+    const gdox_xdvdfs_file_extent *right = right_value;
+
+    if (left->start_sector != right->start_sector) {
+        return left->start_sector < right->start_sector ? -1 : 1;
+    }
+    if (left->sector_count == right->sector_count) {
+        return 0;
+    }
+    return left->sector_count < right->sector_count ? -1 : 1;
+}
+
+static void index_extents(extent_vector *extents)
+{
+    uint64_t prefix_max_end = 0U;
+    size_t index;
+
+    if (extents->count > 1U) {
+        qsort(
+            extents->items,
+            extents->count,
+            sizeof(*extents->items),
+            compare_extents
+        );
+    }
+    for (index = 0U; index < extents->count; ++index) {
+        const uint64_t end =
+            (uint64_t)extents->items[index].start_sector
+            + extents->items[index].sector_count;
+        if (end > prefix_max_end) {
+            prefix_max_end = end;
+        }
+        extents->items[index].prefix_max_end = prefix_max_end;
+    }
 }
 
 static bool directory_vector_push(
@@ -732,10 +870,12 @@ static void directory_vector_destroy(directory_vector *directories, size_t first
 typedef struct xbe_collection {
     gdox_sector_source *source;
     const gdox_xdvdfs_volume *volume;
+    gdox_xdvdfs_directory_cache *directory_cache;
     directory_vector directories;
     directory_identity *visited;
     size_t visited_count;
     entry_vector *xbes;
+    extent_vector *file_extents;
     uint64_t highest;
 } xbe_collection;
 
@@ -880,6 +1020,22 @@ static bool collect_xbe_entry(
             error
         );
     }
+    if (collection->file_extents != NULL
+        && !extent_vector_push(
+            collection->file_extents,
+            (gdox_xdvdfs_file_extent){
+                entry->start_sector,
+                (uint32_t)(
+                    ((uint64_t)entry->size
+                        + GDOX_LOGICAL_SECTOR_BYTES - 1U)
+                    / GDOX_LOGICAL_SECTOR_BYTES
+                ),
+                0U,
+            },
+            error
+        )) {
+        return false;
+    }
     if (!has_xbe_extension(entry->name)) {
         return true;
     }
@@ -906,6 +1062,7 @@ static bool process_xbe_directory(
     if (!read_directory(
         collection->source,
         collection->volume,
+        collection->directory_cache,
         stored->start_sector,
         stored->size,
         stored->parent_path,
@@ -936,6 +1093,8 @@ static bool collect_xbe_entries(
     gdox_sector_source *source,
     const gdox_xdvdfs_volume *volume,
     entry_vector *xbes,
+    extent_vector *file_extents,
+    gdox_xdvdfs_directory_cache *directory_cache,
     uint64_t *highest_used_sector,
     gdox_error *error
 )
@@ -944,6 +1103,8 @@ static bool collect_xbe_entries(
         .source = source,
         .volume = volume,
         .xbes = xbes,
+        .file_extents = file_extents,
+        .directory_cache = directory_cache,
         .highest = GDOX_XDVDFS_VOLUME_DESCRIPTOR_SECTOR + 1U,
     };
     size_t next = 0U;
@@ -961,6 +1122,9 @@ static bool collect_xbe_entries(
     }
     if (xbes->count > 1U) {
         qsort(xbes->items, xbes->count, sizeof(*xbes->items), compare_entries);
+    }
+    if (file_extents != NULL) {
+        index_extents(file_extents);
     }
     if (highest_used_sector != NULL) {
         *highest_used_sector = collection.highest;
@@ -1134,30 +1298,42 @@ static bool read_xbe_title(
     return true;
 }
 
-bool gdox_xdvdfs_inspect(
+static bool inspect_xdvdfs(
     gdox_sector_source *source,
     const gdox_xdvdfs_volume *volume,
     gdox_xdvdfs_metadata *metadata,
+    gdox_xdvdfs_directory_cache *directory_cache,
     gdox_error *error
 )
 {
     entry_vector xbes = {0};
+    extent_vector file_extents = {0};
     size_t index;
 
-    gdox_error_clear(error);
     if (!gdox_source_is_valid(source) || volume == NULL || metadata == NULL) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "source, volume, and metadata are required");
         return false;
     }
     memset(metadata, 0, sizeof(*metadata));
     metadata->default_xbe_index = GDOX_XDVDFS_NO_ENTRY;
-    if (!collect_xbe_entries(source, volume, &xbes, NULL, error)) {
+    if (!collect_xbe_entries(
+            source,
+            volume,
+            &xbes,
+            &file_extents,
+            directory_cache,
+            NULL,
+            error
+        )) {
         entry_vector_destroy(&xbes);
+        free(file_extents.items);
         return false;
     }
     metadata->volume = *volume;
     metadata->xbe_files = xbes.items;
     metadata->xbe_file_count = xbes.count;
+    metadata->file_extents = file_extents.items;
+    metadata->file_extent_count = file_extents.count;
     for (index = 0U; index < metadata->xbe_file_count; ++index) {
         if (ascii_case_compare(metadata->xbe_files[index].path, "/default.xbe") == 0) {
             metadata->default_xbe_index = index;
@@ -1177,6 +1353,49 @@ bool gdox_xdvdfs_inspect(
         gdox_xdvdfs_metadata_destroy(metadata);
         return false;
     }
+    return true;
+}
+
+bool gdox_xdvdfs_inspect(
+    gdox_sector_source *source,
+    const gdox_xdvdfs_volume *volume,
+    gdox_xdvdfs_metadata *metadata,
+    gdox_error *error
+)
+{
+    gdox_error_clear(error);
+    return inspect_xdvdfs(source, volume, metadata, NULL, error);
+}
+
+bool gdox_xdvdfs_inspect_with_directory_cache(
+    gdox_sector_source *source,
+    const gdox_xdvdfs_volume *volume,
+    gdox_xdvdfs_metadata *metadata,
+    gdox_xdvdfs_directory_cache **cache,
+    gdox_error *error
+)
+{
+    gdox_xdvdfs_directory_cache *created = NULL;
+
+    gdox_error_clear(error);
+    if (!gdox_source_is_valid(source) || volume == NULL || metadata == NULL
+        || cache == NULL || *cache != NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "source, volume, metadata, and empty directory cache are required"
+        );
+        return false;
+    }
+    if (!gdox_xdvdfs_directory_cache_create(&created, error)) {
+        return false;
+    }
+    if (!inspect_xdvdfs(source, volume, metadata, created, error)) {
+        gdox_xdvdfs_directory_cache_destroy(&created);
+        return false;
+    }
+    gdox_xdvdfs_directory_cache_finalize(created);
+    *cache = created;
     return true;
 }
 
@@ -1201,6 +1420,8 @@ bool gdox_xdvdfs_measure_trimmed_sectors(
             partition,
             volume,
             &xbes,
+            NULL,
+            NULL,
             &highest,
             error
         )) {
@@ -1234,6 +1455,7 @@ void gdox_xdvdfs_metadata_destroy(gdox_xdvdfs_metadata *metadata)
         entry_destroy(&metadata->xbe_files[index]);
     }
     free(metadata->xbe_files);
+    free(metadata->file_extents);
     memset(metadata, 0, sizeof(*metadata));
     metadata->default_xbe_index = GDOX_XDVDFS_NO_ENTRY;
 }
@@ -1326,8 +1548,14 @@ bool gdox_xdvdfs_collect_media_patches(
             return false;
         }
         if (memcmp(data, "XBEH", 4U) == 0) {
-            for (offset = 0U; offset + sizeof(xbe_media_check) <= entry->size; ++offset) {
-                if (memcmp(data + offset, xbe_media_check, sizeof(xbe_media_check)) == 0) {
+            for (offset = 0U;
+                 offset + sizeof(xbe_media_check) <= entry->size;
+                 ++offset) {
+                if (memcmp(
+                        data + offset,
+                        xbe_media_check,
+                        sizeof(xbe_media_check)
+                    ) == 0) {
                     gdox_byte_patch patch;
                     patch.offset =
                         (uint64_t)entry->start_sector * GDOX_LOGICAL_SECTOR_BYTES

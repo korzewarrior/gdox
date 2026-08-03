@@ -12,7 +12,10 @@
 #define ASUS_DESCRIPTOR_LBA UINT32_C(0x30620)
 #define ASUS_STOCK_LAST_LBA UINT32_C(0x1b4f)
 #define ASUS_LIVE_LAST_LBA UINT32_C(0x3a4d4f)
-#define ASUS_MAX_LOG_ENTRIES 128U
+#define ASUS_XGD2_DESCRIPTOR_LBA UINT32_C(0x1fb40)
+#define ASUS_XGD2_STOCK_LAST_LBA UINT32_C(0x0aa3)
+#define ASUS_XGD2_LIVE_LAST_LBA UINT32_C(0x3a6103)
+#define ASUS_MAX_LOG_ENTRIES 256U
 
 typedef struct expected_field {
     uint32_t address;
@@ -72,6 +75,57 @@ static const expected_field expected_fields[ASUS_FIELD_COUNT] = {
     },
 };
 
+static const expected_field xgd2_expected_fields[ASUS_FIELD_COUNT] = {
+    {
+        UINT32_C(0x888da044),
+        0x02U,
+        {0x6fU, 0x08U, 0x03U, 0x00U},
+        {0x9fU, 0x33U, 0x20U, 0x00U},
+    },
+    {
+        UINT32_C(0x1750),
+        0x01U,
+        {0x6fU, 0x08U, 0x03U, 0x00U},
+        {0x9fU, 0x33U, 0x20U, 0x00U},
+    },
+    {
+        UINT32_C(0x18f4),
+        0x01U,
+        {0x70U, 0x08U, 0x03U, 0x00U},
+        {0xa0U, 0x33U, 0x20U, 0x00U},
+    },
+    {
+        UINT32_C(0x18f8),
+        0x01U,
+        {0x90U, 0xf7U, 0xfcU, 0x00U},
+        {0x60U, 0xccU, 0xdfU, 0x00U},
+    },
+    {
+        UINT32_C(0x1900),
+        0x01U,
+        {0x6fU, 0x08U, 0x03U, 0x00U},
+        {0x9fU, 0x33U, 0x20U, 0x00U},
+    },
+    {
+        UINT32_C(0x1908),
+        0x01U,
+        {0x6fU, 0x08U, 0x03U, 0x00U},
+        {0x9fU, 0x33U, 0x20U, 0x00U},
+    },
+    {
+        UINT32_C(0x19cc),
+        0x01U,
+        {0xa4U, 0x0aU, 0x03U, 0x00U},
+        {0x04U, 0x61U, 0x3dU, 0x00U},
+    },
+    {
+        UINT32_C(0x1600),
+        0x01U,
+        {0x6fU, 0x08U, 0x03U, 0x00U},
+        {0x9fU, 0x33U, 0x20U, 0x00U},
+    },
+};
+
 
 static const uint8_t xdvdfs_magic[20] = {
     'M', 'I', 'C', 'R', 'O', 'S', 'O', 'F', 'T', '*',
@@ -102,9 +156,19 @@ typedef struct fake_asus {
     fake_log_entry log[ASUS_MAX_LOG_ENTRIES];
     size_t log_count;
     uint32_t write_count;
+    uint32_t reset_count;
+    uint32_t gesn_count;
+    uint32_t sense_count;
+    uint32_t transition_gesn_call;
+    uint32_t transition_sense_call;
     uint32_t fail_write_number;
+    unsigned int prepare_close_count;
+    bool fail_prepare_close;
+    bool fail_stock_writes;
+    unsigned int open_count;
     bool identity_valid;
     bool descriptor_has_end_magic;
+    bool fail_next_read;
     bool invalid_command;
     bool closed;
 } fake_asus;
@@ -271,9 +335,26 @@ static bool fake_command_in(
         && output_bytes == 8U) {
         put_be_u32(output, fake->last_lba);
         put_be_u32(output + 4U, GDOX_LOGICAL_SECTOR_BYTES);
+    } else if (cdb[0] == 0x4aU && cdb_bytes == 10U
+        && output_bytes == 8U) {
+        ++fake->gesn_count;
+        memset(output, 0, output_bytes);
+        output[0] = 0U;
+        output[1] = 6U;
+        output[2] = 0x84U;
+        if (fake->gesn_count == fake->transition_gesn_call) {
+            output[2] = 0x04U;
+            output[4] = 0x02U;
+        }
     } else if (cdb[0] == 0x03U && cdb_bytes == 6U
         && output_bytes == 18U) {
+        ++fake->sense_count;
         memset(output, 0, output_bytes);
+        if (fake->sense_count == fake->transition_sense_call) {
+            output[0] = 0x70U;
+            output[2] = 0x06U;
+            output[12] = 0x28U;
+        }
     } else if (cdb[0] == 0x28U && cdb_bytes == 10U) {
         const uint32_t lba = read_be_u32(cdb + 2U);
         const uint32_t blocks = read_be_u16(cdb + 7U);
@@ -296,6 +377,14 @@ static bool fake_command_in(
                 error,
                 GDOX_ERROR_PROTOCOL,
                 "invalid READ(10)"
+            );
+        }
+        if (fake->fail_next_read) {
+            fake->fail_next_read = false;
+            return fail(
+                error,
+                GDOX_ERROR_TRANSPORT,
+                "injected ASUS read failure"
             );
         }
         memset(output, 0xa5, output_bytes);
@@ -370,6 +459,24 @@ static bool fake_command_out(
             "injected ASUS write failure"
         );
     }
+    if (fake->fail_stock_writes) {
+        size_t index;
+
+        for (index = 0U; index < ASUS_FIELD_COUNT; ++index) {
+            if (address == fake->profile_fields[index].address
+                && memcmp(
+                    input,
+                    fake->profile_fields[index].stock,
+                    input_bytes
+                ) == 0) {
+                return fail(
+                    error,
+                    GDOX_ERROR_TRANSPORT,
+                    "injected ASUS stock restoration failure"
+                );
+            }
+        }
+    }
     memcpy(field, input, input_bytes);
     if (address == UINT32_C(0x1600)) {
         fake->last_lba =
@@ -412,7 +519,8 @@ static bool fake_command_none(
 
 static bool fake_reset(void *raw_context, gdox_error *error)
 {
-    (void)raw_context;
+    fake_asus *fake = raw_context;
+    ++fake->reset_count;
     gdox_error_clear(error);
     return true;
 }
@@ -425,12 +533,29 @@ static bool fake_close(void *raw_context, gdox_error *error)
     return true;
 }
 
+static bool fake_prepare_close(void *raw_context, gdox_error *error)
+{
+    fake_asus *fake = raw_context;
+    ++fake->prepare_close_count;
+    if (fake->fail_prepare_close) {
+        return fail(
+            error,
+            GDOX_ERROR_TRANSPORT,
+            "injected ASUS transport close preparation failure"
+        );
+    }
+    gdox_error_clear(error);
+    return true;
+}
+
 static const gdox_scsi_transport_ops fake_ops = {
     fake_command_in,
     fake_command_out,
     fake_command_none,
     fake_reset,
     fake_close,
+    fake_prepare_close,
+    NULL,
 };
 
 static bool fake_open(
@@ -439,21 +564,26 @@ static bool fake_open(
     gdox_error *error
 )
 {
+    fake_asus *fake = raw_context;
+
+    ++fake->open_count;
     gdox_error_clear(error);
     transport->context = raw_context;
     transport->ops = &fake_ops;
     return true;
 }
 
-static void fake_initialize(fake_asus *fake)
+static void fake_initialize(fake_asus *fake, bool xgd2)
 {
     size_t index;
 
     memset(fake, 0, sizeof(*fake));
-    fake->profile_fields = expected_fields;
+    fake->profile_fields = xgd2 ? xgd2_expected_fields : expected_fields;
     memcpy(
         fake->pfi_prefix,
-        (const uint8_t[]){0x03U, 0x1aU, 0xafU},
+        xgd2
+            ? (const uint8_t[]){0x03U, 0x08U, 0x6fU}
+            : (const uint8_t[]){0x03U, 0x1aU, 0xafU},
         sizeof(fake->pfi_prefix)
     );
     memcpy(
@@ -463,12 +593,17 @@ static void fake_initialize(fake_asus *fake)
     );
     memcpy(
         fake->expected_complemented_start,
-        (const uint8_t[]){0x10U, 0x1aU, 0x03U, 0x00U},
+        xgd2
+            ? (const uint8_t[]){0x3cU, 0x06U, 0x03U, 0x00U}
+            : (const uint8_t[]){0x10U, 0x1aU, 0x03U, 0x00U},
         sizeof(fake->expected_complemented_start)
     );
-    fake->descriptor_lba = ASUS_DESCRIPTOR_LBA;
-    fake->stock_last_lba = ASUS_STOCK_LAST_LBA;
-    fake->live_last_lba = ASUS_LIVE_LAST_LBA;
+    fake->descriptor_lba =
+        xgd2 ? ASUS_XGD2_DESCRIPTOR_LBA : ASUS_DESCRIPTOR_LBA;
+    fake->stock_last_lba =
+        xgd2 ? ASUS_XGD2_STOCK_LAST_LBA : ASUS_STOCK_LAST_LBA;
+    fake->live_last_lba =
+        xgd2 ? ASUS_XGD2_LIVE_LAST_LBA : ASUS_LIVE_LAST_LBA;
     for (index = 0U; index < ASUS_FIELD_COUNT; ++index) {
         memcpy(
             fake->values[index],
@@ -573,7 +708,7 @@ static bool test_success_and_chunking(void)
     size_t observed_count = 0U;
     size_t index;
 
-    fake_initialize(&fake);
+    fake_initialize(&fake, false);
     CHECK(gdox_asus_nr09_source_open(
         fake_open,
         &fake,
@@ -636,7 +771,7 @@ static bool test_activation_failures_restore(void)
         gdox_sector_source source = {0};
         gdox_error error;
 
-        fake_initialize(&fake);
+        fake_initialize(&fake, false);
         fake.fail_write_number = stage;
         CHECK(!gdox_asus_nr09_source_open(
             fake_open,
@@ -661,7 +796,7 @@ static bool test_identity_and_stock_gate(void)
     gdox_sector_source source = {0};
     gdox_error error;
 
-    fake_initialize(&fake);
+    fake_initialize(&fake, false);
     fake.identity_valid = false;
     CHECK(!gdox_asus_nr09_source_open(
         fake_open,
@@ -675,7 +810,7 @@ static bool test_identity_and_stock_gate(void)
     CHECK(fake.write_count == 0U);
     CHECK(fake.closed);
 
-    fake_initialize(&fake);
+    fake_initialize(&fake, false);
     fake.pfi_prefix[2] ^= 0x01U;
     CHECK(!gdox_asus_nr09_source_open(
         fake_open,
@@ -689,7 +824,7 @@ static bool test_identity_and_stock_gate(void)
     CHECK(fake.write_count == 0U);
     CHECK(fake.closed);
 
-    fake_initialize(&fake);
+    fake_initialize(&fake, false);
     fake.start_psn[0] ^= 0x01U;
     CHECK(!gdox_asus_nr09_source_open(
         fake_open,
@@ -703,7 +838,7 @@ static bool test_identity_and_stock_gate(void)
     CHECK(fake.write_count == 0U);
     CHECK(fake.closed);
 
-    fake_initialize(&fake);
+    fake_initialize(&fake, false);
     fake.complemented_start[3] ^= 0x01U;
     CHECK(!gdox_asus_nr09_source_open(
         fake_open,
@@ -717,7 +852,7 @@ static bool test_identity_and_stock_gate(void)
     CHECK(fake.write_count == 0U);
     CHECK(fake.closed);
 
-    fake_initialize(&fake);
+    fake_initialize(&fake, false);
     ++fake.last_lba;
     CHECK(!gdox_asus_nr09_source_open(
         fake_open,
@@ -732,7 +867,7 @@ static bool test_identity_and_stock_gate(void)
     CHECK(fake.closed);
     CHECK(!fake.invalid_command);
 
-    fake_initialize(&fake);
+    fake_initialize(&fake, false);
     fake.values[3][0] ^= 0x01U;
     CHECK(!gdox_asus_nr09_source_open(
         fake_open,
@@ -755,7 +890,7 @@ static bool test_descriptor_rejection_restores(void)
     gdox_sector_source source = {0};
     gdox_error error;
 
-    fake_initialize(&fake);
+    fake_initialize(&fake, false);
     fake.descriptor_has_end_magic = false;
     CHECK(!gdox_asus_nr09_source_open(
         fake_open,
@@ -773,12 +908,371 @@ static bool test_descriptor_rejection_restores(void)
     return true;
 }
 
+static bool test_failed_open_transport_prepare_retry(void)
+{
+    fake_asus fake;
+    gdox_sector_source source = {0};
+    gdox_error error;
+
+    fake_initialize(&fake, false);
+    fake.descriptor_has_end_magic = false;
+    fake.fail_prepare_close = true;
+    CHECK(!gdox_asus_nr09_source_open(
+        fake_open,
+        &fake,
+        0U,
+        0U,
+        &source,
+        &error
+    ));
+    CHECK(error.code == GDOX_ERROR_TRANSPORT);
+    CHECK(gdox_source_is_valid(&source));
+    CHECK(!fake.closed);
+    CHECK(fake_state_matches(&fake, false));
+    CHECK(fake.prepare_close_count == 1U);
+
+    fake.fail_prepare_close = false;
+    CHECK(gdox_source_close(&source, &error));
+    CHECK(!gdox_source_is_valid(&source));
+    CHECK(fake.closed);
+    CHECK(fake.prepare_close_count == 3U);
+    return true;
+}
+
+static bool test_failed_open_restoration_retry(void)
+{
+    fake_asus fake;
+    gdox_sector_source source = {0};
+    gdox_error error;
+
+    fake_initialize(&fake, false);
+    fake.descriptor_has_end_magic = false;
+    fake.fail_stock_writes = true;
+    CHECK(!gdox_asus_nr09_source_open(
+        fake_open,
+        &fake,
+        0U,
+        0U,
+        &source,
+        &error
+    ));
+    CHECK(error.code == GDOX_ERROR_TRANSPORT);
+    CHECK(strstr(error.message, "power-cycle the drive") != NULL);
+    CHECK(gdox_source_is_valid(&source));
+    CHECK(!fake.closed);
+    CHECK(!fake_state_matches(&fake, false));
+
+    fake.fail_stock_writes = false;
+    CHECK(gdox_source_close(&source, &error));
+    CHECK(!gdox_source_is_valid(&source));
+    CHECK(fake.closed);
+    CHECK(fake_state_matches(&fake, false));
+    return true;
+}
+
+static bool test_detected_xgd2_success_and_restore(void)
+{
+    fake_asus fake;
+    gdox_sector_source source = {0};
+    gdox_asus_nr09_media_kind selected = GDOX_ASUS_NR09_MEDIA_UNKNOWN;
+    gdox_error error;
+    bool descriptor_read = false;
+    size_t index;
+
+    fake_initialize(&fake, true);
+    CHECK(gdox_asus_nr09_detected_source_open(
+        fake_open,
+        &fake,
+        0U,
+        0U,
+        &source,
+        &selected,
+        &error
+    ));
+    CHECK(selected == GDOX_ASUS_NR09_MEDIA_XGD2);
+    CHECK(gdox_source_sector_count(&source) == GDOX_XGD2_TOTAL_SECTORS);
+    CHECK(fake_state_matches(&fake, true));
+    for (index = 0U; index < fake.log_count; ++index) {
+        if (fake.log[index].opcode == 0x28U
+            && fake.log[index].lba == ASUS_XGD2_DESCRIPTOR_LBA
+            && fake.log[index].blocks == 1U) {
+            descriptor_read = true;
+        }
+    }
+    CHECK(descriptor_read);
+    CHECK(gdox_source_close(&source, &error));
+    CHECK(fake.closed);
+    CHECK(fake_state_matches(&fake, false));
+    CHECK(!fake.invalid_command);
+    return true;
+}
+
+static bool test_detected_xgd2_failures_restore(void)
+{
+    uint32_t stage;
+
+    for (stage = 1U; stage <= ASUS_FIELD_COUNT; ++stage) {
+        fake_asus fake;
+        gdox_sector_source source = {0};
+        gdox_asus_nr09_media_kind selected = GDOX_ASUS_NR09_MEDIA_UNKNOWN;
+        gdox_error error;
+
+        fake_initialize(&fake, true);
+        fake.fail_write_number = stage;
+        CHECK(!gdox_asus_nr09_detected_source_open(
+            fake_open,
+            &fake,
+            0U,
+            0U,
+            &source,
+            &selected,
+            &error
+        ));
+        CHECK(error.code == GDOX_ERROR_TRANSPORT);
+        CHECK(!gdox_source_is_valid(&source));
+        CHECK(fake.closed);
+        CHECK(fake_state_matches(&fake, false));
+        CHECK(!fake.invalid_command);
+    }
+    {
+        fake_asus fake;
+        gdox_sector_source source = {0};
+        gdox_asus_nr09_media_kind selected = GDOX_ASUS_NR09_MEDIA_UNKNOWN;
+        gdox_error error;
+
+        fake_initialize(&fake, true);
+        fake.values[2][0] ^= 0x01U;
+        CHECK(!gdox_asus_nr09_detected_source_open(
+            fake_open,
+            &fake,
+            0U,
+            0U,
+            &source,
+            &selected,
+            &error
+        ));
+        CHECK(fake.write_count == 0U);
+        CHECK(fake.closed);
+    }
+    {
+        fake_asus fake;
+        gdox_sector_source source = {0};
+        gdox_asus_nr09_media_kind selected = GDOX_ASUS_NR09_MEDIA_UNKNOWN;
+        gdox_error error;
+
+        fake_initialize(&fake, true);
+        fake.descriptor_has_end_magic = false;
+        CHECK(!gdox_asus_nr09_detected_source_open(
+            fake_open,
+            &fake,
+            0U,
+            0U,
+            &source,
+            &selected,
+            &error
+        ));
+        CHECK(error.code == GDOX_ERROR_NOT_FOUND);
+        CHECK(fake.closed);
+        CHECK(fake_state_matches(&fake, false));
+    }
+    return true;
+}
+
+static bool test_detected_profiles_use_one_transport(void)
+{
+    fake_asus fake;
+    gdox_sector_source source = {0};
+    gdox_asus_nr09_media_kind selected = GDOX_ASUS_NR09_MEDIA_UNKNOWN;
+    gdox_error error;
+
+    fake_initialize(&fake, false);
+    CHECK(gdox_asus_nr09_detected_source_open(
+        fake_open,
+        &fake,
+        0U,
+        0U,
+        &source,
+        &selected,
+        &error
+    ));
+    CHECK(selected == GDOX_ASUS_NR09_MEDIA_XGD1);
+    CHECK(fake.open_count == 1U);
+    CHECK(gdox_source_sector_count(&source) == GDOX_XGD1_TOTAL_SECTORS);
+    CHECK(gdox_source_close(&source, &error));
+
+    fake_initialize(&fake, true);
+    selected = GDOX_ASUS_NR09_MEDIA_UNKNOWN;
+    CHECK(gdox_asus_nr09_detected_source_open(
+        fake_open,
+        &fake,
+        0U,
+        0U,
+        &source,
+        &selected,
+        &error
+    ));
+    CHECK(selected == GDOX_ASUS_NR09_MEDIA_XGD2);
+    CHECK(fake.open_count == 1U);
+    CHECK(gdox_source_sector_count(&source) == GDOX_XGD2_TOTAL_SECTORS);
+    CHECK(gdox_source_close(&source, &error));
+    CHECK(fake.closed);
+    return true;
+}
+
+static bool test_detected_live_startup_recovery(void)
+{
+    fake_asus fake;
+    gdox_sector_source source = {0};
+    gdox_asus_nr09_media_kind selected = GDOX_ASUS_NR09_MEDIA_UNKNOWN;
+    gdox_error error;
+    size_t index;
+
+    fake_initialize(&fake, true);
+    for (index = 0U; index < ASUS_FIELD_COUNT; ++index) {
+        memcpy(
+            fake.values[index],
+            fake.profile_fields[index].live,
+            sizeof(fake.values[index])
+        );
+    }
+    fake.last_lba = fake.live_last_lba;
+    CHECK(gdox_asus_nr09_detected_source_open(
+        fake_open,
+        &fake,
+        0U,
+        0U,
+        &source,
+        &selected,
+        &error
+    ));
+    CHECK(selected == GDOX_ASUS_NR09_MEDIA_XGD2);
+    CHECK(fake.open_count == 1U);
+    CHECK(fake.write_count == 2U * ASUS_FIELD_COUNT);
+    CHECK(fake_state_matches(&fake, true));
+    CHECK(gdox_source_close(&source, &error));
+    CHECK(fake_state_matches(&fake, false));
+    CHECK(fake.closed);
+    return true;
+}
+
+static bool test_detected_unknown_state_is_write_free(void)
+{
+    fake_asus fake;
+    gdox_sector_source source = {0};
+    gdox_asus_nr09_media_kind selected = GDOX_ASUS_NR09_MEDIA_XGD1;
+    gdox_error error;
+
+    fake_initialize(&fake, true);
+    memcpy(fake.values[0], expected_fields[0].stock, 4U);
+    CHECK(!gdox_asus_nr09_detected_source_open(
+        fake_open,
+        &fake,
+        0U,
+        0U,
+        &source,
+        &selected,
+        &error
+    ));
+    CHECK(error.code == GDOX_ERROR_UNSUPPORTED);
+    CHECK(selected == GDOX_ASUS_NR09_MEDIA_UNKNOWN);
+    CHECK(fake.open_count == 1U);
+    CHECK(fake.write_count == 0U);
+    CHECK(fake.closed);
+    CHECK(!gdox_source_is_valid(&source));
+    return true;
+}
+
+static bool test_recovery_stops_before_reset_on_change_sense(void)
+{
+    fake_asus fake;
+    gdox_sector_source source = {0};
+    gdox_error error;
+    uint8_t output[GDOX_LOGICAL_SECTOR_BYTES];
+    uint32_t reset_count;
+    uint32_t write_count;
+
+    fake_initialize(&fake, false);
+    CHECK(gdox_asus_nr09_source_open(
+        fake_open,
+        &fake,
+        1U,
+        0U,
+        &source,
+        &error
+    ));
+    reset_count = fake.reset_count;
+    write_count = fake.write_count;
+    fake.fail_next_read = true;
+    fake.transition_sense_call = fake.sense_count + 1U;
+    CHECK(!gdox_source_read(
+        &source,
+        0U,
+        1U,
+        output,
+        sizeof(output),
+        &error
+    ));
+    CHECK(error.code == GDOX_ERROR_NOT_FOUND);
+    CHECK(strstr(error.message, "physical media changed") != NULL);
+    CHECK(fake.reset_count == reset_count);
+    CHECK(fake.write_count == write_count);
+    CHECK(gdox_source_close(&source, &error));
+    return true;
+}
+
+static bool test_recovery_stops_live_reentry_on_post_reset_event(void)
+{
+    fake_asus fake;
+    gdox_sector_source source = {0};
+    gdox_error error;
+    uint8_t output[GDOX_LOGICAL_SECTOR_BYTES];
+    uint32_t reset_count;
+    uint32_t write_count;
+
+    fake_initialize(&fake, false);
+    CHECK(gdox_asus_nr09_source_open(
+        fake_open,
+        &fake,
+        1U,
+        0U,
+        &source,
+        &error
+    ));
+    reset_count = fake.reset_count;
+    write_count = fake.write_count;
+    fake.fail_next_read = true;
+    fake.transition_gesn_call = fake.gesn_count + 2U;
+    CHECK(!gdox_source_read(
+        &source,
+        0U,
+        1U,
+        output,
+        sizeof(output),
+        &error
+    ));
+    CHECK(error.code == GDOX_ERROR_NOT_FOUND);
+    CHECK(strstr(error.message, "physical media changed") != NULL);
+    CHECK(fake.reset_count == reset_count + 1U);
+    CHECK(fake.write_count == write_count);
+    CHECK(gdox_source_close(&source, &error));
+    return true;
+}
+
 int main(void)
 {
     if (!test_success_and_chunking()
         || !test_activation_failures_restore()
         || !test_identity_and_stock_gate()
-        || !test_descriptor_rejection_restores()) {
+        || !test_descriptor_rejection_restores()
+        || !test_failed_open_transport_prepare_retry()
+        || !test_failed_open_restoration_retry()
+        || !test_detected_xgd2_success_and_restore()
+        || !test_detected_xgd2_failures_restore()
+        || !test_detected_profiles_use_one_transport()
+        || !test_detected_live_startup_recovery()
+        || !test_detected_unknown_state_is_write_free()
+        || !test_recovery_stops_before_reset_on_change_sense()
+        || !test_recovery_stops_live_reentry_on_post_reset_event()) {
         return 1;
     }
     (void)puts("ASUS NR09 adapter tests passed");

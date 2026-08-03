@@ -16,7 +16,7 @@ void gdox_gamepad_input_initialize(gdox_gamepad_input_policy *policy);
 
 void gdox_gamepad_input_update(
     gdox_gamepad_input_policy *policy,
-    bool emulator_running,
+    bool playback_running,
     bool window_focused,
     bool all_buttons_released
 );

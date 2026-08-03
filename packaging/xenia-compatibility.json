@@ -1,0 +1,170 @@
+{
+  "schema": "gdox.xenia-compatibility/v4",
+  "runtimes": [
+    {
+      "revision": "72ce13097"
+    },
+    {
+      "revision": "7d8be7f17"
+    }
+  ],
+  "default": {
+    "revision": "72ce13097",
+    "launch_module": "default.xex",
+    "patch_set": "none",
+    "settings": {
+      "d3d12_allow_variable_refresh_rate_and_tearing": false,
+      "vsync": true,
+      "apu_max_queued_frames": 64,
+      "gpu_allow_invalid_fetch_constants": false,
+      "occlusion_query": "default",
+      "occlusion_query_saturation": 1.0,
+      "readback_resolve": "none",
+      "protect_zero": true,
+      "xma_decoder": "new",
+      "use_dedicated_xma_thread": true,
+      "async_shader_compilation": true,
+      "use_handheld_custom_resolution": true
+    }
+  },
+  "titles": [
+    {
+      "title_id": "555308AE",
+      "media_id": "6D9F552E",
+      "disc_number": 1,
+      "disc_count": 2,
+      "revision": "7d8be7f17",
+      "launch_module": "scimitar_final.xex",
+      "patch_set": "none",
+      "settings": {
+        "d3d12_allow_variable_refresh_rate_and_tearing": false,
+        "vsync": true,
+        "apu_max_queued_frames": 64,
+        "gpu_allow_invalid_fetch_constants": true,
+        "occlusion_query": "strict",
+        "occlusion_query_saturation": 1.0,
+        "readback_resolve": "none",
+        "protect_zero": true,
+        "xma_decoder": "new",
+        "use_dedicated_xma_thread": true,
+        "async_shader_compilation": true,
+        "use_handheld_custom_resolution": true
+      }
+    },
+    {
+      "title_id": "555308C2",
+      "media_id": "68EC85BF",
+      "disc_number": 1,
+      "disc_count": 2,
+      "revision": "72ce13097",
+      "launch_module": "scimitar_final.xex",
+      "patch_set": "none",
+      "settings": {
+        "d3d12_allow_variable_refresh_rate_and_tearing": false,
+        "vsync": true,
+        "apu_max_queued_frames": 64,
+        "gpu_allow_invalid_fetch_constants": true,
+        "occlusion_query": "strict",
+        "occlusion_query_saturation": 1.0,
+        "readback_resolve": "full",
+        "protect_zero": true,
+        "xma_decoder": "new",
+        "use_dedicated_xma_thread": true,
+        "async_shader_compilation": true,
+        "use_handheld_custom_resolution": true
+      }
+    },
+    {
+      "title_id": "4D5307E6",
+      "media_id": "699E0227",
+      "disc_number": 1,
+      "disc_count": 1,
+      "revision": "72ce13097",
+      "launch_module": "default.xex",
+      "patch_set": "none",
+      "settings": {
+        "d3d12_allow_variable_refresh_rate_and_tearing": false,
+        "vsync": true,
+        "apu_max_queued_frames": 64,
+        "gpu_allow_invalid_fetch_constants": false,
+        "occlusion_query": "default",
+        "occlusion_query_saturation": 1.0,
+        "readback_resolve": "fast",
+        "protect_zero": false,
+        "xma_decoder": "new",
+        "use_dedicated_xma_thread": true,
+        "async_shader_compilation": true,
+        "use_handheld_custom_resolution": true
+      }
+    },
+    {
+      "title_id": "4D530919",
+      "media_id": "1C9D20BC",
+      "disc_number": 1,
+      "disc_count": 1,
+      "revision": "7d8be7f17",
+      "launch_module": "default.xex",
+      "patch_set": "none",
+      "settings": {
+        "d3d12_allow_variable_refresh_rate_and_tearing": false,
+        "vsync": true,
+        "apu_max_queued_frames": 64,
+        "gpu_allow_invalid_fetch_constants": false,
+        "occlusion_query": "default",
+        "occlusion_query_saturation": 1.0,
+        "readback_resolve": "fast",
+        "protect_zero": true,
+        "xma_decoder": "new",
+        "use_dedicated_xma_thread": true,
+        "async_shader_compilation": true,
+        "use_handheld_custom_resolution": true
+      }
+    },
+    {
+      "title_id": "4D5307E8",
+      "media_id": "572BA75D",
+      "disc_number": 1,
+      "disc_count": 1,
+      "revision": "72ce13097",
+      "launch_module": "default.xex",
+      "patch_set": "mass-effect-world-rendering-v1",
+      "settings": {
+        "d3d12_allow_variable_refresh_rate_and_tearing": false,
+        "vsync": true,
+        "apu_max_queued_frames": 64,
+        "gpu_allow_invalid_fetch_constants": false,
+        "occlusion_query": "strict",
+        "occlusion_query_saturation": 0.75,
+        "readback_resolve": "none",
+        "protect_zero": true,
+        "xma_decoder": "new",
+        "use_dedicated_xma_thread": true,
+        "async_shader_compilation": false,
+        "use_handheld_custom_resolution": false
+      }
+    },
+    {
+      "title_id": "4D5307DC",
+      "media_id": "596F9615",
+      "disc_number": 1,
+      "disc_count": 1,
+      "revision": "72ce13097",
+      "launch_module": "default.xex",
+      "patch_set": "none",
+      "settings": {
+        "d3d12_allow_variable_refresh_rate_and_tearing": false,
+        "vsync": true,
+        "apu_max_queued_frames": 64,
+        "gpu_allow_invalid_fetch_constants": false,
+        "occlusion_query": "fast-alt",
+        "occlusion_query_saturation": 1.0,
+        "readback_resolve": "full",
+        "protect_zero": false,
+        "xma_decoder": "new",
+        "use_dedicated_xma_thread": false,
+        "async_shader_compilation": true,
+        "use_handheld_custom_resolution": true
+      }
+    }
+  ]
+}

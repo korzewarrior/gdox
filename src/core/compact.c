@@ -1,4 +1,4 @@
-#include "gdox/xdvdfs.h"
+#include "core/compact.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -516,6 +516,13 @@ static bool process_directory(
         free(data);
         return false;
     }
+    if ((uint64_t)directory.size < allocated_bytes_u64) {
+        memset(
+            data + directory.size,
+            0,
+            allocated_bytes - directory.size
+        );
+    }
     builder->metadata_bytes += allocated_bytes_u64;
     if (!bytes_are_empty_directory(data, directory.size)) {
         reader = (compact_directory_reader){
@@ -805,6 +812,15 @@ static bool compact_media_present(const void *raw_context)
     return gdox_source_media_present(&context->inner);
 }
 
+static void compact_observe_media(
+    const void *raw_context,
+    gdox_media_observation *output
+)
+{
+    const compact_context *context = raw_context;
+    (void)gdox_source_observe_media(&context->inner, output);
+}
+
 static bool compact_evidence(
     const void *raw_context,
     gdox_disc_evidence *output
@@ -832,6 +848,12 @@ static bool compact_close(void *raw_context, gdox_error *error)
     return closed;
 }
 
+static bool compact_prepare_close(void *raw_context, gdox_error *error)
+{
+    compact_context *context = raw_context;
+    return gdox_source_prepare_close(&context->inner, error);
+}
+
 static void compact_abort(void *raw_context)
 {
     compact_context *context = raw_context;
@@ -846,6 +868,8 @@ static const gdox_sector_source_ops compact_ops = {
     compact_evidence,
     compact_physical_read_stats,
     compact_abort,
+    compact_prepare_close,
+    compact_observe_media,
 };
 
 bool gdox_source_make_compact_xiso(
@@ -863,7 +887,8 @@ bool gdox_source_make_compact_xiso(
 
     gdox_error_clear(error);
     if (!gdox_source_is_valid(partition) || volume == NULL || output == NULL
-        || output == partition || volume->base_lba != 0U) {
+        || output == partition || gdox_source_is_valid(output)
+        || volume->base_lba != 0U) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "compact XISO requires a partition-relative source and volume");
         return false;
     }

@@ -1,1 +1,7 @@
-*.patch whitespace=-blank-at-eol
+* text=auto eol=lf
+*.patch text eol=lf whitespace=-blank-at-eol
+*.icns binary
+*.ico binary
+*.png binary
+*.webp binary
+*.woff2 binary

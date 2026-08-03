@@ -3,6 +3,8 @@
 
 #include "app/model.h"
 
+#include "gdox/error.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -28,8 +30,17 @@ typedef gdox_app_snapshot gdox_runtime_snapshot;
 
 typedef struct gdox_runtime gdox_runtime;
 
-gdox_runtime *gdox_runtime_create(void);
-void gdox_runtime_destroy(gdox_runtime *runtime);
+typedef enum gdox_runtime_destroy_result {
+    GDOX_RUNTIME_DESTROYED = 0,
+    GDOX_RUNTIME_DESTROY_RETRY,
+    GDOX_RUNTIME_DESTROYED_WITH_ERROR
+} gdox_runtime_destroy_result;
+
+gdox_runtime *gdox_runtime_create(gdox_host_profile host_profile);
+gdox_runtime_destroy_result gdox_runtime_destroy(
+    gdox_runtime *runtime,
+    gdox_error *error
+);
 void gdox_runtime_copy_snapshot(
     gdox_runtime *runtime,
     gdox_runtime_snapshot *snapshot
@@ -52,10 +63,6 @@ void gdox_runtime_set_display(
     uint16_t window_height
 );
 bool gdox_runtime_set_xemu_override(
-    gdox_runtime *runtime,
-    const char *path
-);
-bool gdox_runtime_set_hdd_override(
     gdox_runtime *runtime,
     const char *path
 );

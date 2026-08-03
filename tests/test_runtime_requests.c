@@ -1,7 +1,48 @@
+#if !defined(_WIN32)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "app/runtime_internal.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <direct.h>
+#include <io.h>
+#include <process.h>
+#define gdox_test_getpid _getpid
+#define gdox_test_mkdir(path) _mkdir(path)
+#define gdox_test_rmdir _rmdir
+#define gdox_test_remove _unlink
+static bool set_config_home(const char *path)
+{
+    return SetEnvironmentVariableA("GDOX_CONFIG_HOME", path) != 0;
+}
+static void clear_config_home(void)
+{
+    (void)SetEnvironmentVariableA("GDOX_CONFIG_HOME", NULL);
+}
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#define gdox_test_getpid getpid
+#define gdox_test_mkdir(path) mkdir(path, 0700)
+#define gdox_test_rmdir rmdir
+#define gdox_test_remove unlink
+static bool set_config_home(const char *path)
+{
+    return setenv("GDOX_CONFIG_HOME", path, 1) == 0;
+}
+static void clear_config_home(void)
+{
+    (void)unsetenv("GDOX_CONFIG_HOME");
+}
+#endif
 
 #define CHECK(expression)                                                      \
     do {                                                                       \
@@ -80,7 +121,6 @@ static int check_settings_survive_publish(gdox_runtime *runtime)
     expected.window_width = 1920U;
     expected.window_height = 1080U;
     memcpy(expected.xemu_override, "/xemu", sizeof "/xemu");
-    memcpy(expected.hdd_override, "/xbox_hdd.qcow2", sizeof "/xbox_hdd.qcow2");
     memcpy(
         expected.preservation_directory,
         "/preserved",
@@ -105,12 +145,57 @@ static int check_settings_survive_publish(gdox_runtime *runtime)
     CHECK(runtime->snapshot.settings.window_height == expected.window_height);
     CHECK(strcmp(runtime->snapshot.settings.xemu_override, "/xemu") == 0);
     CHECK(
-        strcmp(runtime->snapshot.settings.hdd_override, "/xbox_hdd.qcow2") == 0
-    );
-    CHECK(
         strcmp(runtime->snapshot.settings.preservation_directory, "/preserved")
         == 0
     );
+    return 0;
+}
+
+static int check_handheld_display_policy(gdox_runtime *runtime)
+{
+    char directory[256];
+    char settings_path[320];
+    gdox_preferences loaded;
+    gdox_runtime_request_entry queued;
+    gdox_error error;
+
+    (void)snprintf(
+        directory,
+        sizeof(directory),
+        "./gdox-runtime-settings-%d-%lld",
+        gdox_test_getpid(),
+        (long long)time(NULL)
+    );
+    (void)snprintf(
+        settings_path,
+        sizeof(settings_path),
+        "%s/settings.conf",
+        directory
+    );
+    CHECK(gdox_test_mkdir(directory) == 0);
+    CHECK(set_config_home(directory));
+    memset(&runtime->requests, 0, sizeof(runtime->requests));
+    gdox_preferences_defaults(&runtime->snapshot.settings);
+    runtime->host_profile = GDOX_HOST_PROFILE_HANDHELD;
+
+    gdox_runtime_set_display(
+        runtime,
+        4U,
+        GDOX_EMULATOR_ASPECT_WIDESCREEN,
+        GDOX_EMULATOR_FIT_SCALE,
+        true,
+        1280U,
+        720U
+    );
+
+    CHECK(runtime->snapshot.settings.internal_resolution_scale == 1U);
+    CHECK(gdox_runtime_request_dequeue(&runtime->requests, &queued));
+    CHECK(queued.kind == GDOX_RUNTIME_REQUEST_APPLY_DISPLAY);
+    CHECK(gdox_preferences_load(&loaded, &error));
+    CHECK(loaded.internal_resolution_scale == 1U);
+    clear_config_home();
+    CHECK(gdox_test_remove(settings_path) == 0);
+    CHECK(gdox_test_rmdir(directory) == 0);
     return 0;
 }
 
@@ -127,6 +212,9 @@ int main(void)
     }
     if (result == 0) {
         result = check_settings_survive_publish(&runtime);
+    }
+    if (result == 0) {
+        result = check_handheld_display_policy(&runtime);
     }
     gdox_mutex_destroy(&runtime.mutex);
     if (result == 0) {

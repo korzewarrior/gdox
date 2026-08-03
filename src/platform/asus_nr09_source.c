@@ -44,6 +44,7 @@ typedef struct gdox_asus_field {
 } gdox_asus_field;
 
 typedef struct gdox_asus_media_profile {
+    gdox_asus_nr09_media_kind kind;
     uint32_t descriptor_lba;
     uint32_t stock_last_lba;
     uint32_t live_last_lba;
@@ -55,6 +56,7 @@ typedef struct gdox_asus_media_profile {
 } gdox_asus_media_profile;
 
 static const gdox_asus_media_profile xgd1_profile = {
+    GDOX_ASUS_NR09_MEDIA_XGD1,
     UINT32_C(0x30620),
     UINT32_C(0x1b4f),
     UINT32_C(0x3a4d4f),
@@ -114,6 +116,72 @@ static const gdox_asus_media_profile xgd1_profile = {
     },
 };
 
+static const gdox_asus_media_profile xgd2_profile = {
+    GDOX_ASUS_NR09_MEDIA_XGD2,
+    UINT32_C(0x1fb40),
+    UINT32_C(0x0aa3),
+    UINT32_C(0x3a6103),
+    GDOX_XGD2_TOTAL_SECTORS,
+    {0x03U, 0x08U, 0x6fU},
+    {0x00U, 0x00U, 0x03U, 0x00U},
+    {0x3cU, 0x06U, 0x03U, 0x00U},
+    {
+    {
+        UINT32_C(0x888da044),
+        0x02U,
+        {0x6fU, 0x08U, 0x03U, 0x00U},
+        {0x9fU, 0x33U, 0x20U, 0x00U},
+    },
+    {
+        UINT32_C(0x1750),
+        0x01U,
+        {0x6fU, 0x08U, 0x03U, 0x00U},
+        {0x9fU, 0x33U, 0x20U, 0x00U},
+    },
+    {
+        UINT32_C(0x18f4),
+        0x01U,
+        {0x70U, 0x08U, 0x03U, 0x00U},
+        {0xa0U, 0x33U, 0x20U, 0x00U},
+    },
+    {
+        UINT32_C(0x18f8),
+        0x01U,
+        {0x90U, 0xf7U, 0xfcU, 0x00U},
+        {0x60U, 0xccU, 0xdfU, 0x00U},
+    },
+    {
+        UINT32_C(0x1900),
+        0x01U,
+        {0x6fU, 0x08U, 0x03U, 0x00U},
+        {0x9fU, 0x33U, 0x20U, 0x00U},
+    },
+    {
+        UINT32_C(0x1908),
+        0x01U,
+        {0x6fU, 0x08U, 0x03U, 0x00U},
+        {0x9fU, 0x33U, 0x20U, 0x00U},
+    },
+    {
+        UINT32_C(0x19cc),
+        0x01U,
+        {0xa4U, 0x0aU, 0x03U, 0x00U},
+        {0x04U, 0x61U, 0x3dU, 0x00U},
+    },
+    {
+        UINT32_C(0x1600),
+        0x01U,
+        {0x6fU, 0x08U, 0x03U, 0x00U},
+        {0x9fU, 0x33U, 0x20U, 0x00U},
+    },
+    },
+};
+
+static const gdox_asus_media_profile *const media_profiles[] = {
+    &xgd1_profile,
+    &xgd2_profile,
+};
+
 static const uint8_t xdvdfs_magic[20] = {
     'M', 'I', 'C', 'R', 'O', 'S', 'O', 'F', 'T', '*',
     'X', 'B', 'O', 'X', '*', 'M', 'E', 'D', 'I', 'A',
@@ -131,7 +199,7 @@ typedef struct gdox_asus_context {
     gdox_scsi_transport transport;
     gdox_mutex mutex;
     gdox_disc_evidence evidence;
-    gdox_asus_state stock;
+    gdox_mmc_media_tracker media_tracker;
     const gdox_asus_media_profile *profile;
     atomic_uint_fast64_t read_commands;
     atomic_uint_fast64_t read_sectors;
@@ -269,6 +337,7 @@ static bool ladder_aborted(const atomic_bool *abort, gdox_error *error)
 
 static bool read_state(
     gdox_asus_context *context,
+    const gdox_asus_media_profile *layout,
     const atomic_bool *abort,
     gdox_asus_state *state,
     gdox_error *error
@@ -282,7 +351,7 @@ static bool read_state(
     for (index = 0U; index < GDOX_ASUS_FIELD_COUNT; ++index) {
         if (!memory_read(
                 &context->transport,
-                &context->profile->fields[index],
+                &layout->fields[index],
                 state->values[index],
                 error
             )) {
@@ -383,6 +452,29 @@ static bool state_is_known_partial(
         && state->block_size == GDOX_LOGICAL_SECTOR_BYTES;
 }
 
+static const gdox_asus_media_profile *select_known_profile(
+    const gdox_asus_state *state
+)
+{
+    const gdox_asus_media_profile *selected = NULL;
+    size_t index;
+
+    for (index = 0U;
+         index < sizeof(media_profiles) / sizeof(media_profiles[0]);
+         ++index) {
+        const gdox_asus_media_profile *candidate = media_profiles[index];
+
+        if (!state_is_known_partial(candidate, state)) {
+            continue;
+        }
+        if (selected != NULL) {
+            return NULL;
+        }
+        selected = candidate;
+    }
+    return selected;
+}
+
 static bool apply_live(gdox_asus_context *context, gdox_error *error)
 {
     gdox_asus_state observed;
@@ -398,7 +490,13 @@ static bool apply_live(gdox_asus_context *context, gdox_error *error)
             return false;
         }
     }
-    if (!read_state(context, &context->abort, &observed, error)) {
+    if (!read_state(
+            context,
+            context->profile,
+            &context->abort,
+            &observed,
+            error
+        )) {
         return false;
     }
     if (!state_matches(context->profile, &observed, true)) {
@@ -436,15 +534,20 @@ static bool restore_stock(gdox_asus_context *context, gdox_error *error)
         if (!memory_write(
                 &context->transport,
                 &context->profile->fields[field],
-                context->stock.values[field],
+                context->profile->fields[field].stock,
                 &current
             ) && !command_failed) {
             first_error = current;
             command_failed = true;
         }
     }
-    if (read_state(context, NULL, &observed, &current)
-        && memcmp(&observed, &context->stock, sizeof(observed)) == 0) {
+    if (read_state(
+            context,
+            context->profile,
+            NULL,
+            &observed,
+            &current
+        ) && state_matches(context->profile, &observed, false)) {
         return true;
     }
     if (command_failed) {
@@ -485,11 +588,69 @@ static bool restore_stock_after_streaming(
     return false;
 }
 
+static bool select_and_normalize_profile(
+    gdox_asus_context *context,
+    const gdox_asus_media_profile *required_profile,
+    gdox_error *error
+)
+{
+    gdox_asus_state observed;
+    const gdox_asus_media_profile *selected;
+
+    if (!read_state(
+            context,
+            &xgd1_profile,
+            &context->abort,
+            &observed,
+            error
+        )) {
+        return false;
+    }
+    selected = select_known_profile(&observed);
+    if (selected == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_UNSUPPORTED,
+            "refusing ASUS session because no unique validated XGD profile matches volatile state"
+        );
+        return false;
+    }
+    if (required_profile != NULL && selected != required_profile) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_SOURCE,
+            "ASUS volatile state belongs to a different validated XGD profile"
+        );
+        return false;
+    }
+    context->profile = selected;
+    if (state_matches(selected, &observed, false)) {
+        return true;
+    }
+    context->active = true;
+    if (!restore_stock_after_streaming(context, error)) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_TRANSPORT,
+            "could not restore ASUS volatile state; power-cycle the drive"
+        );
+        return false;
+    }
+    context->active = false;
+    return true;
+}
+
 static bool ensure_live(gdox_asus_context *context, gdox_error *error)
 {
     gdox_asus_state observed;
 
-    if (!read_state(context, &context->abort, &observed, error)) {
+    if (!read_state(
+            context,
+            context->profile,
+            &context->abort,
+            &observed,
+            error
+        )) {
         return false;
     }
     if (state_matches(context->profile, &observed, true)) {
@@ -510,28 +671,62 @@ static bool ensure_live(gdox_asus_context *context, gdox_error *error)
     return apply_live(context, error);
 }
 
+static bool recovery_media_transitioned(
+    gdox_asus_context *context,
+    uint64_t expected_generation,
+    gdox_error *error
+)
+{
+    (void)gdox_mmc_media_tracker_capture_transport_sense(
+        &context->transport,
+        GDOX_ASUS_DEFAULT_TIMEOUT_MS,
+        &context->media_tracker
+    );
+    (void)gdox_mmc_poll_media_event(
+        &context->transport,
+        GDOX_ASUS_DEFAULT_TIMEOUT_MS,
+        &context->media_tracker
+    );
+    if (!gdox_mmc_media_tracker_transitioned(
+            &context->media_tracker, expected_generation
+        )) {
+        return false;
+    }
+    gdox_error_set(
+        error,
+        GDOX_ERROR_NOT_FOUND,
+        context->media_tracker.pending_event
+                == GDOX_MEDIA_EVENT_EJECT_REQUEST
+            ? "physical eject requested"
+            : "physical media changed during optical read"
+    );
+    return true;
+}
+
 static bool recover_optical(
     gdox_asus_context *context,
+    uint64_t expected_generation,
     gdox_error *error
 )
 {
     uint32_t attempt;
     gdox_error last;
-    uint8_t sense[18];
-    size_t transferred;
 
     gdox_error_clear(&last);
     if (ladder_aborted(&context->abort, error)) {
         return false;
     }
+    if (recovery_media_transitioned(
+            context, expected_generation, error
+        )) {
+        return false;
+    }
     (void)gdox_scsi_transport_reset(&context->transport, &last);
-    (void)gdox_mmc_request_sense(
-        &context->transport,
-        GDOX_ASUS_DEFAULT_TIMEOUT_MS,
-        sense,
-        &transferred,
-        &last
-    );
+    if (recovery_media_transitioned(
+            context, expected_generation, error
+        )) {
+        return false;
+    }
     for (attempt = 0U; attempt < GDOX_ASUS_READY_ATTEMPTS; ++attempt) {
         if (ladder_aborted(&context->abort, error)) {
             return false;
@@ -541,7 +736,17 @@ static bool recover_optical(
                 GDOX_ASUS_DEFAULT_TIMEOUT_MS,
                 &last
             )) {
+            if (recovery_media_transitioned(
+                    context, expected_generation, error
+                )) {
+                return false;
+            }
             return ensure_live(context, error);
+        }
+        if (recovery_media_transitioned(
+                context, expected_generation, error
+            )) {
+            return false;
         }
         if (last.code == GDOX_ERROR_NOT_FOUND) {
             break;
@@ -562,6 +767,7 @@ static bool read_range_with_recovery(
     gdox_error *error
 )
 {
+    const uint64_t expected_generation = context->media_tracker.generation;
     uint32_t attempt;
     gdox_error last;
 
@@ -609,7 +815,7 @@ static bool read_range_with_recovery(
             break;
         }
         if (attempt < context->retries
-            && !recover_optical(context, &last)
+            && !recover_optical(context, expected_generation, &last)
             && (last.code == GDOX_ERROR_NOT_FOUND
                 || last.code == GDOX_ERROR_CANCELLED)) {
             break;
@@ -738,22 +944,33 @@ static bool asus_read(
     return success;
 }
 
-static bool asus_media_present(const void *raw_context)
+static void asus_observe_media(
+    const void *raw_context,
+    gdox_media_observation *output
+)
 {
     gdox_asus_context *context = (gdox_asus_context *)raw_context;
-    gdox_error error;
-    bool present;
 
+    output->readiness = GDOX_MEDIA_READINESS_UNKNOWN;
+    output->generation = 0U;
+    output->event = GDOX_MEDIA_EVENT_NONE;
     if (!gdox_mutex_lock(&context->mutex)) {
-        return false;
+        return;
     }
-    present = gdox_mmc_test_unit_ready(
+    gdox_mmc_observe_media(
         &context->transport,
         GDOX_ASUS_PRESENCE_TIMEOUT_MS,
-        &error
+        &context->media_tracker,
+        output
     );
     gdox_mutex_unlock(&context->mutex);
-    return present;
+}
+
+static bool asus_media_present(const void *raw_context)
+{
+    gdox_media_observation observation;
+    asus_observe_media(raw_context, &observation);
+    return observation.readiness == GDOX_MEDIA_READINESS_PRESENT;
 }
 
 static bool asus_evidence(
@@ -804,18 +1021,32 @@ static bool asus_physical_read_stats(
 static bool asus_close(void *raw_context, gdox_error *error)
 {
     gdox_asus_context *context = raw_context;
-    gdox_error restore_error;
-    gdox_error close_error;
-    bool restored = true;
-    bool closed;
+    const bool closed = gdox_scsi_transport_close(
+        &context->transport, error
+    );
 
+    gdox_mutex_destroy(&context->mutex);
+    free(context);
+    return closed;
+}
+
+static void asus_abort(void *raw_context)
+{
+    gdox_asus_context *context = raw_context;
+    atomic_store_explicit(&context->abort, true, memory_order_release);
+}
+
+static bool asus_prepare_close(void *raw_context, gdox_error *error)
+{
+    gdox_asus_context *context = raw_context;
+    gdox_error restore_error;
+    bool restored = true;
+
+    gdox_error_clear(error);
     gdox_error_clear(&restore_error);
     if (gdox_mutex_lock(&context->mutex)) {
         if (context->active) {
-            restored = restore_stock_after_streaming(
-                context,
-                &restore_error
-            );
+            restored = restore_stock_after_streaming(context, &restore_error);
             if (restored) {
                 context->active = false;
             }
@@ -829,27 +1060,11 @@ static bool asus_close(void *raw_context, gdox_error *error)
             "could not lock ASUS transport during close"
         );
     }
-    gdox_mutex_destroy(&context->mutex);
-    closed = gdox_scsi_transport_close(
-        &context->transport,
-        &close_error
-    );
-    free(context);
     if (!restored) {
         *error = restore_error;
         return false;
     }
-    if (!closed) {
-        *error = close_error;
-        return false;
-    }
-    return true;
-}
-
-static void asus_abort(void *raw_context)
-{
-    gdox_asus_context *context = raw_context;
-    atomic_store_explicit(&context->abort, true, memory_order_release);
+    return gdox_scsi_transport_prepare_close(&context->transport, error);
 }
 
 static const gdox_sector_source_ops asus_source_ops = {
@@ -860,6 +1075,8 @@ static const gdox_sector_source_ops asus_source_ops = {
     asus_evidence,
     asus_physical_read_stats,
     asus_abort,
+    asus_prepare_close,
+    asus_observe_media,
 };
 
 static bool open_discovered_asus(
@@ -900,7 +1117,16 @@ static bool open_validated_transport(
             )) {
             break;
         }
-        gdox_scsi_transport_destroy(transport);
+        {
+            const gdox_error operation_error = *error;
+            gdox_error close_error;
+
+            if (!gdox_scsi_transport_close(transport, &close_error)) {
+                *error = close_error;
+                return false;
+            }
+            *error = operation_error;
+        }
         if (error->code != GDOX_ERROR_TRANSPORT
             || attempt + 1U == GDOX_ASUS_INQUIRY_ATTEMPTS) {
             return false;
@@ -908,22 +1134,62 @@ static bool open_validated_transport(
         gdox_sleep_ms(UINT32_C(100));
     }
     if (!identity_is_validated(identity)) {
-        gdox_scsi_transport_destroy(transport);
+        gdox_error operation_error;
+        gdox_error close_error;
+
         gdox_error_set(
-            error,
+            &operation_error,
             GDOX_ERROR_UNSUPPORTED,
             "USB device is not the validated ASUS SDRW-08D1S-U A202 mechanism"
         );
+        if (!gdox_scsi_transport_close(transport, &close_error)) {
+            *error = close_error;
+        } else {
+            *error = operation_error;
+        }
         return false;
     }
     return true;
 }
 
-static void destroy_failed_open(gdox_asus_context *context)
+static void retain_failed_open(
+    gdox_asus_context *context,
+    gdox_sector_source *source
+)
 {
-    gdox_scsi_transport_destroy(&context->transport);
+    source->context = context;
+    source->ops = &asus_source_ops;
+}
+
+static void cleanup_failed_open(
+    gdox_asus_context *context,
+    gdox_sector_source *source,
+    const gdox_error *operation_error,
+    gdox_error *error
+)
+{
+    gdox_error restore_error;
+    gdox_error close_error;
+    if (context->active) {
+        if (!restore_stock_after_streaming(context, &restore_error)) {
+            retain_failed_open(context, source);
+            gdox_error_set(
+                error,
+                GDOX_ERROR_TRANSPORT,
+                "ASUS initialization failed and volatile-state restoration also failed; power-cycle the drive"
+            );
+            return;
+        }
+        context->active = false;
+    }
+    if (!gdox_scsi_transport_close(&context->transport, &close_error)) {
+        retain_failed_open(context, source);
+        *error = close_error;
+        return;
+    }
     gdox_mutex_destroy(&context->mutex);
     free(context);
+    *error = *operation_error;
 }
 
 static bool wait_for_ready(
@@ -1027,25 +1293,6 @@ static bool collect_disc_evidence(
     return true;
 }
 
-static bool validate_stock_state(
-    gdox_asus_context *context,
-    gdox_error *error
-)
-{
-    if (read_state(context, &context->abort, &context->stock, error)
-        && state_matches(context->profile, &context->stock, false)) {
-        return true;
-    }
-    if (!gdox_error_is_set(error)) {
-        gdox_error_set(
-            error,
-            GDOX_ERROR_UNSUPPORTED,
-            "refusing ASUS session because stock volatile state does not match"
-        );
-    }
-    return false;
-}
-
 static bool apply_live_with_rollback(
     gdox_asus_context *context,
     gdox_error *error
@@ -1053,8 +1300,8 @@ static bool apply_live_with_rollback(
 {
     gdox_error operation_error;
 
+    context->active = true;
     if (apply_live(context, error)) {
-        context->active = true;
         return true;
     }
     operation_error = *error;
@@ -1065,6 +1312,7 @@ static bool apply_live_with_rollback(
             "ASUS initialization failed and volatile-state restoration also failed; power-cycle the drive"
         );
     } else {
+        context->active = false;
         *error = operation_error;
     }
     return false;
@@ -1129,14 +1377,17 @@ static bool source_open_profile(
     uint8_t read_retries,
     uint32_t ready_timeout_ms,
     gdox_sector_source *source,
+    gdox_asus_nr09_media_kind *selected_media,
     gdox_error *error
 )
 {
     gdox_asus_context *context;
     gdox_mmc_identity identity;
+    gdox_error operation_error;
 
     gdox_error_clear(error);
-    if (profile == NULL || opener == NULL || source == NULL
+    if (opener == NULL || source == NULL
+        || (profile == NULL && selected_media == NULL)
         || gdox_source_is_valid(source)) {
         gdox_error_set(
             error,
@@ -1144,6 +1395,9 @@ static bool source_open_profile(
             "an ASUS transport opener and empty source output are required"
         );
         return false;
+    }
+    if (selected_media != NULL) {
+        *selected_media = GDOX_ASUS_NR09_MEDIA_UNKNOWN;
     }
     context = calloc(1U, sizeof(*context));
     if (context == NULL) {
@@ -1176,21 +1430,36 @@ static bool source_open_profile(
             &identity,
             error
         )) {
-        gdox_mutex_destroy(&context->mutex);
-        free(context);
+        if (gdox_scsi_transport_is_valid(&context->transport)) {
+            retain_failed_open(context, source);
+        } else {
+            gdox_mutex_destroy(&context->mutex);
+            free(context);
+        }
         return false;
     }
     if (!wait_for_ready(context, ready_timeout_ms, error)
+        || !select_and_normalize_profile(context, profile, error)
         || !collect_disc_evidence(context, error)
-        || !validate_stock_state(context, error)
         || !apply_live_with_rollback(context, error)
         || !validate_live_descriptor(context, error)) {
-        destroy_failed_open(context);
+        operation_error = *error;
+        cleanup_failed_open(
+            context, source, &operation_error, error
+        );
         return false;
     }
     context->retries = read_retries;
+    gdox_mmc_media_tracker_begin_session(
+        &context->transport,
+        GDOX_ASUS_DEFAULT_TIMEOUT_MS,
+        &context->media_tracker
+    );
     source->context = context;
     source->ops = &asus_source_ops;
+    if (selected_media != NULL) {
+        *selected_media = context->profile->kind;
+    }
     return true;
 }
 
@@ -1210,6 +1479,29 @@ bool gdox_asus_nr09_source_open(
         read_retries,
         ready_timeout_ms,
         source,
+        NULL,
+        error
+    );
+}
+
+bool gdox_asus_nr09_detected_source_open(
+    gdox_asus_nr09_transport_opener opener,
+    void *opener_context,
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_asus_nr09_media_kind *selected_media,
+    gdox_error *error
+)
+{
+    return source_open_profile(
+        NULL,
+        opener,
+        opener_context,
+        read_retries,
+        ready_timeout_ms,
+        source,
+        selected_media,
         error
     );
 }
@@ -1229,4 +1521,56 @@ bool gdox_optical_open_asus_nr09(
         source,
         error
     );
+}
+
+bool gdox_optical_open_asus_nr09_media(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_optical_media_info *info,
+    gdox_error *error
+)
+{
+    gdox_asus_nr09_media_kind selected;
+    gdox_error close_error;
+
+    if (info == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "optical media information output is required"
+        );
+        return false;
+    }
+    memset(info, 0, sizeof(*info));
+    if (!gdox_asus_nr09_detected_source_open(
+            open_discovered_asus,
+            NULL,
+            read_retries,
+            ready_timeout_ms,
+            source,
+            &selected,
+            error
+        )) {
+        return false;
+    }
+    if (selected == GDOX_ASUS_NR09_MEDIA_XGD1) {
+        info->profile = GDOX_OPTICAL_MEDIA_XGD1;
+        return true;
+    }
+    if (selected == GDOX_ASUS_NR09_MEDIA_XGD2) {
+        info->profile = GDOX_OPTICAL_MEDIA_XGD2;
+        info->game_partition_lba = GDOX_XGD2_GAME_PARTITION_LBA;
+        return true;
+    }
+    if (!gdox_source_close(source, &close_error)) {
+        *error = close_error;
+    } else {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INTERNAL,
+            "selected ASUS media profile has no optical mapping"
+        );
+    }
+    return false;
 }

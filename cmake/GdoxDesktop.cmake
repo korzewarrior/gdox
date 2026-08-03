@@ -86,21 +86,42 @@ endif()
 
 add_executable(
     gdox
+    src/app/background.c
+    src/app/background_lifecycle.c
     src/ui/configuration_pages.cpp
     src/ui/details_page.cpp
     src/ui/gamepad_input_policy.c
     src/ui/main.cpp
     src/ui/play_page.cpp
+    src/ui/playback_labels.c
     src/ui/presentation.cpp
     src/ui/preserve_page.cpp
     src/ui/theme.cpp
 )
+if(NOT WIN32)
+    target_sources(
+        gdox
+        PRIVATE src/platform/termination_signal_posix.c
+    )
+endif()
 if(WIN32)
+    target_sources(
+        gdox
+        PRIVATE
+            src/platform/background_host_windows.c
+            src/platform/instance_guard_windows.c
+    )
     target_compile_definitions(gdox PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(gdox PRIVATE shell32)
     configure_file(
         src/platform/windows_resources.rc.in
         "${CMAKE_CURRENT_BINARY_DIR}/windows_resources.rc"
         @ONLY
+    )
+    set_property(
+        SOURCE "${CMAKE_CURRENT_BINARY_DIR}/windows_resources.rc"
+        APPEND PROPERTY OBJECT_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/GDOX.ico"
     )
     target_sources(
         gdox
@@ -108,7 +129,14 @@ if(WIN32)
     )
     set_target_properties(gdox PROPERTIES WIN32_EXECUTABLE TRUE)
 elseif(APPLE)
-    target_sources(gdox PRIVATE packaging/macos/GDOX.icns)
+    gdox_enable_objc_warnings(gdox)
+    target_sources(
+        gdox
+        PRIVATE
+            packaging/macos/GDOX.icns
+            src/platform/background_host_macos.m
+            src/platform/instance_guard_posix.c
+    )
     set_source_files_properties(
         packaging/macos/GDOX.icns
         PROPERTIES MACOSX_PACKAGE_LOCATION Resources
@@ -123,6 +151,30 @@ elseif(APPLE)
             MACOSX_BUNDLE_ICON_FILE GDOX.icns
             MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
     )
+    target_link_libraries(gdox PRIVATE "-framework AppKit")
+else()
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(GDOX_DBUS QUIET IMPORTED_TARGET dbus-1)
+    endif()
+    if(TARGET PkgConfig::GDOX_DBUS)
+        target_sources(
+            gdox
+            PRIVATE
+                src/platform/background_dbus_linux.c
+                src/platform/background_host_linux.c
+                src/platform/background_menu_linux.c
+                src/platform/instance_guard_posix.c
+        )
+        target_link_libraries(gdox PRIVATE PkgConfig::GDOX_DBUS)
+    else()
+        target_sources(
+            gdox
+            PRIVATE
+                src/platform/background_host_stub.c
+                src/platform/instance_guard_posix.c
+        )
+    endif()
 endif()
 target_include_directories(gdox PRIVATE src)
 target_link_libraries(
@@ -135,6 +187,13 @@ target_link_libraries(
 )
 gdox_enable_c_warnings(gdox)
 gdox_enable_cxx_warnings(gdox)
+if(BUILD_TESTING)
+    add_test(NAME cli.version COMMAND gdox --version)
+    set_tests_properties(
+        cli.version
+        PROPERTIES PASS_REGULAR_EXPRESSION "GDOX ${PROJECT_VERSION}"
+    )
+endif()
 if(MINGW)
     target_link_options(
         gdox

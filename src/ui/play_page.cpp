@@ -1,4 +1,5 @@
 #include "ui/presentation_internal.hpp"
+#include "ui/playback_labels.h"
 
 #include <algorithm>
 
@@ -97,7 +98,9 @@ bool draw_disc(const gdox_app_snapshot &snapshot)
     );
 
     if (hovered && snapshot.can_start) {
-        ImGui::SetTooltip("Start xemu");
+        const gdox_playback_labels labels =
+            gdox_playback_labels_for_backend(snapshot.media_backend);
+        ImGui::SetTooltip("%s", labels.start);
     }
     ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + diameter));
     return pressed;
@@ -114,10 +117,42 @@ bool centered_link(const char *label)
     return ImGui::TextLink(label);
 }
 
+void centered_wrapped_text(const char *text, const ImVec4 &color)
+{
+    const float available = ImGui::GetContentRegionAvail().x;
+    const float wrap_width = std::min(available, 620.0F);
+    const ImVec2 text_size = ImGui::CalcTextSize(
+        text,
+        nullptr,
+        false,
+        wrap_width
+    );
+    ImGui::SetCursorPosX(
+        ImGui::GetCursorPosX()
+            + std::max(0.0F, (available - text_size.x) * 0.5F)
+    );
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap_width);
+    ImGui::TextColored(color, "%s", text);
+    ImGui::PopTextWrapPos();
+}
+
 }
 
 void draw_play(gdox_app &app, const gdox_app_snapshot &snapshot)
 {
+    const gdox_playback_labels labels =
+        gdox_playback_labels_for_backend(snapshot.media_backend);
+    const gdox_playback_setup_notice setup =
+        gdox_playback_setup_for_media(
+            snapshot.media_platform,
+            snapshot.xemu_ready,
+            snapshot.xemu_setup
+        );
+    const char *attention = gdox_playback_attention_notice(
+        snapshot.phase == GDOX_APP_ATTENTION,
+        snapshot.notice
+    );
+
     ImGui::BeginChild(
         "play-content",
         ImVec2(0.0F, -footer_height),
@@ -135,6 +170,17 @@ void draw_play(gdox_app &app, const gdox_app_snapshot &snapshot)
     ImGui::Dummy(ImVec2(0.0F, 4.0F));
     centered_text(snapshot.disc, ImVec4(0.91F, 0.93F, 0.94F, 1.0F));
     centered_text(snapshot.drive, muted);
+    if (attention[0] != '\0') {
+        ImGui::Dummy(ImVec2(0.0F, 3.0F));
+        centered_wrapped_text(attention, warning);
+    }
+    if (setup.action == GDOX_PLAYBACK_SETUP_OPEN_SOURCES) {
+        ImGui::Dummy(ImVec2(0.0F, 3.0F));
+        centered_wrapped_text(setup.message, warning);
+        if (centered_link("Open Sources to finish xemu setup")) {
+            gdox_app_select_page(&app, GDOX_APP_PAGE_SOURCES);
+        }
+    }
     ImGui::Dummy(ImVec2(0.0F, 5.0F));
     ImGui::PushStyleColor(
         ImGuiCol_TextLink,
@@ -156,7 +202,7 @@ void draw_play(gdox_app &app, const gdox_app_snapshot &snapshot)
         (ImGui::GetContentRegionAvail().x - gap * 2.0F) / 3.0F
     );
     if (action_button(
-            "Start xemu",
+            labels.start,
             snapshot.can_start,
             ImVec2(width, 42.0F)
         )) {
@@ -164,7 +210,7 @@ void draw_play(gdox_app &app, const gdox_app_snapshot &snapshot)
     }
     ImGui::SameLine(0.0F, gap);
     if (action_button(
-            "Restart xemu",
+            labels.restart,
             snapshot.can_restart,
             ImVec2(width, 42.0F)
         )) {
@@ -172,7 +218,7 @@ void draw_play(gdox_app &app, const gdox_app_snapshot &snapshot)
     }
     ImGui::SameLine(0.0F, gap);
     if (action_button(
-            "Close xemu",
+            labels.close,
             snapshot.can_close,
             ImVec2(width, 42.0F)
         )) {

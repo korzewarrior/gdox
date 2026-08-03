@@ -2,12 +2,19 @@
 setlocal
 
 if "%~2"=="" (
-    echo Usage: build_msvc.cmd SOURCE_ROOT BUILD_DIRECTORY 1>&2
+    echo Usage: build_msvc.cmd SOURCE_ROOT BUILD_DIRECTORY [--skip-host-neutral-tests] 1>&2
     exit /b 2
 )
 
 set "SOURCE_ROOT=%~f1"
 set "BUILD_DIRECTORY=%~f2"
+set "CTEST_FILTER="
+if /i "%~3"=="--skip-host-neutral-tests" (
+    set "CTEST_FILTER=--label-exclude host-neutral"
+) else if not "%~3"=="" (
+    echo Unknown option: %~3 1>&2
+    exit /b 2
+)
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 
 if not exist "%VSWHERE%" (
@@ -49,5 +56,5 @@ if errorlevel 1 exit /b %errorlevel%
 "%CMAKE%" --build "%BUILD_DIRECTORY%" --parallel 2
 if errorlevel 1 exit /b %errorlevel%
 
-"%CTEST%" --test-dir "%BUILD_DIRECTORY%" --output-on-failure
+"%CTEST%" --test-dir "%BUILD_DIRECTORY%" %CTEST_FILTER% --output-on-failure
 exit /b %errorlevel%

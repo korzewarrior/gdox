@@ -1,0 +1,203 @@
+#!/bin/bash
+set -u
+
+runtime_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+xenia="$runtime_directory/@GDOX_XENIA_EXECUTABLE@"
+expected_size='@GDOX_XENIA_EXECUTABLE_SIZE@'
+expected_sha256='@GDOX_XENIA_EXECUTABLE_SHA256@'
+
+fail()
+{
+    printf 'GDOX Xenia launcher: %s\n' "$1" >&2
+    exit 1
+}
+
+if [ ! -f "$xenia" ]; then
+    fail "the bundled Xenia executable is missing"
+fi
+
+actual_size=$(wc -c < "$xenia") || fail "could not read the bundled Xenia executable"
+actual_size=${actual_size//[[:space:]]/}
+if [ "$actual_size" != "$expected_size" ]; then
+    fail "the bundled Xenia executable has the wrong size"
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+    actual_sha256=$(sha256sum -- "$xenia") || fail "could not hash the bundled Xenia executable"
+elif command -v shasum >/dev/null 2>&1; then
+    actual_sha256=$(shasum -a 256 -- "$xenia") || fail "could not hash the bundled Xenia executable"
+else
+    fail "sha256sum or shasum is required to verify Xenia"
+fi
+actual_sha256=${actual_sha256%%[[:space:]]*}
+if [ "$actual_sha256" != "$expected_sha256" ]; then
+    fail "the bundled Xenia executable failed its integrity check"
+fi
+
+discovery_home=${GDOX_XENIA_DISCOVERY_HOME:-${HOME:-}}
+if [ -n "${GDOX_PROTON:-}" ]; then
+    [ -x "$GDOX_PROTON" ] || fail "GDOX_PROTON does not name an executable Proton launcher"
+    proton=$GDOX_PROTON
+else
+    proton=
+    if [ -n "$discovery_home" ]; then
+        for candidate in \
+            "$discovery_home/.local/share/Steam/steamapps/common/Proton - Experimental/proton" \
+            "$discovery_home/.steam/root/steamapps/common/Proton - Experimental/proton" \
+            "$discovery_home/.steam/steam/steamapps/common/Proton - Experimental/proton" \
+            "$discovery_home/.steam/debian-installation/steamapps/common/Proton - Experimental/proton" \
+            "$discovery_home/.var/app/com.valvesoftware.Steam/data/Steam/steamapps/common/Proton - Experimental/proton"
+        do
+            if [ -x "$candidate" ]; then
+                proton=$candidate
+                break
+            fi
+        done
+    fi
+    [ -n "$proton" ] || fail "Proton Experimental is not installed; set GDOX_PROTON to its launcher"
+fi
+unset GDOX_XENIA_DISCOVERY_HOME
+
+if [ "${1:-}" = "--gdox-preflight" ] && [ "$#" -eq 1 ]; then
+    exit 0
+fi
+
+if [ -z "${STEAM_COMPAT_CLIENT_INSTALL_PATH:-}" ]; then
+    proton_common=$(dirname -- "$(dirname -- "$proton")")
+    STEAM_COMPAT_CLIENT_INSTALL_PATH=$(dirname -- "$(dirname -- "$proton_common")")
+    export STEAM_COMPAT_CLIENT_INSTALL_PATH
+fi
+
+session_cache=
+for argument in "$@"; do
+    case "$argument" in
+        --cache_root=/*)
+            session_cache=${argument#*=}
+            ;;
+    esac
+done
+[ -n "$session_cache" ] || fail "the isolated session cache path is missing"
+
+HOME="$session_cache/home"
+XDG_CACHE_HOME="$session_cache/xdg-cache"
+XDG_CONFIG_HOME="$session_cache/xdg-config"
+XDG_DATA_HOME="$session_cache/xdg-data"
+XDG_STATE_HOME="$session_cache/xdg-state"
+XDG_RUNTIME_DIR="$session_cache/xdg-runtime"
+TMPDIR="$session_cache/tmp"
+STEAM_COMPAT_DATA_PATH="$session_cache/proton"
+STEAM_COMPAT_INSTALL_PATH="$session_cache/install"
+STEAM_COMPAT_MEDIA_PATH="$session_cache/proton-media"
+STEAM_COMPAT_TRANSCODED_MEDIA_PATH="$session_cache/proton-transcoded"
+PROTON_LOG_DIR="$session_cache/proton-logs"
+PROTON_DEBUG_DIR="$session_cache/proton-debug"
+PROTON_CRASH_REPORT_DIR="$session_cache/proton-crash"
+WINEPREFIX="$STEAM_COMPAT_DATA_PATH/pfx"
+export HOME XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME
+export XDG_RUNTIME_DIR TMPDIR STEAM_COMPAT_DATA_PATH
+export STEAM_COMPAT_INSTALL_PATH STEAM_COMPAT_MEDIA_PATH
+export STEAM_COMPAT_TRANSCODED_MEDIA_PATH
+export PROTON_LOG_DIR PROTON_DEBUG_DIR PROTON_CRASH_REPORT_DIR WINEPREFIX
+mkdir -p -- \
+    "$HOME" \
+    "$XDG_CACHE_HOME" \
+    "$XDG_CONFIG_HOME" \
+    "$XDG_DATA_HOME" \
+    "$XDG_STATE_HOME" \
+    "$XDG_RUNTIME_DIR" \
+    "$TMPDIR" \
+    "$STEAM_COMPAT_DATA_PATH" \
+    "$STEAM_COMPAT_INSTALL_PATH" \
+    "$STEAM_COMPAT_MEDIA_PATH" \
+    "$STEAM_COMPAT_TRANSCODED_MEDIA_PATH" \
+    "$PROTON_LOG_DIR" \
+    "$PROTON_DEBUG_DIR" \
+    "$PROTON_CRASH_REPORT_DIR" \
+    || fail "could not create isolated Xenia runtime directories"
+chmod 700 -- "$XDG_RUNTIME_DIR" || fail "could not secure the isolated runtime directory"
+
+steamclient=
+for candidate in \
+    "$discovery_home/.steam/sdk64/steamclient.so" \
+    "$STEAM_COMPAT_CLIENT_INSTALL_PATH/linux64/steamclient.so" \
+    "$STEAM_COMPAT_CLIENT_INSTALL_PATH/ubuntu12_64/steamclient.so"
+do
+    if [ -r "$candidate" ]; then
+        steamclient=$(readlink -f -- "$candidate") || steamclient=
+        if [ -n "$steamclient" ] && [ -f "$steamclient" ]; then
+            break
+        fi
+        steamclient=
+    fi
+done
+[ -n "$steamclient" ] \
+    || fail "Steam's 64-bit client library is unavailable for Proton"
+mkdir -p -- "$HOME/.steam/sdk64" \
+    || fail "could not create the isolated Steam client directory"
+projected_steamclient="$HOME/.steam/sdk64/steamclient.so"
+if [ -L "$projected_steamclient" ]; then
+    projected_target=$(readlink -f -- "$projected_steamclient") \
+        || fail "the isolated Steam client projection is invalid"
+    [ "$projected_target" = "$steamclient" ] \
+        || fail "the isolated Steam client projection changed"
+elif [ -e "$projected_steamclient" ]; then
+    fail "the isolated Steam client path is not a symbolic link"
+else
+    ln -s -- "$steamclient" "$projected_steamclient" \
+        || fail "could not project Steam's client library into the Xenia session"
+fi
+
+cd -- "$session_cache" || fail "could not enter the isolated Xenia runtime directory"
+
+@GDOX_XENIA_INJECTION_ENVIRONMENT@
+MESA_SHADER_CACHE_DISABLE=1
+__GL_SHADER_DISK_CACHE=0
+VKD3D_SHADER_CACHE_PATH=0
+DXVK_SHADER_CACHE=0
+DXVK_STATE_CACHE=0
+DXVK_LOG_PATH=none
+PROTON_LOG=0
+PROTON_DUMP_DEBUG_COMMANDS=0
+export MESA_SHADER_CACHE_DISABLE __GL_SHADER_DISK_CACHE
+export VKD3D_SHADER_CACHE_PATH DXVK_SHADER_CACHE DXVK_STATE_CACHE DXVK_LOG_PATH
+export PROTON_LOG PROTON_DUMP_DEBUG_COMMANDS
+
+arguments=()
+for argument in "$@"; do
+    case "$argument" in
+        --*=/*)
+            option=${argument%%=*}
+            path=${argument#*=}
+            arguments+=("$option=Z:${path//\//\\}")
+            ;;
+        /*)
+            arguments+=("Z:${argument//\//\\}")
+            ;;
+        *)
+            arguments+=("$argument")
+            ;;
+    esac
+done
+
+wineserver=$(dirname -- "$proton")/files/bin/wineserver
+proton_pid=
+
+stop_runtime()
+{
+    if [ -n "$proton_pid" ]; then
+        kill -TERM "$proton_pid" 2>/dev/null || true
+    fi
+    if [ -x "$wineserver" ]; then
+        WINEPREFIX="$STEAM_COMPAT_DATA_PATH/pfx" \
+            "$wineserver" -k >/dev/null 2>&1 || true
+    fi
+}
+
+trap stop_runtime INT TERM HUP
+
+"$proton" run "$xenia" "${arguments[@]}" &
+proton_pid=$!
+wait "$proton_pid"
+status=$?
+stop_runtime
+exit "$status"

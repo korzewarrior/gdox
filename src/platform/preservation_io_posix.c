@@ -9,11 +9,21 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <time.h>
 #include <unistd.h>
 
 struct gdox_preservation_file {
     int descriptor;
 };
+
+double gdox_preservation_monotonic_seconds(void)
+{
+    struct timespec value;
+    if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) {
+        return 0.0;
+    }
+    return (double)value.tv_sec + (double)value.tv_nsec / 1000000000.0;
+}
 
 static void set_errno_error(
     gdox_error *error,

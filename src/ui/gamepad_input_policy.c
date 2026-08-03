@@ -8,12 +8,12 @@ void gdox_gamepad_input_initialize(gdox_gamepad_input_policy *policy)
 
 void gdox_gamepad_input_update(
     gdox_gamepad_input_policy *policy,
-    bool emulator_running,
+    bool playback_running,
     bool window_focused,
     bool all_buttons_released
 )
 {
-    if (emulator_running || !window_focused) {
+    if (playback_running || !window_focused) {
         policy->armed = false;
         policy->navigation_enabled = false;
         return;

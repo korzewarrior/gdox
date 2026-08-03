@@ -205,7 +205,12 @@ void draw_preserve(gdox_app &app, const gdox_app_snapshot &snapshot)
         ImGui::TextColored(warning, "Enter a file name, without folders.");
     }
     (void)ImGui::Checkbox("Verify the finished image", &verify);
-    if (snapshot.media_source == GDOX_MEDIA_DISC_IMAGE) {
+    if (snapshot.media_platform == GDOX_MEDIA_PLATFORM_XBOX_360) {
+        ImGui::TextColored(
+            muted,
+            "Xbox 360 preservation is not enabled in this build."
+        );
+    } else if (snapshot.media_source == GDOX_MEDIA_DISC_IMAGE) {
         ImGui::TextColored(
             muted,
             "Preservation reads from a physical disc. Switch sources on Play."

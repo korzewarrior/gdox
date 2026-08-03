@@ -1,8 +1,11 @@
 #include "gdox/live.h"
 
+#include "core/default_xbe_cache_source.h"
+#include "core/file_readahead_source.h"
+#include "core/xbe_patch_source.h"
+#include "core/xdvdfs_directory_cache.h"
 #include "gdox/xdvdfs.h"
 
-#include <stdlib.h>
 #include <string.h>
 
 static void copy_title(char output[GDOX_LIVE_TITLE_CAPACITY], const char *title)
@@ -20,6 +23,42 @@ static void copy_title(char output[GDOX_LIVE_TITLE_CAPACITY], const char *title)
 static bool close_source(gdox_sector_source *source, gdox_error *error)
 {
     return !gdox_source_is_valid(source) || gdox_source_close(source, error);
+}
+
+static void move_source_if_valid(
+    gdox_sector_source *source,
+    gdox_sector_source *output
+)
+{
+    if (gdox_source_is_valid(source) && !gdox_source_is_valid(output)) {
+        *output = *source;
+        source->context = NULL;
+        source->ops = NULL;
+    }
+}
+
+static bool require_playable_default_xbe(
+    const gdox_xdvdfs_metadata *metadata,
+    gdox_error *error
+)
+{
+    if (metadata->default_xbe_index == GDOX_XDVDFS_NO_ENTRY) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_VOLUME,
+            "Original Xbox media has no root default.xbe"
+        );
+        return false;
+    }
+    if (!metadata->title_id_present || metadata->title_id == 0U) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_VOLUME,
+            "Original Xbox default.xbe has no valid executable identity"
+        );
+        return false;
+    }
+    return true;
 }
 
 bool gdox_live_disc_identify(
@@ -56,89 +95,100 @@ bool gdox_live_disc_identify(
     return success;
 }
 
-bool gdox_live_disc_build(
+bool gdox_live_disc_build_configured(
     gdox_sector_source *whole_source,
+    const gdox_live_disc_options *options,
     gdox_random_disc *output,
     gdox_live_disc_info *info,
     gdox_error *error
 )
 {
-    gdox_sector_source whole = {0};
     gdox_sector_source partition = {0};
-    gdox_sector_source patched = {0};
-    gdox_sector_source compact = {0};
+    gdox_sector_source directory_cached = {0};
+    gdox_sector_source prepared = {0};
+    gdox_sector_source streamed = {0};
+    gdox_sector_source compatible = {0};
     gdox_random_disc disc = {0};
     gdox_xdvdfs_volume volume;
-    gdox_xdvdfs_volume partition_volume;
     gdox_xdvdfs_metadata metadata;
-    gdox_xdvdfs_compact_stats compact_stats;
-    gdox_byte_patch *patches = NULL;
-    size_t patch_count = 0U;
+    gdox_xdvdfs_directory_cache *directory_cache = NULL;
+    uint64_t partition_sectors = 0U;
     bool success = false;
+    bool cleanup_failed = false;
     gdox_error cleanup_error;
 
     gdox_error_clear(error);
-    if (!gdox_source_is_valid(whole_source) || output == NULL
+    if (!gdox_source_is_valid(whole_source) || options == NULL
+        || output == NULL
         || gdox_disc_is_valid(output)) {
         gdox_error_set(
             error,
             GDOX_ERROR_INVALID_ARGUMENT,
-            "an open source and empty disc output are required"
+            "an open source, live-disc options, and empty disc output are required"
         );
         return false;
     }
+    if (info != NULL) {
+        memset(info, 0, sizeof(*info));
+    }
 
     memset(&metadata, 0, sizeof(metadata));
-    memset(&compact_stats, 0, sizeof(compact_stats));
     metadata.default_xbe_index = GDOX_XDVDFS_NO_ENTRY;
-    whole = *whole_source;
-    whole_source->context = NULL;
-    whole_source->ops = NULL;
-
-    if (!gdox_xdvdfs_find_volume(&whole, &volume, error)
-        || !gdox_xdvdfs_inspect(&whole, &volume, &metadata, error)
-        || !gdox_xdvdfs_collect_media_patches(
-            &whole,
+    if (!gdox_xdvdfs_find_volume(whole_source, &volume, error)
+        || !gdox_xdvdfs_inspect_with_directory_cache(
+            whole_source,
+            &volume,
             &metadata,
-            &patches,
-            &patch_count,
+            &directory_cache,
             error
         )
+        || !require_playable_default_xbe(&metadata, error)
         || !gdox_source_make_partition(
-            &whole,
+            whole_source,
             volume.base_lba,
             &partition,
             error
         )
-        || !gdox_source_make_patched(
+        || !gdox_source_make_xdvdfs_directory_cache(
             &partition,
-            patches,
-            patch_count,
-            &patched,
+            &directory_cache,
+            &directory_cached,
+            error
+        )
+        || !gdox_source_make_default_xbe_cache(
+            &directory_cached,
+            &metadata,
+            &prepared,
+            error
+        )
+        || !gdox_source_make_file_readahead(
+            &prepared,
+            &metadata,
+            options->sequential_read_blocks,
+            &streamed,
+            error
+        )
+        || !gdox_source_make_xbe_patch_source(
+            &streamed,
+            &metadata,
+            &compatible,
             error
         )) {
         goto cleanup;
     }
-
-    partition_volume = volume;
-    partition_volume.base_lba = 0U;
-    if (!gdox_source_make_compact_xiso(
-            &patched,
-            &partition_volume,
-            &compact,
-            &compact_stats,
-            error
-        )
-        || !gdox_disc_from_source(&compact, &disc, error)) {
+    partition_sectors = gdox_source_sector_count(&compatible);
+    if (!gdox_disc_from_source(&compatible, &disc, error)) {
         goto cleanup;
     }
 
     if (info != NULL) {
+        memset(info, 0, sizeof(*info));
         copy_title(info->title, metadata.title);
         info->title_id_present = metadata.title_id_present;
         info->title_id = metadata.title_id;
-        info->input_sectors = compact_stats.input_sectors;
-        info->output_sectors = compact_stats.output_sectors;
+        info->game_partition_lba = volume.base_lba;
+        info->input_sectors = partition_sectors;
+        info->output_sectors = partition_sectors;
     }
     *output = disc;
     disc.context = NULL;
@@ -146,19 +196,52 @@ bool gdox_live_disc_build(
     success = true;
 
 cleanup:
-    free(patches);
     gdox_xdvdfs_metadata_destroy(&metadata);
+    gdox_xdvdfs_directory_cache_destroy(&directory_cache);
     if (gdox_disc_is_valid(&disc)
         && !gdox_disc_close(&disc, &cleanup_error)) {
         *error = cleanup_error;
         success = false;
+        cleanup_failed = true;
+        if (gdox_disc_is_valid(&disc)) {
+            *output = disc;
+            disc.context = NULL;
+            disc.ops = NULL;
+        }
     }
-    if (!close_source(&compact, &cleanup_error)
-        || !close_source(&patched, &cleanup_error)
-        || !close_source(&partition, &cleanup_error)
-        || !close_source(&whole, &cleanup_error)) {
+    if (!close_source(&compatible, &cleanup_error)
+        || !close_source(&streamed, &cleanup_error)
+        || !close_source(&prepared, &cleanup_error)
+        || !close_source(&directory_cached, &cleanup_error)
+        || !close_source(&partition, &cleanup_error)) {
         *error = cleanup_error;
         success = false;
+        cleanup_failed = true;
+    }
+    if (cleanup_failed && !gdox_disc_is_valid(output)) {
+        move_source_if_valid(&compatible, whole_source);
+        move_source_if_valid(&streamed, whole_source);
+        move_source_if_valid(&prepared, whole_source);
+        move_source_if_valid(&directory_cached, whole_source);
+        move_source_if_valid(&partition, whole_source);
     }
     return success;
+}
+
+bool gdox_live_disc_build(
+    gdox_sector_source *whole_source,
+    gdox_random_disc *output,
+    gdox_live_disc_info *info,
+    gdox_error *error
+)
+{
+    const gdox_live_disc_options options = {0};
+
+    return gdox_live_disc_build_configured(
+        whole_source,
+        &options,
+        output,
+        info,
+        error
+    );
 }

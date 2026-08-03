@@ -32,6 +32,9 @@ extern "C" {
 #define GDOX_ASUS_SCSI_MODEL "SDRW-08D1S-U"
 #define GDOX_ASUS_SCSI_REVISION "A202"
 #define GDOX_XGD1_TOTAL_SECTORS UINT64_C(3820880)
+#define GDOX_XGD2_TOTAL_SECTORS UINT64_C(0x3a6104)
+#define GDOX_XGD2_GAME_PARTITION_LBA UINT64_C(0x1fb20)
+#define GDOX_GP63_XGD3_GAME_PARTITION_LBA UINT64_C(0x4100)
 
 typedef enum gdox_optical_drive {
     GDOX_OPTICAL_DRIVE_NONE = 0,
@@ -47,6 +50,25 @@ typedef struct gdox_optical_presence {
     bool media_present;
     gdox_optical_drive drive;
 } gdox_optical_presence;
+
+typedef enum gdox_optical_media_profile {
+    GDOX_OPTICAL_MEDIA_UNKNOWN = 0,
+    GDOX_OPTICAL_MEDIA_XGD1,
+    GDOX_OPTICAL_MEDIA_XGD2,
+    GDOX_OPTICAL_MEDIA_XGD3,
+} gdox_optical_media_profile;
+
+typedef struct gdox_optical_media_info {
+    gdox_optical_media_profile profile;
+    uint64_t game_partition_lba;
+    uint32_t sequential_read_blocks;
+} gdox_optical_media_info;
+
+typedef enum gdox_optical_eject_completion {
+    GDOX_OPTICAL_EJECT_COMPLETION_NONE = 0,
+    GDOX_OPTICAL_EJECT_COMPLETION_TRAY_EJECTED,
+    GDOX_OPTICAL_EJECT_COMPLETION_RELEASED_FOR_MANUAL_EJECT,
+} gdox_optical_eject_completion;
 
 const char *gdox_optical_drive_name(gdox_optical_drive drive);
 bool gdox_optical_drive_can_eject(gdox_optical_drive drive);
@@ -66,8 +88,22 @@ bool gdox_optical_open(
     gdox_sector_source *source,
     gdox_error *error
 );
+bool gdox_optical_open_media(
+    gdox_optical_drive drive,
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_optical_media_info *info,
+    gdox_error *error
+);
 bool gdox_optical_eject(
     gdox_optical_drive drive,
+    gdox_error *error
+);
+/* Call only after playback, export, and source ownership have been released. */
+bool gdox_optical_complete_eject_request(
+    gdox_optical_drive drive,
+    gdox_optical_eject_completion *completion,
     gdox_error *error
 );
 

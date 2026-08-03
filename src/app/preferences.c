@@ -19,7 +19,7 @@ typedef struct decoded_fields {
     bool width;
     bool height;
     bool xemu_override;
-    bool hdd_override;
+    bool legacy_hdd_override;
     bool preservation_directory;
 } decoded_fields;
 
@@ -36,7 +36,6 @@ void gdox_preferences_defaults(gdox_preferences *preferences)
         true,
         1280U,
         720U,
-        "",
         "",
         "",
     };
@@ -246,13 +245,6 @@ static bool assign_field(
             &fields->xemu_override,
         },
         {
-            "hdd_override",
-            12U,
-            preferences->hdd_override,
-            sizeof(preferences->hdd_override),
-            &fields->hdd_override,
-        },
-        {
             "preservation_directory",
             22U,
             preferences->preservation_directory,
@@ -263,6 +255,12 @@ static bool assign_field(
     const numeric_field_description *numeric;
     unsigned long parsed;
     size_t index;
+
+    if (key_matches(key, key_bytes, "hdd_override", 12U)) {
+        /* Schema-1 compatibility: accept the retired setting once, but never
+         * retain or serialize custom HDD runtime backing. */
+        return claim_field(&fields->legacy_hdd_override);
+    }
 
     for (index = 0U; index < sizeof(strings) / sizeof(strings[0]); ++index) {
         if (key_matches(
@@ -367,12 +365,10 @@ bool gdox_preferences_save(
     gdox_error *error
 )
 {
-    char text[GDOX_EMULATOR_PATH_CAPACITY * 3U + 512U];
+    char text[GDOX_EMULATOR_PATH_CAPACITY * 2U + 512U];
     int bytes;
     const bool xemu_override =
         preferences != NULL && preferences->xemu_override[0] != '\0';
-    const bool hdd_override =
-        preferences != NULL && preferences->hdd_override[0] != '\0';
     const bool preservation_directory =
         preferences != NULL && preferences->preservation_directory[0] != '\0';
 
@@ -384,8 +380,6 @@ bool gdox_preferences_save(
         || preferences->display_fit > GDOX_EMULATOR_FIT_STRETCH
         || strchr(preferences->xemu_override, '\n') != NULL
         || strchr(preferences->xemu_override, '\r') != NULL
-        || strchr(preferences->hdd_override, '\n') != NULL
-        || strchr(preferences->hdd_override, '\r') != NULL
         || strchr(preferences->preservation_directory, '\n') != NULL
         || strchr(preferences->preservation_directory, '\r') != NULL
         || preferences->window_width < 640U
@@ -407,7 +401,6 @@ bool gdox_preferences_save(
         "window_width=%u\n"
         "window_height=%u\n"
         "%s%s%s"
-        "%s%s%s"
         "%s%s%s",
         GDOX_PREFERENCES_SCHEMA,
         preferences->auto_start ? 1U : 0U,
@@ -420,9 +413,6 @@ bool gdox_preferences_save(
         xemu_override ? "xemu_override=" : "",
         xemu_override ? preferences->xemu_override : "",
         xemu_override ? "\n" : "",
-        hdd_override ? "hdd_override=" : "",
-        hdd_override ? preferences->hdd_override : "",
-        hdd_override ? "\n" : "",
         preservation_directory ? "preservation_directory=" : "",
         preservation_directory ? preferences->preservation_directory : "",
         preservation_directory ? "\n" : ""

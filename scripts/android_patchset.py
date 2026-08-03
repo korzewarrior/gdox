@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 sys.dont_write_bytecode = True
 
@@ -88,7 +88,7 @@ def expected_tree(repository: Path, patch_root: Path) -> bytes:
         environment = index_environment(Path(name))
         git(repository, "read-tree", "HEAD", environment=environment)
         for patch in patch_files(patch_root):
-            subprocess.run(
+            result = subprocess.run(
                 [
                     "git",
                     "-C",
@@ -98,10 +98,18 @@ def expected_tree(repository: Path, patch_root: Path) -> bytes:
                     "--whitespace=error-all",
                     str(patch),
                 ],
-                check=True,
+                check=False,
                 env=environment,
                 capture_output=True,
             )
+            if result.returncode != 0:
+                detail = result.stderr.decode(
+                    "utf-8", errors="replace"
+                ).strip()
+                raise RuntimeError(
+                    f"could not apply {patch.name} to the expected tree: "
+                    f"{detail or 'Git returned no error detail'}"
+                )
         return git(repository, "write-tree", environment=environment).strip()
 
 

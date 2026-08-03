@@ -4,14 +4,23 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import shutil
 import struct
 import sys
+from pathlib import Path
 
 
 class VdfError(ValueError):
     pass
+
+
+ARTWORK_NAMES = {
+    "grid.png": "{app_id}.png",
+    "portrait.png": "{app_id}p.png",
+    "hero.png": "{app_id}_hero.png",
+    "logo.png": "{app_id}_logo.png",
+    "icon.png": "{app_id}_icon.png",
+}
 
 
 def read_string(data: bytes, offset: int) -> tuple[str, int]:
@@ -72,24 +81,23 @@ def install_for_user(user_directory: Path, artwork: Path) -> int:
     except (OSError, VdfError) as error:
         print(f"Could not inspect {shortcuts}: {error}", file=sys.stderr)
         return 0
+    missing = [name for name in ARTWORK_NAMES if not (artwork / name).is_file()]
+    if missing:
+        print(
+            "Steam artwork is incomplete: " + ", ".join(missing),
+            file=sys.stderr,
+        )
+        return 0
     grid = user_directory / "config" / "grid"
     installed = 0
-    names = {
-        "grid.png": "{app_id}.png",
-        "portrait.png": "{app_id}p.png",
-        "hero.png": "{app_id}_hero.png",
-        "logo.png": "{app_id}_logo.png",
-        "icon.png": "{app_id}_icon.png",
-    }
     for app_id in app_ids:
         grid.mkdir(parents=True, exist_ok=True)
-        for source_name, destination_name in names.items():
+        for source_name, destination_name in ARTWORK_NAMES.items():
             source = artwork / source_name
-            if source.is_file():
-                shutil.copyfile(
-                    source,
-                    grid / destination_name.format(app_id=app_id),
-                )
+            shutil.copyfile(
+                source,
+                grid / destination_name.format(app_id=app_id),
+            )
         installed += 1
     return installed
 

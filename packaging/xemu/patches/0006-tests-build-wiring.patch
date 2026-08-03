@@ -1,0 +1,2444 @@
+diff --git a/block/meson.build b/block/meson.build
+index 34b1b2a..778ef04 100644
+--- a/block/meson.build
++++ b/block/meson.build
+@@ -39,7 +39,13 @@ block_ss.add(files(
+   'throttle.c',
+   'throttle-groups.c',
+   'write-threshold.c',
+-), zstd, zlib)
++  'xbox-volatile-hdd.c',
++  'xbox-save-policy.c',
++  'xbox-save-receipt.c',
++  'xbox-save-security.c',
++  'xbox-save-vault.c',
++  'xbox-save-migration.c',
++), zstd, zlib, advapi32)
+ 
+ system_ss.add(when: 'CONFIG_TCG', if_true: files('blkreplay.c'))
+ system_ss.add(files('block-ram-registrar.c'))
+diff --git a/meson.build b/meson.build
+index 82e5f5a..22ffd99 100644
+--- a/meson.build
++++ b/meson.build
+@@ -855,6 +855,7 @@ endif
+ 
+ util = cc.find_library('util', required: false)
+ winmm = []
++advapi32 = []
+ socket = []
+ version_res = []
+ coref = []
+@@ -875,6 +876,7 @@ if host_os == 'windows'
+   synchronization = cc.find_library('synchronization', required: true)
+   socket = cc.find_library('ws2_32', required: true)
+   winmm = cc.find_library('winmm', required: true)
++  advapi32 = cc.find_library('advapi32', required: true)
+   crypt32 = cc.find_library('crypt32')
+ 
+   win = import('windows')
+diff --git a/tests/unit/meson.build b/tests/unit/meson.build
+index bd58029..2a9e8f1 100644
+--- a/tests/unit/meson.build
++++ b/tests/unit/meson.build
+@@ -45,6 +45,9 @@ tests = {
+   'test-qemu-opts': [],
+   'test-keyval': [testqapi],
+   'test-logging': [],
++  'test-xemu-gdox-runtime': [
++    meson.project_source_root() / 'ui/xemu-gdox-runtime.c'
++  ],
+   'test-qapi-util': [],
+   'test-interval-tree': [],
+   'test-fifo': [],
+@@ -74,6 +77,8 @@ if have_block
+     'test-blockjob-txn': [testblock],
+     'test-block-backend': [testblock],
+     'test-block-iothread': [testblock],
++    'test-xbox-volatile-hdd': [testblock],
++    'test-xbox-save-vault': [testblock],
+     'test-write-threshold': [testblock],
+     'test-crypto-hash': [crypto],
+     'test-crypto-hmac': [crypto],
+@@ -167,6 +172,11 @@ test_env = environment()
+ test_env.set('G_TEST_SRCDIR', meson.current_source_dir())
+ test_env.set('G_TEST_BUILDDIR', meson.current_build_dir())
+ 
++test('test-xemu-version',
++     find_program('test-xemu-version.sh'),
++     args: [meson.project_source_root()],
++     suite: ['unit'])
++
+ slow_tests = {
+   'test-aio-multithread' : 120,
+   'test-bufferiszero': 60,
+diff --git a/tests/unit/xemu-gdox-test-security.h b/tests/unit/xemu-gdox-test-security.h
+new file mode 100644
+index 0000000..0ad7d70
+--- /dev/null
++++ b/tests/unit/xemu-gdox-test-security.h
+@@ -0,0 +1,81 @@
++/*
++ * Private temporary storage for GDOX xemu tests
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef XEMU_GDOX_TEST_SECURITY_H
++#define XEMU_GDOX_TEST_SECURITY_H
++
++#include <glib/gstdio.h>
++
++#ifdef _WIN32
++#include <aclapi.h>
++#endif
++
++static char *gdox_test_private_directory_new(const char *template_name)
++{
++    GError *error = NULL;
++
++#ifdef _WIN32
++    g_autofree void *user_buffer = NULL;
++    g_autofree ACL *acl = NULL;
++    g_autofree gunichar2 *wide = NULL;
++    HANDLE token = NULL;
++    TOKEN_USER *user;
++    TOKEN_OWNER default_owner;
++    DWORD user_bytes = 0U;
++    DWORD acl_bytes;
++    DWORD status;
++
++    g_assert_true(OpenProcessToken(
++        GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_DEFAULT, &token));
++    g_assert_false(GetTokenInformation(
++        token, TokenUser, NULL, 0U, &user_bytes));
++    g_assert_cmpuint(GetLastError(), ==, ERROR_INSUFFICIENT_BUFFER);
++    g_assert_cmpuint(user_bytes, >, 0U);
++    user_buffer = g_malloc(user_bytes);
++    g_assert_true(GetTokenInformation(
++        token, TokenUser, user_buffer, user_bytes, &user_bytes));
++    user = user_buffer;
++    default_owner = (TOKEN_OWNER){ .Owner = user->User.Sid };
++    g_assert_true(SetTokenInformation(
++        token, TokenOwner, &default_owner, sizeof(default_owner)));
++#endif
++
++    char *directory = g_dir_make_tmp(template_name, &error);
++
++    g_assert_no_error(error);
++    g_assert_nonnull(directory);
++
++#ifdef _WIN32
++    acl_bytes = (DWORD)sizeof(*acl) + (DWORD)sizeof(ACCESS_ALLOWED_ACE) -
++                (DWORD)sizeof(DWORD) + GetLengthSid(user->User.Sid);
++    acl = g_malloc(acl_bytes);
++    g_assert_true(InitializeAcl(acl, acl_bytes, ACL_REVISION));
++    g_assert_true(AddAccessAllowedAceEx(
++        acl,
++        ACL_REVISION,
++        OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
++        FILE_ALL_ACCESS,
++        user->User.Sid));
++    wide = g_utf8_to_utf16(directory, -1, NULL, NULL, NULL);
++    g_assert_nonnull(wide);
++    status = SetNamedSecurityInfoW(
++        (LPWSTR)wide,
++        SE_FILE_OBJECT,
++        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION |
++            PROTECTED_DACL_SECURITY_INFORMATION,
++        user->User.Sid,
++        NULL,
++        acl,
++        NULL);
++    g_assert_cmpuint(status, ==, ERROR_SUCCESS);
++    g_assert_true(CloseHandle(token));
++#else
++    g_assert_cmpint(g_chmod(directory, 0700), ==, 0);
++#endif
++    return directory;
++}
++
++#endif
+diff --git a/tests/unit/test-xbox-save-vault.c b/tests/unit/test-xbox-save-vault.c
+new file mode 100644
+index 0000000..b7f460c
+--- /dev/null
++++ b/tests/unit/test-xbox-save-vault.c
+@@ -0,0 +1,1479 @@
++/*
++ * Logical Original Xbox save vault tests
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "block/xbox-save-vault.h"
++#include "block/xbox-save-migration.h"
++#include "block/xbox-save-receipt.h"
++#include "block/block-global-state.h"
++#include "block/xbox-volatile-hdd.h"
++#include "qapi/error.h"
++#include "qemu/bswap.h"
++#include "qemu/cutils.h"
++#include "qemu/units.h"
++#include "qemu/main-loop.h"
++#include "tests/unit/xemu-gdox-test-security.h"
++
++#include <glib/gstdio.h>
++
++#ifndef _WIN32
++#include <sys/resource.h>
++#include <sys/wait.h>
++#endif
++
++#define TEST_PAGE_BYTES 4096U
++#define TEST_E_BYTES UINT64_C(0x1312d6000)
++#define TEST_CLUSTER_BYTES (16U * KiB)
++#define TEST_HEADER_BYTES 40U
++#define TEST_HEADER_V2_BYTES 76U
++#define TEST_ENTRY_BYTES 20U
++#define TEST_DIGEST_BYTES 32U
++
++typedef struct TestDisk {
++    GHashTable *pages;
++    unsigned int reads;
++} TestDisk;
++
++typedef struct TestArchiveEntry {
++    uint8_t type;
++    uint8_t attributes;
++    const char *path;
++    const uint8_t *data;
++    uint32_t bytes;
++} TestArchiveEntry;
++
++static TestDisk *test_disk_new(void)
++{
++    TestDisk *disk = g_new0(TestDisk, 1);
++
++    disk->pages = g_hash_table_new_full(g_int64_hash, g_int64_equal,
++                                        g_free, g_free);
++    return disk;
++}
++
++static void test_disk_free(TestDisk *disk)
++{
++    g_hash_table_unref(disk->pages);
++    g_free(disk);
++}
++
++G_DEFINE_AUTOPTR_CLEANUP_FUNC(TestDisk, test_disk_free)
++
++static uint8_t *test_disk_page(TestDisk *disk, uint64_t index, bool create)
++{
++    uint8_t *page = g_hash_table_lookup(disk->pages, &index);
++
++    if (!page && create) {
++        uint64_t *key = g_new(uint64_t, 1);
++
++        *key = index;
++        page = g_malloc0(TEST_PAGE_BYTES);
++        g_hash_table_insert(disk->pages, key, page);
++    }
++    return page;
++}
++
++static int test_disk_read(void *opaque, uint64_t offset,
++                          void *buffer, size_t bytes)
++{
++    TestDisk *disk = opaque;
++    uint8_t *destination = buffer;
++
++    disk->reads++;
++    while (bytes > 0) {
++        uint64_t page_index = offset / TEST_PAGE_BYTES;
++        size_t page_offset = offset % TEST_PAGE_BYTES;
++        size_t chunk = MIN(bytes, TEST_PAGE_BYTES - page_offset);
++        uint8_t *page = test_disk_page(disk, page_index, false);
++
++        if (page) {
++            memcpy(destination, page + page_offset, chunk);
++        } else {
++            memset(destination, 0, chunk);
++        }
++        offset += chunk;
++        destination += chunk;
++        bytes -= chunk;
++    }
++    return 0;
++}
++
++static int test_disk_write(void *opaque, uint64_t offset,
++                           const void *buffer, size_t bytes)
++{
++    TestDisk *disk = opaque;
++    const uint8_t *source = buffer;
++
++    while (bytes > 0) {
++        uint64_t page_index = offset / TEST_PAGE_BYTES;
++        size_t page_offset = offset % TEST_PAGE_BYTES;
++        size_t chunk = MIN(bytes, TEST_PAGE_BYTES - page_offset);
++        uint8_t *page = test_disk_page(disk, page_index, true);
++
++        memcpy(page + page_offset, source, chunk);
++        offset += chunk;
++        source += chunk;
++        bytes -= chunk;
++    }
++    return 0;
++}
++
++static uint64_t test_cluster_offset(void)
++{
++    uint64_t nominal_clusters = TEST_E_BYTES / TEST_CLUSTER_BYTES + 1U;
++    uint64_t fat_bytes = ROUND_UP(nominal_clusters * 4U, TEST_PAGE_BYTES);
++
++    return XBOX_VOLATILE_HDD_E_START + TEST_PAGE_BYTES + fat_bytes;
++}
++
++static void test_set_fat(TestDisk *disk, uint32_t cluster, uint32_t value)
++{
++    uint8_t raw[4];
++
++    stl_le_p(raw, value);
++    test_disk_write(disk, XBOX_VOLATILE_HDD_E_START + TEST_PAGE_BYTES +
++                          (uint64_t)cluster * 4U, raw, sizeof(raw));
++}
++
++static void test_put_dirent(uint8_t *cluster, unsigned int index,
++                            const char *name, uint8_t attributes,
++                            uint32_t first_cluster, uint32_t file_bytes)
++{
++    uint8_t *entry = cluster + index * 64U;
++    size_t name_bytes = strlen(name);
++
++    memset(entry, 0xff, 64U);
++    entry[0] = name_bytes;
++    entry[1] = attributes;
++    memcpy(entry + 2U, name, name_bytes);
++    stl_le_p(entry + 44U, first_cluster);
++    stl_le_p(entry + 48U, file_bytes);
++}
++
++static TestDisk *test_disk_seed(void)
++{
++    TestDisk *disk = test_disk_new();
++    uint8_t superblock[TEST_PAGE_BYTES] = { 0 };
++    g_autofree uint8_t *root = g_malloc(TEST_CLUSTER_BYTES);
++    g_autofree uint8_t *tdata = g_malloc(TEST_CLUSTER_BYTES);
++    static const uint8_t cache_data[] = "excluded title cache";
++    uint64_t clusters = test_cluster_offset();
++
++    for (uint64_t offset = 0U; offset < XBOX_SAVE_HDD_CONFIG_BYTES;
++         offset += TEST_PAGE_BYTES) {
++        uint8_t config[TEST_PAGE_BYTES];
++
++        for (size_t i = 0; i < sizeof(config); i++) {
++            config[i] = (uint8_t)((offset + i) * 29U + 7U);
++        }
++        test_disk_write(disk, offset, config, sizeof(config));
++    }
++
++    memcpy(superblock, "FATX", 4U);
++    stl_le_p(superblock + 8U, 32U);
++    stl_le_p(superblock + 12U, 1U);
++    test_disk_write(disk, XBOX_VOLATILE_HDD_E_START,
++                    superblock, sizeof(superblock));
++    test_set_fat(disk, 0U, UINT32_C(0xfffffff8));
++    test_set_fat(disk, 1U, UINT32_MAX);
++    test_set_fat(disk, 10U, UINT32_MAX);
++    test_set_fat(disk, 11U, UINT32_MAX);
++
++    memset(root, 0xff, TEST_CLUSTER_BYTES);
++    test_put_dirent(root, 0U, "TDATA", 0x10U, 10U, 0U);
++    test_disk_write(disk, clusters, root, TEST_CLUSTER_BYTES);
++
++    memset(tdata, 0xff, TEST_CLUSTER_BYTES);
++    test_put_dirent(tdata, 0U, "CACHE.BIN", 0x00U, 11U,
++                    sizeof(cache_data));
++    test_disk_write(disk, clusters + 9U * TEST_CLUSTER_BYTES,
++                    tdata, TEST_CLUSTER_BYTES);
++    test_disk_write(disk, clusters + 10U * TEST_CLUSTER_BYTES,
++                    cache_data, sizeof(cache_data));
++    return disk;
++}
++
++static void test_disk_set_tdata_inventory(TestDisk *disk, bool zero_file)
++{
++    g_autofree uint8_t *tdata = g_malloc(TEST_CLUSTER_BYTES);
++    uint64_t offset = test_cluster_offset() + 9U * TEST_CLUSTER_BYTES;
++
++    memset(tdata, 0xff, TEST_CLUSTER_BYTES);
++    if (zero_file) {
++        test_put_dirent(tdata, 0U, "ZERO.BIN", 0x00U, 0U, 0U);
++    }
++    test_disk_write(disk, offset, tdata, TEST_CLUSTER_BYTES);
++}
++
++static char *test_directory_new(void)
++{
++    return gdox_test_private_directory_new("xemu-save-vault-XXXXXX");
++}
++
++static char *test_slot_path(const char *directory, unsigned int slot)
++{
++    return g_strdup_printf("%s%coriginal-xbox-udata-%u.gdox",
++                           directory, G_DIR_SEPARATOR, slot);
++}
++
++static char *test_receipt_path(const char *directory)
++{
++    return g_build_filename(directory,
++                            "original-xbox-migration-receipt-v1.gdox",
++                            NULL);
++}
++
++static void test_directory_free(char *directory)
++{
++    g_autoptr(GDir) listing = g_dir_open(directory, 0, NULL);
++    const char *name;
++
++    while (listing && (name = g_dir_read_name(listing))) {
++        g_autofree char *path = g_build_filename(directory, name, NULL);
++
++        g_assert_cmpint(g_unlink(path), ==, 0);
++    }
++    g_clear_pointer(&listing, g_dir_close);
++    g_assert_cmpint(g_rmdir(directory), ==, 0);
++    g_free(directory);
++}
++
++static void test_append_u16(GByteArray *bytes, uint16_t value)
++{
++    uint8_t raw[2];
++
++    stw_le_p(raw, value);
++    g_byte_array_append(bytes, raw, sizeof(raw));
++}
++
++static void test_append_u32(GByteArray *bytes, uint32_t value)
++{
++    uint8_t raw[4];
++
++    stl_le_p(raw, value);
++    g_byte_array_append(bytes, raw, sizeof(raw));
++}
++
++static void test_append_u64(GByteArray *bytes, uint64_t value)
++{
++    uint8_t raw[8];
++
++    stq_le_p(raw, value);
++    g_byte_array_append(bytes, raw, sizeof(raw));
++}
++
++static GByteArray *test_archive_build(uint64_t generation,
++                                      const TestArchiveEntry *entries,
++                                      size_t count)
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    GByteArray *bytes = g_byte_array_new();
++    uint8_t digest[TEST_DIGEST_BYTES];
++    uint64_t logical_bytes = 0U;
++    gsize digest_bytes = sizeof(digest);
++
++    for (size_t i = 0; i < count; i++) {
++        logical_bytes += entries[i].type == 2U ? entries[i].bytes : 0U;
++    }
++    g_byte_array_append(bytes, (const uint8_t *)"GDOXSAV1", 8U);
++    test_append_u32(bytes, 1U);
++    test_append_u32(bytes, TEST_HEADER_BYTES);
++    test_append_u64(bytes, generation);
++    test_append_u32(bytes, count);
++    test_append_u32(bytes, 0U);
++    test_append_u64(bytes, logical_bytes);
++    for (size_t i = 0; i < count; i++) {
++        const TestArchiveEntry *entry = &entries[i];
++        size_t path_bytes = strlen(entry->path);
++
++        g_byte_array_append(bytes,
++                            (const uint8_t[]){ entry->type,
++                                               entry->attributes }, 2U);
++        test_append_u16(bytes, path_bytes);
++        test_append_u32(bytes, entry->bytes);
++        g_byte_array_append(bytes, (const uint8_t[12]){ 0 }, 12U);
++        g_byte_array_append(bytes, (const uint8_t *)entry->path, path_bytes);
++        if (entry->type == 2U && entry->bytes) {
++            g_byte_array_append(bytes, entry->data, entry->bytes);
++        }
++    }
++    g_checksum_update(checksum, bytes->data, bytes->len);
++    g_checksum_get_digest(checksum, digest, &digest_bytes);
++    g_assert_cmpuint(digest_bytes, ==, sizeof(digest));
++    g_byte_array_append(bytes, digest, sizeof(digest));
++    return bytes;
++}
++
++static void test_archive_write(const char *directory, unsigned int slot,
++                               const GByteArray *bytes)
++{
++    g_autofree char *path = test_slot_path(directory, slot);
++    int fd = g_open(path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
++
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(qemu_write_full(fd, bytes->data, bytes->len),
++                    ==, bytes->len);
++    g_assert_cmpint(qemu_close(fd), ==, 0);
++}
++
++static GByteArray *test_archive_sample(uint64_t generation)
++{
++    static uint8_t large_file[TEST_CLUSTER_BYTES + 211U];
++    static const uint8_t nickname[] = "Preservation";
++    static bool initialized;
++    TestArchiveEntry entries[] = {
++        { 1U, 0x10U, "4d530064", NULL, 0U },
++        { 2U, 0x04U, "4d530064/SaveMeta.xbx", large_file,
++          sizeof(large_file) },
++        { 1U, 0x10U, "4d5307e6", NULL, 0U },
++        { 2U, 0x00U, "4d5307e6/empty.bin", NULL, 0U },
++        { 2U, 0x00U, "NICKNAME.XBN", nickname, sizeof(nickname) },
++    };
++
++    if (!initialized) {
++        for (size_t i = 0; i < sizeof(large_file); i++) {
++            large_file[i] = (uint8_t)(i * 37U + 11U);
++        }
++        initialized = true;
++    }
++    return test_archive_build(generation, entries, ARRAY_SIZE(entries));
++}
++
++static XboxSaveVaultIo test_io(TestDisk *disk)
++{
++    return (XboxSaveVaultIo) {
++        .opaque = disk,
++        .read = test_disk_read,
++        .write = test_disk_write,
++        .disk_bytes = XBOX_VOLATILE_HDD_E_END,
++    };
++}
++
++static bool test_verify_source(void *opaque, Error **errp)
++{
++    unsigned int *calls = opaque;
++
++    (*calls)++;
++    return true;
++}
++
++static bool test_reject_source(void *opaque, Error **errp)
++{
++    unsigned int *calls = opaque;
++
++    (*calls)++;
++    error_setg(errp, "Legacy source changed");
++    return false;
++}
++
++static bool test_verify_complete_proof(void *opaque, Error **errp)
++{
++    const XboxSaveVaultProof *proof = opaque;
++
++    if (!proof->vault_reopened || !proof->reprojected ||
++        !proof->roundtrip_verified) {
++        error_setg(errp, "Migration proof was incomplete before verification");
++        return false;
++    }
++    return true;
++}
++
++typedef struct TestPublishRace {
++    const char *directory;
++    const GByteArray *archive;
++} TestPublishRace;
++
++static bool test_create_publication_target(void *opaque, Error **errp)
++{
++    TestPublishRace *race = opaque;
++
++    test_archive_write(race->directory, 0U, race->archive);
++    return true;
++}
++
++typedef struct TestCorruptWrite {
++    TestDisk *disk;
++} TestCorruptWrite;
++
++static int test_corrupt_payload_write(void *opaque, uint64_t offset,
++                                      const void *buffer, size_t bytes)
++{
++    TestCorruptWrite *corrupt = opaque;
++
++    if (bytes == TEST_CLUSTER_BYTES && !buffer_is_zero(buffer, bytes)) {
++        g_autofree uint8_t *changed = g_memdup2(buffer, bytes);
++
++        changed[0] ^= 0x80U;
++        return test_disk_write(corrupt->disk, offset, changed, bytes);
++    }
++    return test_disk_write(corrupt->disk, offset, buffer, bytes);
++}
++
++static int test_corrupt_read(void *opaque, uint64_t offset,
++                             void *buffer, size_t bytes)
++{
++    TestCorruptWrite *corrupt = opaque;
++
++    return test_disk_read(corrupt->disk, offset, buffer, bytes);
++}
++
++typedef struct TestReadFailure {
++    TestDisk *disk;
++    bool fail;
++} TestReadFailure;
++
++static int test_failing_read(void *opaque, uint64_t offset,
++                             void *buffer, size_t bytes)
++{
++    TestReadFailure *failure = opaque;
++
++    if (failure->fail && offset < XBOX_SAVE_HDD_CONFIG_BYTES) {
++        return -EIO;
++    }
++    return test_disk_read(failure->disk, offset, buffer, bytes);
++}
++
++static void test_roundtrip_and_scope(void)
++{
++    g_autofree char *source = test_directory_new();
++    g_autofree char *destination = test_directory_new();
++    g_autofree char *destination_slot = test_slot_path(destination, 0U);
++    g_autoptr(GByteArray) archive = test_archive_sample(1U);
++    g_autofree gchar *destination_bytes = NULL;
++    g_autofree gchar *roundtrip_bytes = NULL;
++    gsize destination_size;
++    gsize roundtrip_size;
++    g_autoptr(TestDisk) disk = test_disk_seed();
++    g_autoptr(TestDisk) restored = test_disk_seed();
++    g_autoptr(TestDisk) validation_clean = test_disk_seed();
++    XboxSaveVaultIo io = test_io(disk);
++    XboxSaveVaultIo restored_io = test_io(restored);
++    XboxSaveVaultIo validation_io = test_io(validation_clean);
++    XboxSaveVaultProof proof;
++    g_autofree char *roundtrip = test_directory_new();
++    g_autofree char *roundtrip_slot = test_slot_path(roundtrip, 0U);
++
++    test_archive_write(source, 0U, archive);
++    g_assert_true(xbox_save_vault_validate_roundtrip(
++        source, &validation_io, &proof, &error_abort));
++    g_assert_cmpuint(proof.vault_version, ==, 2U);
++    g_assert_cmpuint(proof.udata_entries, ==, 5U);
++    g_assert_cmpuint(proof.hdd_config_bytes, ==,
++                     XBOX_SAVE_HDD_CONFIG_BYTES);
++    g_assert_true(xbox_save_vault_import(source, &io, &error_abort));
++    g_assert_true(xbox_save_vault_checkpoint(destination, &io, &error_abort));
++    g_assert_true(xbox_save_vault_validate(destination, &error_abort));
++    g_assert_true(xbox_save_vault_describe(destination, &proof,
++                                           &error_abort));
++    g_assert_cmpuint(proof.vault_version, ==, 2U);
++    g_assert_cmpuint(proof.generation, ==, 1U);
++    g_assert_cmpuint(proof.hdd_config_bytes, ==,
++                     XBOX_SAVE_HDD_CONFIG_BYTES);
++    g_assert_cmpuint(proof.udata_entries, ==, 5U);
++    g_assert_cmpuint(proof.tdata_entries, ==, 0U);
++    g_assert_cmpuint(proof.unclassified_tdata_entries, ==, 0U);
++    g_assert_true(xbox_save_vault_import(destination, &restored_io,
++                                         &error_abort));
++    g_assert_true(xbox_save_vault_checkpoint(roundtrip, &restored_io,
++                                             &error_abort));
++    g_assert_true(g_file_get_contents(destination_slot, &destination_bytes,
++                                      &destination_size, NULL));
++    g_assert_true(g_file_get_contents(roundtrip_slot, &roundtrip_bytes,
++                                      &roundtrip_size, NULL));
++    g_assert_cmpuint(destination_size, ==, roundtrip_size);
++    g_assert_cmpmem(destination_bytes, destination_size,
++                    roundtrip_bytes, roundtrip_size);
++    for (uint64_t offset = 0U; offset < XBOX_SAVE_HDD_CONFIG_BYTES;
++         offset += TEST_PAGE_BYTES) {
++        g_assert_cmpmem(test_disk_page(disk, offset / TEST_PAGE_BYTES,
++                                       false), TEST_PAGE_BYTES,
++                        test_disk_page(restored, offset / TEST_PAGE_BYTES,
++                                       false), TEST_PAGE_BYTES);
++    }
++
++    test_directory_free(g_steal_pointer(&source));
++    test_directory_free(g_steal_pointer(&destination));
++    test_directory_free(g_steal_pointer(&roundtrip));
++}
++
++static void test_corrupt_generation_fallback(void)
++{
++    g_autofree char *directory = test_directory_new();
++    g_autoptr(GByteArray) archive = test_archive_sample(1U);
++    static const uint8_t corrupt[] = "not a save vault";
++    g_autofree char *slot = NULL;
++    static const uint8_t alternate_data[] = "Different";
++    TestArchiveEntry alternate_entry = {
++        2U, 0x00U, "NICKNAME.XBN", alternate_data, sizeof(alternate_data),
++    };
++    g_autoptr(GByteArray) alternate = NULL;
++    Error *error = NULL;
++    int fd;
++
++    test_archive_write(directory, 0U, archive);
++    slot = test_slot_path(directory, 1U);
++    fd = g_open(slot, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(qemu_write_full(fd, corrupt, sizeof(corrupt)),
++                    ==, sizeof(corrupt));
++    g_assert_cmpint(qemu_close(fd), ==, 0);
++    g_assert_true(xbox_save_vault_validate(directory, &error_abort));
++
++    g_assert_cmpint(g_unlink(slot), ==, 0);
++    alternate = test_archive_build(1U, &alternate_entry, 1U);
++    test_archive_write(directory, 1U, alternate);
++    g_assert_false(xbox_save_vault_validate(directory, &error));
++    g_assert_nonnull(error);
++    g_assert_nonnull(strstr(error_get_pretty(error), "conflict"));
++    error_free(error);
++    test_directory_free(g_steal_pointer(&directory));
++}
++
++static void test_private_and_symlink_boundaries(void)
++{
++#ifndef _WIN32
++    g_autofree char *directory = test_directory_new();
++    g_autofree char *outside = test_directory_new();
++    g_autofree char *outside_slot = test_slot_path(outside, 0U);
++    g_autofree char *slot = test_slot_path(directory, 0U);
++    g_autoptr(GByteArray) archive = test_archive_sample(1U);
++    Error *error = NULL;
++
++    test_archive_write(outside, 0U, archive);
++    g_assert_cmpint(symlink(outside_slot, slot), ==, 0);
++    g_assert_false(xbox_save_vault_validate(directory, &error));
++    g_assert_nonnull(error);
++    error_free(error);
++    error = NULL;
++    g_assert_cmpint(g_unlink(slot), ==, 0);
++
++    test_archive_write(directory, 0U, archive);
++    g_assert_cmpint(g_chmod(slot, 0644), ==, 0);
++    g_assert_false(xbox_save_vault_validate(directory, &error));
++    g_assert_nonnull(error);
++    error_free(error);
++    error = NULL;
++    g_assert_cmpint(g_chmod(slot, 0600), ==, 0);
++    g_assert_cmpint(g_chmod(directory, 0755), ==, 0);
++    g_assert_false(xbox_save_vault_validate(directory, &error));
++    g_assert_nonnull(error);
++    error_free(error);
++    error = NULL;
++    g_assert_cmpint(g_chmod(directory, 0700), ==, 0);
++
++    test_directory_free(g_steal_pointer(&directory));
++    test_directory_free(g_steal_pointer(&outside));
++#endif
++}
++
++static void test_invalid_path_and_generation_exhaustion(void)
++{
++    static const uint8_t payload[] = "invalid";
++    TestArchiveEntry invalid = {
++        2U, 0x00U, "../escape", payload, sizeof(payload),
++    };
++    g_autofree char *directory = test_directory_new();
++    g_autoptr(GByteArray) archive =
++        test_archive_build(1U, &invalid, 1U);
++    Error *error = NULL;
++
++    test_archive_write(directory, 0U, archive);
++    g_assert_false(xbox_save_vault_validate(directory, &error));
++    g_assert_nonnull(error);
++    error_free(error);
++    error = NULL;
++    test_directory_free(g_steal_pointer(&directory));
++
++    directory = test_directory_new();
++    g_clear_pointer(&archive, g_byte_array_unref);
++    archive = test_archive_sample(UINT64_MAX);
++    test_archive_write(directory, 0U, archive);
++    {
++        g_autoptr(TestDisk) disk = test_disk_seed();
++        XboxSaveVaultIo io = test_io(disk);
++
++        g_assert_false(xbox_save_vault_checkpoint(directory, &io, &error));
++        g_assert_nonnull(error);
++        g_assert_nonnull(strstr(error_get_pretty(error), "exhausted"));
++        error_free(error);
++        error = NULL;
++    }
++    test_directory_free(g_steal_pointer(&directory));
++}
++
++static void test_allocation_failure_is_controlled(void)
++{
++#ifndef _WIN32
++    const uint64_t maximum_pack = TEST_HEADER_V2_BYTES + 16U * MiB +
++                                  512U * MiB + TEST_DIGEST_BYTES;
++    g_autofree char *directory = test_directory_new();
++    g_autofree char *slot = test_slot_path(directory, 0U);
++    struct rlimit limit = { 256U * MiB, 256U * MiB };
++    pid_t child;
++    int fd = g_open(slot, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
++    int status;
++
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(ftruncate(fd, maximum_pack), ==, 0);
++    g_assert_cmpint(qemu_close(fd), ==, 0);
++    child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (child == 0) {
++        Error *error = NULL;
++        bool valid;
++
++        if (setrlimit(RLIMIT_AS, &limit) != 0) {
++            _exit(77);
++        }
++        valid = xbox_save_vault_validate(directory, &error);
++        _exit(!valid && error &&
++              strstr(error_get_pretty(error), "allocate memory") ? 0 : 1);
++    }
++    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++    if (WIFEXITED(status) && WEXITSTATUS(status) == 77) {
++        g_test_skip("RLIMIT_AS is unavailable");
++    } else {
++        g_assert_true(WIFEXITED(status));
++        g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    }
++    test_directory_free(g_steal_pointer(&directory));
++#endif
++}
++
++static void test_migration_transaction(void)
++{
++    g_autofree char *seed_vault = test_directory_new();
++    g_autofree char *destination = test_directory_new();
++    g_autofree char *destination_slot = test_slot_path(destination, 0U);
++    g_autoptr(GByteArray) archive = test_archive_sample(1U);
++    g_autoptr(TestDisk) source_disk = test_disk_seed();
++    g_autoptr(TestDisk) clean_disk = test_disk_seed();
++    XboxSaveVaultIo source_io = test_io(source_disk);
++    XboxSaveVaultIo clean_io = test_io(clean_disk);
++    XboxSaveVaultProof proof;
++    bool source_projection_complete;
++    g_autofree gchar *published = NULL;
++    gsize published_bytes;
++    unsigned int verify_calls = 0U;
++
++    test_archive_write(seed_vault, 0U, archive);
++    g_assert_true(xbox_save_vault_import(seed_vault, &source_io,
++                                         &error_abort));
++    g_assert_true(xbox_save_vault_migrate(
++        destination, &source_io, &clean_io, test_verify_source,
++        &verify_calls, &proof, &source_projection_complete, &error_abort));
++    g_assert_true(source_projection_complete);
++    g_assert_cmpuint(verify_calls, ==, 1U);
++    g_assert_cmpuint(proof.vault_version, ==, 2U);
++    g_assert_cmpuint(proof.entries, ==, 6U);
++    g_assert_cmpuint(proof.logical_bytes, ==,
++                     XBOX_SAVE_HDD_CONFIG_BYTES + TEST_CLUSTER_BYTES +
++                     211U + sizeof("Preservation"));
++    g_assert_cmpuint(proof.udata_entries, ==, 5U);
++    g_assert_cmpuint(proof.tdata_entries, ==, 0U);
++    g_assert_cmpuint(proof.unclassified_tdata_entries, ==, 1U);
++    g_assert_cmpuint(proof.unclassified_tdata_bytes, ==,
++                     sizeof("excluded title cache"));
++    g_assert_true(proof.vault_reopened);
++    g_assert_true(proof.reprojected);
++    g_assert_true(proof.roundtrip_verified);
++    g_assert_true(xbox_save_vault_validate(destination, &error_abort));
++    g_assert_true(g_file_get_contents(destination_slot, &published,
++                                      &published_bytes, NULL));
++    g_assert_cmpuint(published_bytes, >, archive->len);
++
++    test_directory_free(g_steal_pointer(&seed_vault));
++    test_directory_free(g_steal_pointer(&destination));
++}
++
++static void test_migration_failure_leaves_vault_empty(void)
++{
++    g_autofree char *seed_vault = test_directory_new();
++    g_autofree char *destination = test_directory_new();
++    g_autofree char *destination_slot = test_slot_path(destination, 0U);
++    g_autoptr(GByteArray) archive = test_archive_sample(1U);
++    g_autoptr(TestDisk) source_disk = test_disk_seed();
++    g_autoptr(TestDisk) clean_disk = test_disk_seed();
++    XboxSaveVaultIo source_io = test_io(source_disk);
++    XboxSaveVaultIo clean_io = test_io(clean_disk);
++    XboxSaveVaultProof proof;
++    bool source_projection_complete;
++    Error *error = NULL;
++    unsigned int verify_calls = 0U;
++
++    test_archive_write(seed_vault, 0U, archive);
++    g_assert_true(xbox_save_vault_import(seed_vault, &source_io,
++                                         &error_abort));
++    g_assert_false(xbox_save_vault_migrate(
++        destination, &source_io, &clean_io, test_reject_source,
++        &verify_calls, &proof, &source_projection_complete, &error));
++    g_assert_nonnull(error);
++    error_free(error);
++    g_assert_cmpuint(verify_calls, ==, 1U);
++    g_assert_false(g_file_test(destination_slot, G_FILE_TEST_EXISTS));
++
++    test_directory_free(g_steal_pointer(&seed_vault));
++    test_directory_free(g_steal_pointer(&destination));
++}
++
++static void test_migration_idempotent_and_differing(void)
++{
++    static const uint8_t alternate_data[] = "Different";
++    static const uint8_t independent_data[] = "Independent";
++    static const uint8_t file_ancestor_data[] = "Not a directory";
++    TestArchiveEntry alternate_entry = {
++        2U, 0x00U, "NICKNAME.XBN", alternate_data, sizeof(alternate_data),
++    };
++    TestArchiveEntry independent_entry = {
++        2U, 0x00U, "CURRENT.XBN", independent_data,
++        sizeof(independent_data),
++    };
++    TestArchiveEntry file_ancestor_entry = {
++        2U, 0x00U, "4d530064", file_ancestor_data,
++        sizeof(file_ancestor_data),
++    };
++    g_autofree char *seed_vault = test_directory_new();
++    g_autofree char *destination = test_directory_new();
++    g_autofree char *different = test_directory_new();
++    g_autofree char *independent = test_directory_new();
++    g_autofree char *file_ancestor = test_directory_new();
++    g_autofree char *destination_slot = test_slot_path(destination, 0U);
++    g_autofree char *different_slot = test_slot_path(different, 0U);
++    g_autofree char *different_new_slot = test_slot_path(different, 1U);
++    g_autofree char *independent_new_slot = test_slot_path(independent, 1U);
++    g_autofree char *file_ancestor_new_slot =
++        test_slot_path(file_ancestor, 1U);
++    g_autoptr(GByteArray) archive = test_archive_sample(1U);
++    g_autoptr(GByteArray) alternate =
++        test_archive_build(1U, &alternate_entry, 1U);
++    g_autoptr(GByteArray) independent_archive =
++        test_archive_build(1U, &independent_entry, 1U);
++    g_autoptr(GByteArray) file_ancestor_archive =
++        test_archive_build(1U, &file_ancestor_entry, 1U);
++    g_autoptr(TestDisk) source_disk = test_disk_seed();
++    g_autoptr(TestDisk) clean_a = test_disk_seed();
++    g_autoptr(TestDisk) clean_b = test_disk_seed();
++    g_autoptr(TestDisk) clean_c = test_disk_seed();
++    g_autoptr(TestDisk) clean_d = test_disk_seed();
++    g_autoptr(TestDisk) clean_e = test_disk_seed();
++    XboxSaveVaultIo source_io = test_io(source_disk);
++    XboxSaveVaultIo clean_io_a = test_io(clean_a);
++    XboxSaveVaultIo clean_io_b = test_io(clean_b);
++    XboxSaveVaultIo clean_io_c = test_io(clean_c);
++    XboxSaveVaultIo clean_io_d = test_io(clean_d);
++    XboxSaveVaultIo clean_io_e = test_io(clean_e);
++    XboxSaveVaultProof proof;
++    bool source_projection_complete;
++    g_autofree gchar *before = NULL;
++    g_autofree gchar *after = NULL;
++    g_autofree gchar *different_before = NULL;
++    g_autofree gchar *different_after = NULL;
++    gsize before_bytes;
++    gsize after_bytes;
++    gsize different_before_bytes;
++    gsize different_after_bytes;
++    unsigned int calls = 0U;
++
++    test_archive_write(seed_vault, 0U, archive);
++    g_assert_true(xbox_save_vault_import(seed_vault, &source_io,
++                                         &error_abort));
++    g_assert_true(xbox_save_vault_migrate(
++        destination, &source_io, &clean_io_a, test_verify_source,
++        &calls, &proof, &source_projection_complete, &error_abort));
++    g_assert_true(source_projection_complete);
++    g_assert_true(g_file_get_contents(destination_slot, &before,
++                                      &before_bytes, NULL));
++    g_assert_true(xbox_save_vault_migrate(
++        destination, &source_io, &clean_io_b, test_verify_source,
++        &calls, &proof, &source_projection_complete, &error_abort));
++    g_assert_true(source_projection_complete);
++    g_assert_true(g_file_get_contents(destination_slot, &after,
++                                      &after_bytes, NULL));
++    g_assert_cmpuint(before_bytes, ==, after_bytes);
++    g_assert_cmpmem(before, before_bytes, after, after_bytes);
++
++    test_archive_write(different, 0U, alternate);
++    g_assert_true(g_file_get_contents(different_slot, &different_before,
++                                      &different_before_bytes, NULL));
++    g_assert_true(xbox_save_vault_migrate(
++        different, &source_io, &clean_io_c, test_verify_source,
++        &calls, &proof, &source_projection_complete, &error_abort));
++    g_assert_true(g_file_get_contents(different_slot, &different_after,
++                                      &different_after_bytes, NULL));
++    g_assert_cmpuint(different_after_bytes, ==, different_before_bytes);
++    g_assert_cmpmem(different_before, different_before_bytes,
++                    different_after, different_after_bytes);
++    g_assert_true(g_file_test(different_new_slot,
++                              G_FILE_TEST_IS_REGULAR));
++    g_assert_true(xbox_save_vault_validate(different, &error_abort));
++    g_assert_false(source_projection_complete);
++    g_assert_cmpuint(proof.udata_entries, ==, 5U);
++
++    test_archive_write(independent, 0U, independent_archive);
++    g_assert_true(xbox_save_vault_migrate(
++        independent, &source_io, &clean_io_d, test_verify_source,
++        &calls, &proof, &source_projection_complete, &error_abort));
++    g_assert_true(source_projection_complete);
++    g_assert_cmpuint(proof.udata_entries, ==, 6U);
++    g_assert_true(g_file_test(independent_new_slot,
++                              G_FILE_TEST_IS_REGULAR));
++    g_assert_true(xbox_save_vault_validate(independent, &error_abort));
++
++    test_archive_write(file_ancestor, 0U, file_ancestor_archive);
++    g_assert_true(xbox_save_vault_migrate(
++        file_ancestor, &source_io, &clean_io_e, test_verify_source,
++        &calls, &proof, &source_projection_complete, &error_abort));
++    g_assert_false(source_projection_complete);
++    g_assert_cmpuint(proof.udata_entries, ==, 4U);
++    g_assert_true(g_file_test(file_ancestor_new_slot,
++                              G_FILE_TEST_IS_REGULAR));
++    g_assert_true(xbox_save_vault_validate(file_ancestor, &error_abort));
++
++    test_directory_free(g_steal_pointer(&seed_vault));
++    test_directory_free(g_steal_pointer(&destination));
++    test_directory_free(g_steal_pointer(&different));
++    test_directory_free(g_steal_pointer(&independent));
++    test_directory_free(g_steal_pointer(&file_ancestor));
++}
++
++static void test_migration_empty_stale_and_publication_race(void)
++{
++    static const uint8_t alternate_data[] = "Race target";
++    TestArchiveEntry alternate_entry = {
++        2U, 0x00U, "NICKNAME.XBN", alternate_data, sizeof(alternate_data),
++    };
++    g_autofree char *empty_vault = test_directory_new();
++    g_autofree char *race_vault = test_directory_new();
++    g_autofree char *stale = g_build_filename(
++        empty_vault, "original-xbox-udata-migration.stale", NULL);
++    g_autofree char *race_slot = test_slot_path(race_vault, 0U);
++    g_autoptr(GByteArray) alternate =
++        test_archive_build(1U, &alternate_entry, 1U);
++    g_autoptr(TestDisk) empty_source = test_disk_seed();
++    g_autoptr(TestDisk) empty_clean = test_disk_seed();
++    g_autoptr(TestDisk) full_source = test_disk_seed();
++    g_autoptr(TestDisk) race_clean = test_disk_seed();
++    g_autofree char *seed_vault = test_directory_new();
++    g_autoptr(GByteArray) sample = test_archive_sample(1U);
++    XboxSaveVaultIo empty_source_io = test_io(empty_source);
++    XboxSaveVaultIo empty_clean_io = test_io(empty_clean);
++    XboxSaveVaultIo full_source_io = test_io(full_source);
++    XboxSaveVaultIo race_clean_io = test_io(race_clean);
++    XboxSaveVaultProof proof;
++    bool source_projection_complete;
++    TestPublishRace race = { race_vault, alternate };
++    Error *error = NULL;
++    int fd = g_open(stale, O_WRONLY | O_CREAT | O_EXCL, 0600);
++
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(qemu_close(fd), ==, 0);
++    g_assert_true(xbox_save_vault_migrate(
++        empty_vault, &empty_source_io, &empty_clean_io,
++        test_verify_complete_proof, &proof, &proof,
++        &source_projection_complete, &error_abort));
++    g_assert_true(source_projection_complete);
++    g_assert_cmpuint(proof.entries, ==, 1U);
++    g_assert_cmpuint(proof.logical_bytes, ==,
++                     XBOX_SAVE_HDD_CONFIG_BYTES);
++    g_assert_cmpuint(proof.unclassified_tdata_entries, ==, 1U);
++    g_assert_false(g_file_test(stale, G_FILE_TEST_EXISTS));
++    g_assert_true(xbox_save_vault_validate(empty_vault, &error_abort));
++
++    test_archive_write(seed_vault, 0U, sample);
++    g_assert_true(xbox_save_vault_import(seed_vault, &full_source_io,
++                                         &error_abort));
++    g_assert_false(xbox_save_vault_migrate(
++        race_vault, &full_source_io, &race_clean_io,
++        test_create_publication_target, &race, &proof,
++        &source_projection_complete, &error));
++    g_assert_nonnull(error);
++    error_free(error);
++    g_assert_true(g_file_test(race_slot, G_FILE_TEST_IS_REGULAR));
++    g_assert_true(xbox_save_vault_validate(race_vault, &error_abort));
++
++    test_directory_free(g_steal_pointer(&empty_vault));
++    test_directory_free(g_steal_pointer(&race_vault));
++    test_directory_free(g_steal_pointer(&seed_vault));
++}
++
++static void test_migration_roundtrip_corruption(void)
++{
++    g_autofree char *seed_vault = test_directory_new();
++    g_autofree char *destination = test_directory_new();
++    g_autofree char *destination_slot = test_slot_path(destination, 0U);
++    g_autoptr(GByteArray) sample = test_archive_sample(1U);
++    g_autoptr(TestDisk) source_disk = test_disk_seed();
++    g_autoptr(TestDisk) clean_disk = test_disk_seed();
++    TestCorruptWrite corrupt = { clean_disk };
++    XboxSaveVaultIo source_io = test_io(source_disk);
++    XboxSaveVaultIo clean_io = {
++        .opaque = &corrupt,
++        .read = test_corrupt_read,
++        .write = test_corrupt_payload_write,
++        .disk_bytes = XBOX_VOLATILE_HDD_E_END,
++    };
++    XboxSaveVaultProof proof;
++    bool source_projection_complete;
++    Error *error = NULL;
++    unsigned int calls = 0U;
++
++    test_archive_write(seed_vault, 0U, sample);
++    g_assert_true(xbox_save_vault_import(seed_vault, &source_io,
++                                         &error_abort));
++    g_assert_false(xbox_save_vault_migrate(
++        destination, &source_io, &clean_io, test_verify_source,
++        &calls, &proof, &source_projection_complete, &error));
++    g_assert_nonnull(error);
++    error_free(error);
++    g_assert_cmpuint(calls, ==, 0U);
++    g_assert_false(g_file_test(destination_slot, G_FILE_TEST_EXISTS));
++
++    test_directory_free(g_steal_pointer(&seed_vault));
++    test_directory_free(g_steal_pointer(&destination));
++}
++
++static void test_checkpoint_noop_and_failure_preserves_generation(void)
++{
++    g_autofree char *directory = test_directory_new();
++    g_autofree char *slot_one = test_slot_path(directory, 1U);
++    g_autoptr(TestDisk) disk = test_disk_seed();
++    TestReadFailure failure = { disk, false };
++    XboxSaveVaultIo io = {
++        .opaque = &failure,
++        .read = test_failing_read,
++        .write = test_disk_write,
++        .disk_bytes = XBOX_VOLATILE_HDD_E_END,
++    };
++    XboxSaveVaultProof before;
++    XboxSaveVaultProof after;
++    gint64 started = g_get_monotonic_time();
++    Error *error = NULL;
++
++    g_assert_true(xbox_save_vault_checkpoint(directory, &io, &error_abort));
++    g_test_message("small UDATA checkpoint: %.3f ms",
++                   (g_get_monotonic_time() - started) / 1000.0);
++    g_assert_cmpint(g_get_monotonic_time() - started, <,
++                    5 * G_USEC_PER_SEC);
++    g_assert_true(xbox_save_vault_describe(directory, &before,
++                                           &error_abort));
++    g_assert_true(xbox_save_vault_checkpoint(directory, &io, &error_abort));
++    g_assert_true(xbox_save_vault_describe(directory, &after,
++                                           &error_abort));
++    g_assert_cmpuint(after.generation, ==, before.generation);
++    g_assert_cmpmem(after.tree_sha256, 32U, before.tree_sha256, 32U);
++    g_assert_false(g_file_test(slot_one, G_FILE_TEST_EXISTS));
++
++    failure.fail = true;
++    g_assert_false(xbox_save_vault_checkpoint(directory, &io, &error));
++    g_assert_nonnull(error);
++    error_free(error);
++    g_assert_true(xbox_save_vault_describe(directory, &after,
++                                           &error_abort));
++    g_assert_cmpuint(after.generation, ==, before.generation);
++    g_assert_cmpmem(after.tree_sha256, 32U, before.tree_sha256, 32U);
++    g_assert_false(g_file_test(slot_one, G_FILE_TEST_EXISTS));
++
++    test_directory_free(g_steal_pointer(&directory));
++}
++
++static void test_receipt_roundtrip_refresh_and_tamper(void)
++{
++    g_autofree char *directory = test_directory_new();
++    g_autofree char *path = test_receipt_path(directory);
++    XboxSaveReceipt stored = { 0 };
++    XboxSaveReceipt loaded;
++    XboxSaveVaultProof vault = { 0 };
++    bool exists;
++    bool valid;
++    int fd;
++    uint8_t byte;
++
++    memset(stored.source_identity_sha256, 0x11,
++           sizeof(stored.source_identity_sha256));
++    stored.source_bytes = 123456U;
++    memset(stored.source_sha256, 0x22, sizeof(stored.source_sha256));
++    stored.clean_bytes = 654321U;
++    memset(stored.clean_sha256, 0x33, sizeof(stored.clean_sha256));
++    stored.capability_schema = XBOX_SAVE_VAULT_CAPABILITY_SCHEMA;
++    stored.vault_format_version = 2U;
++    stored.policy_revision = XBOX_SAVE_POLICY_REVISION;
++    xbox_save_policy_digest(xbox_save_policy_default(),
++                            stored.policy_sha256);
++    stored.vault_generation = 7U;
++    memset(stored.vault_tree_sha256, 0x44,
++           sizeof(stored.vault_tree_sha256));
++    stored.vault_entries = 12U;
++    stored.vault_logical_bytes = 8192U;
++    stored.unclassified_tdata_entries = 1U;
++    stored.unclassified_tdata_bytes = 17U;
++    memset(stored.unclassified_tdata_sha256, 0x55,
++           sizeof(stored.unclassified_tdata_sha256));
++
++    g_assert_true(xbox_save_receipt_store(directory, &stored, &error_abort));
++    g_assert_true(xbox_save_receipt_load(directory, &loaded, &exists,
++                                         &valid, &error_abort));
++    g_assert_true(exists);
++    g_assert_true(valid);
++    g_assert_cmpmem(&loaded, sizeof(loaded), &stored, sizeof(stored));
++
++    vault.vault_version = 2U;
++    vault.generation = 8U;
++    vault.entries = 13U;
++    vault.logical_bytes = 16384U;
++    vault.policy_revision = stored.policy_revision;
++    memcpy(vault.policy_sha256, stored.policy_sha256, 32U);
++    memset(vault.tree_sha256, 0x66, sizeof(vault.tree_sha256));
++    g_assert_true(xbox_save_receipt_refresh_vault(
++        directory, &vault, &error_abort));
++    g_assert_true(xbox_save_receipt_load(directory, &loaded, &exists,
++                                         &valid, &error_abort));
++    g_assert_true(valid);
++    g_assert_cmpuint(loaded.vault_generation, ==, 8U);
++    g_assert_cmpmem(loaded.vault_tree_sha256, 32U,
++                    vault.tree_sha256, 32U);
++    g_assert_cmpuint(loaded.unclassified_tdata_entries, ==, 1U);
++
++    fd = g_open(path, O_RDWR | O_BINARY, 0600);
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(lseek(fd, 56U, SEEK_SET), ==, 56);
++    g_assert_cmpint(read(fd, &byte, 1U), ==, 1);
++    byte ^= 0x80U;
++    g_assert_cmpint(lseek(fd, 56U, SEEK_SET), ==, 56);
++    g_assert_cmpint(qemu_write_full(fd, &byte, 1U), ==, 1);
++    g_assert_cmpint(qemu_close(fd), ==, 0);
++    g_assert_true(xbox_save_receipt_load(directory, &loaded, &exists,
++                                         &valid, &error_abort));
++    g_assert_true(exists);
++    g_assert_false(valid);
++
++    test_directory_free(g_steal_pointer(&directory));
++}
++
++static void test_same_size_mutation_changes_source_identity(void)
++{
++    g_autofree char *directory = test_directory_new();
++    g_autofree char *path = g_build_filename(directory, "source.bin", NULL);
++    XboxSaveMigrationSourceSnapshot before =
++        XBOX_SAVE_MIGRATION_SOURCE_SNAPSHOT_INIT;
++    XboxSaveMigrationSourceSnapshot after =
++        XBOX_SAVE_MIGRATION_SOURCE_SNAPSHOT_INIT;
++    uint8_t before_identity[32];
++    uint8_t contents[4096];
++    int fd;
++
++    memset(contents, 0x5a, sizeof(contents));
++    fd = g_open(path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(qemu_write_full(fd, contents, sizeof(contents)),
++                    ==, sizeof(contents));
++    g_assert_cmpint(qemu_close(fd), ==, 0);
++    g_assert_true(xbox_save_migration_source_snapshot_open(
++        path, &before, &error_abort));
++    memcpy(before_identity, before.identity_sha256,
++           sizeof(before_identity));
++    xbox_save_migration_source_snapshot_close(&before);
++
++    fd = g_open(path, O_RDWR | O_BINARY, 0600);
++    g_assert_cmpint(fd, >=, 0);
++    contents[0] ^= 0xffU;
++    g_assert_cmpint(lseek(fd, 0U, SEEK_SET), ==, 0);
++    g_assert_cmpint(qemu_write_full(fd, contents, 1U), ==, 1);
++    g_assert_cmpint(qemu_close(fd), ==, 0);
++    g_assert_true(xbox_save_migration_source_snapshot_open(
++        path, &after, &error_abort));
++    g_assert_cmpint(memcmp(before_identity, after.identity_sha256,
++                           sizeof(before_identity)), !=, 0);
++    xbox_save_migration_source_snapshot_close(&after);
++
++    g_assert_cmpint(g_unlink(path), ==, 0);
++    test_directory_free(g_steal_pointer(&directory));
++}
++
++static void test_tdata_empty_directories_and_zero_byte_inventory(void)
++{
++    g_autofree char *empty_vault = test_directory_new();
++    g_autofree char *zero_vault = test_directory_new();
++    g_autoptr(TestDisk) empty_source = test_disk_seed();
++    g_autoptr(TestDisk) zero_source = test_disk_seed();
++    g_autoptr(TestDisk) empty_clean = test_disk_seed();
++    g_autoptr(TestDisk) zero_clean = test_disk_seed();
++    XboxSaveVaultIo empty_source_io = test_io(empty_source);
++    XboxSaveVaultIo zero_source_io = test_io(zero_source);
++    XboxSaveVaultIo empty_clean_io = test_io(empty_clean);
++    XboxSaveVaultIo zero_clean_io = test_io(zero_clean);
++    XboxSaveVaultProof empty_proof;
++    XboxSaveVaultProof zero_proof;
++    bool source_projection_complete;
++    unsigned int calls = 0U;
++
++    test_disk_set_tdata_inventory(empty_source, false);
++    test_disk_set_tdata_inventory(zero_source, true);
++    g_assert_true(xbox_save_vault_migrate(
++        empty_vault, &empty_source_io, &empty_clean_io,
++        test_verify_source, &calls, &empty_proof,
++        &source_projection_complete, &error_abort));
++    g_assert_true(source_projection_complete);
++    g_assert_cmpuint(empty_proof.unclassified_tdata_entries, ==, 0U);
++    g_assert_cmpuint(empty_proof.unclassified_tdata_bytes, ==, 0U);
++    g_assert_true(xbox_save_vault_migrate(
++        zero_vault, &zero_source_io, &zero_clean_io,
++        test_verify_source, &calls, &zero_proof,
++        &source_projection_complete, &error_abort));
++    g_assert_true(source_projection_complete);
++    g_assert_cmpuint(zero_proof.unclassified_tdata_entries, ==, 1U);
++    g_assert_cmpuint(zero_proof.unclassified_tdata_bytes, ==, 0U);
++    g_assert_cmpint(memcmp(empty_proof.unclassified_tdata_sha256,
++                           zero_proof.unclassified_tdata_sha256, 32U), !=, 0);
++
++    test_directory_free(g_steal_pointer(&empty_vault));
++    test_directory_free(g_steal_pointer(&zero_vault));
++}
++
++#ifndef _WIN32
++static void test_disk_write_file(TestDisk *disk, const char *path)
++{
++    GHashTableIter iterator;
++    gpointer key;
++    gpointer value;
++    int fd = g_open(path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
++
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(ftruncate(fd, XBOX_VOLATILE_HDD_E_END), ==, 0);
++    g_hash_table_iter_init(&iterator, disk->pages);
++    while (g_hash_table_iter_next(&iterator, &key, &value)) {
++        uint64_t offset = *(uint64_t *)key * TEST_PAGE_BYTES;
++        size_t remaining = TEST_PAGE_BYTES;
++        const uint8_t *cursor = value;
++
++        while (remaining > 0U) {
++            ssize_t written = RETRY_ON_EINTR(
++                pwrite(fd, cursor, remaining, offset));
++
++            g_assert_cmpint(written, >, 0);
++            cursor += written;
++            remaining -= written;
++            offset += written;
++        }
++    }
++    g_assert_cmpint(qemu_close(fd), ==, 0);
++}
++
++static void test_qemu_img_convert(char *program, char *source,
++                                  char *destination)
++{
++    char convert[] = "convert";
++    char input_format[] = "-f";
++    char raw[] = "raw";
++    char output_format[] = "-O";
++    char qcow2[] = "qcow2";
++    char *argv[] = {
++        program, convert, input_format, raw, output_format, qcow2,
++        source, destination, NULL,
++    };
++    GError *error = NULL;
++    gint status;
++
++    g_assert_true(g_spawn_sync(NULL, argv, NULL, G_SPAWN_DEFAULT,
++                               NULL, NULL, NULL, NULL, &status, &error));
++    g_assert_no_error(error);
++    g_assert_true(g_spawn_check_exit_status(status, &error));
++    g_assert_no_error(error);
++}
++
++static void test_qemu_img_create_backed(char *program, char *backing,
++                                        char *destination)
++{
++    char create[] = "create";
++    char output_format[] = "-f";
++    char qcow2[] = "qcow2";
++    char backing_format[] = "-F";
++    char raw[] = "raw";
++    char backing_option[] = "-b";
++    char *argv[] = {
++        program, create, output_format, qcow2, backing_format, raw,
++        backing_option, backing, destination, NULL,
++    };
++    GError *error = NULL;
++    gint status;
++
++    g_assert_true(g_spawn_sync(NULL, argv, NULL, G_SPAWN_DEFAULT,
++                               NULL, NULL, NULL, NULL, &status, &error));
++    g_assert_no_error(error);
++    g_assert_true(g_spawn_check_exit_status(status, &error));
++    g_assert_no_error(error);
++}
++
++static void test_real_raw_and_qcow2_migration(void)
++{
++    g_autofree char *qemu_img = g_find_program_in_path("qemu-img");
++    g_autofree char *files = NULL;
++    g_autofree char *source_raw = NULL;
++    g_autofree char *source_qcow = NULL;
++    g_autofree char *clean_raw = NULL;
++    g_autofree char *clean_qcow = NULL;
++    g_autofree char *empty_raw = NULL;
++    g_autofree char *empty_qcow = NULL;
++    g_autofree char *backed_qcow = NULL;
++    g_autofree char *quarantine = NULL;
++    g_autofree char *other_quarantine = NULL;
++    g_autofree char *empty_quarantine_marker = NULL;
++    g_autofree char *raw_vault = NULL;
++    g_autofree char *qcow_vault = NULL;
++    g_autofree char *empty_vault = NULL;
++    g_autofree char *backed_vault = NULL;
++    g_autofree char *empty_receipt = NULL;
++    g_autoptr(TestDisk) source_disk = test_disk_seed();
++    g_autoptr(TestDisk) clean_disk = test_disk_seed();
++    g_autoptr(TestDisk) empty_disk = test_disk_seed();
++    g_autofree char *seed_vault = test_directory_new();
++    g_autoptr(GByteArray) sample = test_archive_sample(1U);
++    XboxSaveVaultIo source_io = test_io(source_disk);
++    XboxSaveMigrationSourceSnapshot source_snapshot =
++        XBOX_SAVE_MIGRATION_SOURCE_SNAPSHOT_INIT;
++    XboxSaveMigrationSourceSnapshot clean_snapshot =
++        XBOX_SAVE_MIGRATION_SOURCE_SNAPSHOT_INIT;
++    XboxSaveMigrationRequest request;
++    XboxSaveMigrationProof migration;
++    XboxSaveVaultProof validation;
++    GError *error = NULL;
++    Error *expected_error = NULL;
++
++    if (!g_test_slow()) {
++        g_test_skip("run with -m slow for raw/QCOW2 block integration");
++        return;
++    }
++    if (!qemu_img) {
++        g_test_skip("qemu-img is unavailable");
++        return;
++    }
++    files = g_dir_make_tmp("xemu-save-images-XXXXXX", &error);
++    g_assert_no_error(error);
++    g_assert_nonnull(files);
++    g_assert_cmpint(g_chmod(files, 0700), ==, 0);
++    source_raw = g_build_filename(files, "legacy.raw", NULL);
++    source_qcow = g_build_filename(files, "legacy.qcow2", NULL);
++    clean_raw = g_build_filename(files, "clean.raw", NULL);
++    clean_qcow = g_build_filename(files, "clean.qcow2", NULL);
++    empty_raw = g_build_filename(files, "empty-legacy.raw", NULL);
++    empty_qcow = g_build_filename(files, "empty-legacy.qcow2", NULL);
++    backed_qcow = g_build_filename(files, "backed-legacy.qcow2", NULL);
++    quarantine = g_build_filename(
++        files, ".gdox-xbox-hdd-removal.00000001.00000002", NULL);
++    other_quarantine = g_build_filename(
++        files, ".gdox-xbox-hdd-removal.00000003.00000004", NULL);
++    empty_quarantine_marker = g_build_filename(
++        files, ".gdox-xbox-hdd-removal.00000005.00000006", NULL);
++    raw_vault = g_build_filename(files, "raw-vault", NULL);
++    qcow_vault = g_build_filename(files, "qcow-vault", NULL);
++    empty_vault = g_build_filename(files, "empty-vault", NULL);
++    backed_vault = g_build_filename(files, "backed-vault", NULL);
++    empty_receipt = test_receipt_path(empty_vault);
++    g_assert_cmpint(g_mkdir(raw_vault, 0700), ==, 0);
++    g_assert_cmpint(g_mkdir(qcow_vault, 0700), ==, 0);
++    g_assert_cmpint(g_mkdir(empty_vault, 0700), ==, 0);
++    g_assert_cmpint(g_mkdir(backed_vault, 0700), ==, 0);
++
++    test_archive_write(seed_vault, 0U, sample);
++    g_assert_true(xbox_save_vault_import(seed_vault, &source_io,
++                                         &error_abort));
++    test_disk_write_file(source_disk, source_raw);
++    test_disk_write_file(clean_disk, clean_raw);
++    test_qemu_img_convert(qemu_img, clean_raw, clean_qcow);
++    test_qemu_img_convert(qemu_img, source_raw, source_qcow);
++    test_disk_set_tdata_inventory(empty_disk, false);
++    test_disk_write_file(empty_disk, empty_raw);
++    test_qemu_img_convert(qemu_img, empty_raw, empty_qcow);
++    g_assert_cmpint(g_chmod(empty_qcow, 0600), ==, 0);
++    test_qemu_img_create_backed(qemu_img, source_raw, backed_qcow);
++
++    g_assert_true(xbox_save_migration_source_snapshot_open(
++        clean_qcow, &clean_snapshot, &error_abort));
++    g_assert_true(xbox_save_migration_source_snapshot_open(
++        backed_qcow, &source_snapshot, &error_abort));
++    request = (XboxSaveMigrationRequest) {
++        .legacy_hdd = backed_qcow,
++        .clean_hdd = clean_qcow,
++        .save_vault = backed_vault,
++        .expected_source_bytes = source_snapshot.bytes,
++        .expected_source_sha256_valid = true,
++    };
++    memcpy(request.expected_source_sha256, source_snapshot.sha256, 32U);
++    xbox_save_migration_source_snapshot_close(&source_snapshot);
++    g_assert_false(xbox_save_migration_execute(
++        &request, &migration, &expected_error));
++    g_assert_nonnull(expected_error);
++    g_assert_nonnull(strstr(error_get_pretty(expected_error),
++                            "backing image"));
++    error_free(expected_error);
++    expected_error = NULL;
++
++    g_assert_true(xbox_save_migration_source_snapshot_open(
++        source_raw, &source_snapshot, &error_abort));
++    request = (XboxSaveMigrationRequest) {
++        .legacy_hdd = source_raw,
++        .clean_hdd = clean_qcow,
++        .save_vault = raw_vault,
++        .expected_source_bytes = source_snapshot.bytes,
++        .expected_source_sha256_valid = true,
++    };
++    memcpy(request.expected_source_sha256, source_snapshot.sha256, 32U);
++    g_assert_true(xbox_save_migration_execute(
++        &request, &migration, &error_abort));
++    g_assert_true(migration.source_hashed);
++    g_assert_false(migration.receipt_reused);
++    g_assert_true(migration.source_projection_complete);
++    g_assert_false(migration.source_removal_safe);
++    g_assert_false(migration.source_writes);
++    g_assert_true(migration.anonymous_cow);
++    g_assert_true(migration.clean_backing);
++    g_assert_true(xbox_save_migration_source_snapshot_verify(
++        &source_snapshot, &error_abort));
++    g_assert_true(xbox_save_migration_source_snapshot_verify(
++        &clean_snapshot, &error_abort));
++    g_assert_true(xbox_save_migration_execute(
++        &request, &migration, &error_abort));
++    g_assert_true(migration.receipt_reused);
++    g_assert_false(migration.source_hashed);
++    g_assert_false(migration.source_projection_complete);
++    g_assert_false(migration.source_removal_safe);
++    xbox_save_migration_source_snapshot_close(&source_snapshot);
++    g_assert_true(xbox_save_vault_validation_execute(
++        raw_vault, clean_qcow, &validation, &error_abort));
++    g_assert_cmpmem(validation.tree_sha256, 32U,
++                    migration.vault.tree_sha256, 32U);
++
++    g_assert_true(xbox_save_migration_source_snapshot_open(
++        source_qcow, &source_snapshot, &error_abort));
++    request.legacy_hdd = source_qcow;
++    request.save_vault = qcow_vault;
++    request.expected_source_bytes = source_snapshot.bytes;
++    memcpy(request.expected_source_sha256, source_snapshot.sha256, 32U);
++    g_assert_true(xbox_save_migration_execute(
++        &request, &migration, &error_abort));
++    g_assert_true(migration.source_projection_complete);
++    g_assert_true(xbox_save_migration_source_snapshot_verify(
++        &source_snapshot, &error_abort));
++    g_assert_true(xbox_save_migration_source_snapshot_verify(
++        &clean_snapshot, &error_abort));
++    xbox_save_migration_source_snapshot_close(&source_snapshot);
++    xbox_save_migration_source_snapshot_close(&clean_snapshot);
++
++    g_assert_true(xbox_save_migration_source_snapshot_open(
++        empty_qcow, &source_snapshot, &error_abort));
++    request.legacy_hdd = empty_qcow;
++    request.save_vault = empty_vault;
++    request.expected_source_bytes = source_snapshot.bytes;
++    memcpy(request.expected_source_sha256, source_snapshot.sha256, 32U);
++    xbox_save_migration_source_snapshot_close(&source_snapshot);
++    g_assert_cmpint(g_chmod(files, 0750), ==, 0);
++    g_assert_false(xbox_save_migration_execute(
++        &request, &migration, &expected_error));
++    g_assert_nonnull(expected_error);
++    g_assert_nonnull(strstr(error_get_pretty(expected_error),
++                            "directory is not private"));
++    error_free(expected_error);
++    expected_error = NULL;
++    g_assert_true(migration.source_hashed);
++    g_assert_true(migration.source_projection_complete);
++    g_assert_true(migration.source_removal_safe);
++    g_assert_false(migration.source_removed);
++    g_assert_true(g_file_test(empty_qcow, G_FILE_TEST_IS_REGULAR));
++    g_assert_cmpint(g_chmod(files, 0700), ==, 0);
++    g_assert_cmpint(g_rename(empty_qcow, quarantine), ==, 0);
++    g_assert_cmpint(g_unlink(empty_receipt), ==, 0);
++    {
++        int fd = g_open(other_quarantine,
++                        O_RDWR | O_CREAT | O_EXCL | O_BINARY, 0600);
++
++        g_assert_cmpint(fd, >=, 0);
++        g_assert_cmpint(ftruncate(fd, request.expected_source_bytes), ==, 0);
++        g_assert_cmpint(qemu_close(fd), ==, 0);
++    }
++    {
++        int fd = g_open(empty_quarantine_marker,
++                        O_RDWR | O_CREAT | O_EXCL | O_BINARY, 0600);
++
++        g_assert_cmpint(fd, >=, 0);
++        g_assert_cmpint(qemu_close(fd), ==, 0);
++    }
++    g_assert_false(xbox_save_migration_execute(
++        &request, &migration, &expected_error));
++    g_assert_nonnull(expected_error);
++    g_assert_nonnull(strstr(error_get_pretty(expected_error),
++                            "Multiple Xbox HDD removal quarantines"));
++    error_free(expected_error);
++    expected_error = NULL;
++    g_assert_cmpint(g_unlink(other_quarantine), ==, 0);
++    g_assert_true(xbox_save_migration_execute(
++        &request, &migration, &error_abort));
++    g_assert_true(migration.source_hashed);
++    g_assert_true(migration.source_projection_complete);
++    g_assert_true(migration.source_removal_safe);
++    g_assert_true(migration.source_removed);
++    g_assert_false(g_file_test(empty_qcow, G_FILE_TEST_EXISTS));
++    g_assert_false(g_file_test(quarantine, G_FILE_TEST_EXISTS));
++    g_assert_false(g_file_test(empty_quarantine_marker,
++                               G_FILE_TEST_EXISTS));
++
++    test_directory_free(g_steal_pointer(&seed_vault));
++    test_directory_free(g_steal_pointer(&raw_vault));
++    test_directory_free(g_steal_pointer(&qcow_vault));
++    test_directory_free(g_steal_pointer(&empty_vault));
++    test_directory_free(g_steal_pointer(&backed_vault));
++    g_assert_cmpint(g_unlink(source_raw), ==, 0);
++    g_assert_cmpint(g_unlink(source_qcow), ==, 0);
++    g_assert_cmpint(g_unlink(clean_raw), ==, 0);
++    g_assert_cmpint(g_unlink(clean_qcow), ==, 0);
++    g_assert_cmpint(g_unlink(empty_raw), ==, 0);
++    g_assert_cmpint(g_unlink(backed_qcow), ==, 0);
++    g_assert_cmpint(g_rmdir(files), ==, 0);
++}
++#endif
++
++int main(int argc, char **argv)
++{
++#ifdef XBOX
++    qemu_init_main_loop_lock();
++    qemu_mutex_lock_main_loop();
++#endif
++    bdrv_init();
++    qemu_init_main_loop(&error_abort);
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/xbox-save-vault/roundtrip-and-scope",
++                    test_roundtrip_and_scope);
++    g_test_add_func("/xbox-save-vault/corrupt-generation-fallback",
++                    test_corrupt_generation_fallback);
++    g_test_add_func("/xbox-save-vault/private-and-symlink-boundaries",
++                    test_private_and_symlink_boundaries);
++    g_test_add_func("/xbox-save-vault/invalid-path-and-generation-exhaustion",
++                    test_invalid_path_and_generation_exhaustion);
++    g_test_add_func("/xbox-save-vault/allocation-failure-is-controlled",
++                    test_allocation_failure_is_controlled);
++    g_test_add_func("/xbox-save-vault/migration-transaction",
++                    test_migration_transaction);
++    g_test_add_func("/xbox-save-vault/migration-failure-leaves-vault-empty",
++                    test_migration_failure_leaves_vault_empty);
++    g_test_add_func("/xbox-save-vault/migration-idempotent-and-differing",
++                    test_migration_idempotent_and_differing);
++    g_test_add_func("/xbox-save-vault/migration-empty-stale-publication-race",
++                    test_migration_empty_stale_and_publication_race);
++    g_test_add_func("/xbox-save-vault/migration-roundtrip-corruption",
++                    test_migration_roundtrip_corruption);
++    g_test_add_func("/xbox-save-vault/checkpoint-noop-failure-preserves",
++                    test_checkpoint_noop_and_failure_preserves_generation);
++    g_test_add_func("/xbox-save-vault/receipt-roundtrip-refresh-tamper",
++                    test_receipt_roundtrip_refresh_and_tamper);
++    g_test_add_func("/xbox-save-vault/source-identity-same-size-mutation",
++                    test_same_size_mutation_changes_source_identity);
++    g_test_add_func("/xbox-save-vault/tdata-empty-and-zero-byte-inventory",
++                    test_tdata_empty_directories_and_zero_byte_inventory);
++#ifndef _WIN32
++    g_test_add_func("/xbox-save-vault/real-raw-and-qcow2-migration",
++                    test_real_raw_and_qcow2_migration);
++#endif
++    return g_test_run();
++}
+diff --git a/tests/unit/test-xbox-volatile-hdd.c b/tests/unit/test-xbox-volatile-hdd.c
+new file mode 100644
+index 0000000..c8a420d
+--- /dev/null
++++ b/tests/unit/test-xbox-volatile-hdd.c
+@@ -0,0 +1,585 @@
++/*
++ * Volatile Original Xbox hard disk tests
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "block/block-global-state.h"
++#include "block/block_int.h"
++#include "block/xbox-save-vault.h"
++#include "block/xbox-volatile-hdd.h"
++#include "qapi/error.h"
++#include "qemu/bswap.h"
++#include "qemu/cutils.h"
++#include "qemu/iov.h"
++#include "qemu/main-loop.h"
++#include "qemu/units.h"
++#include "system/block-backend.h"
++#include "system/block-backend-io.h"
++#include "tests/unit/xemu-gdox-test-security.h"
++
++#include <glib/gstdio.h>
++
++#define TEST_HDD_SIZE (XBOX_VOLATILE_HDD_E_END + MiB)
++#define TEST_SLOT_SIZE 512
++#define TEST_NOT_DONE INT_MAX
++
++typedef struct TestSlot {
++    int64_t offset;
++    uint8_t data[TEST_SLOT_SIZE];
++} TestSlot;
++
++typedef struct TestBackingState {
++    TestSlot slots[4];
++    bool valid_empty_e;
++    unsigned int write_count;
++    unsigned int zero_count;
++    unsigned int flush_count;
++    unsigned int discard_count;
++} TestBackingState;
++
++static char *test_vault_directory_new(void)
++{
++    return gdox_test_private_directory_new("xemu-volatile-vault-XXXXXX");
++}
++
++static void test_vault_directory_free(char *directory)
++{
++    static const char *const files[] = {
++        "original-xbox-udata.lock",
++        "original-xbox-udata-0.gdox",
++        "original-xbox-udata-1.gdox",
++        "original-xbox-udata-stage.gdox",
++        "original-xbox-migration-archive.gdox",
++        "original-xbox-migration-receipt-v1.gdox",
++    };
++
++    for (size_t i = 0; i < ARRAY_SIZE(files); i++) {
++        g_autofree char *path = g_build_filename(directory, files[i], NULL);
++
++        if (g_unlink(path) != 0) {
++            g_assert_cmpint(errno, ==, ENOENT);
++        }
++    }
++    g_assert_cmpint(g_rmdir(directory), ==, 0);
++    g_free(directory);
++}
++
++static const int64_t test_slot_offsets[] = {
++    XBOX_VOLATILE_HDD_CACHE_START - TEST_SLOT_SIZE,
++    XBOX_VOLATILE_HDD_CACHE_START,
++    XBOX_VOLATILE_HDD_CACHE_END,
++    XBOX_VOLATILE_HDD_CACHE_END + TEST_SLOT_SIZE,
++};
++
++static int test_backing_open(BlockDriverState *bs, QDict *options, int flags,
++                             Error **errp)
++{
++    TestBackingState *s = bs->opaque;
++
++    for (size_t i = 0; i < ARRAY_SIZE(s->slots); i++) {
++        s->slots[i].offset = test_slot_offsets[i];
++        memset(s->slots[i].data, 0xa5, sizeof(s->slots[i].data));
++    }
++    bs->total_sectors = TEST_HDD_SIZE / BDRV_SECTOR_SIZE;
++    bs->supported_write_flags = BDRV_REQ_FUA;
++    bs->supported_zero_flags = BDRV_REQ_FUA | BDRV_REQ_MAY_UNMAP |
++                               BDRV_REQ_NO_FALLBACK;
++    return 0;
++}
++
++static int64_t coroutine_fn GRAPH_RDLOCK
++test_backing_getlength(BlockDriverState *bs)
++{
++    return TEST_HDD_SIZE;
++}
++
++static TestSlot *test_backing_slot(TestBackingState *s, int64_t offset)
++{
++    for (size_t i = 0; i < ARRAY_SIZE(s->slots); i++) {
++        if (offset >= s->slots[i].offset &&
++            offset < s->slots[i].offset + TEST_SLOT_SIZE) {
++            return &s->slots[i];
++        }
++    }
++    return NULL;
++}
++
++static bool test_backing_empty_e_byte(int64_t offset, uint8_t *value)
++{
++    const uint64_t e_bytes = XBOX_VOLATILE_HDD_E_END -
++                             XBOX_VOLATILE_HDD_E_START;
++    const uint64_t clusters = e_bytes / (16U * KiB) + 1U;
++    const uint64_t fat_bytes = ROUND_UP(clusters * 4U, 4096U);
++    const uint64_t root_offset = XBOX_VOLATILE_HDD_E_START + 4096U +
++                                 fat_bytes;
++    uint64_t relative;
++
++    if (offset < XBOX_VOLATILE_HDD_E_START) {
++        return false;
++    }
++    relative = offset - XBOX_VOLATILE_HDD_E_START;
++    if (relative < 4096U) {
++        static const uint8_t header[16] = {
++            'F', 'A', 'T', 'X', 0U, 0U, 0U, 0U,
++            32U, 0U, 0U, 0U, 1U, 0U, 0U, 0U,
++        };
++
++        *value = relative < sizeof(header) ? header[relative] : 0U;
++        return true;
++    }
++    if (relative >= 4096U && relative < 4104U) {
++        static const uint8_t fat[8] = {
++            0xf8U, 0xffU, 0xffU, 0xffU,
++            0xffU, 0xffU, 0xffU, 0xffU,
++        };
++
++        *value = fat[relative - 4096U];
++        return true;
++    }
++    if ((uint64_t)offset >= root_offset &&
++        (uint64_t)offset < root_offset + 16U * KiB) {
++        *value = 0xffU;
++        return true;
++    }
++    return false;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++test_backing_preadv_part(BlockDriverState *bs, int64_t offset, int64_t bytes,
++                         QEMUIOVector *qiov, size_t qiov_offset,
++                         BdrvRequestFlags flags)
++{
++    TestBackingState *s = bs->opaque;
++    g_autofree uint8_t *buffer = g_malloc(bytes);
++
++    memset(buffer, 0xa5, bytes);
++    for (int64_t i = 0; i < bytes; i++) {
++        TestSlot *slot = test_backing_slot(s, offset + i);
++
++        if (slot) {
++            buffer[i] = slot->data[offset + i - slot->offset];
++        } else if (s->valid_empty_e) {
++            test_backing_empty_e_byte(offset + i, &buffer[i]);
++        }
++    }
++    qemu_iovec_from_buf(qiov, qiov_offset, buffer, bytes);
++    return 0;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++test_backing_pwritev_part(BlockDriverState *bs, int64_t offset, int64_t bytes,
++                          QEMUIOVector *qiov, size_t qiov_offset,
++                          BdrvRequestFlags flags)
++{
++    TestBackingState *s = bs->opaque;
++    g_autofree uint8_t *buffer = g_malloc(bytes);
++
++    s->write_count++;
++    qemu_iovec_to_buf(qiov, qiov_offset, buffer, bytes);
++    for (int64_t i = 0; i < bytes; i++) {
++        TestSlot *slot = test_backing_slot(s, offset + i);
++
++        if (slot) {
++            slot->data[offset + i - slot->offset] = buffer[i];
++        }
++    }
++    return 0;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++test_backing_zero(BlockDriverState *bs, int64_t offset, int64_t bytes,
++                  BdrvRequestFlags flags)
++{
++    TestBackingState *s = bs->opaque;
++
++    s->zero_count++;
++    for (int64_t i = 0; i < bytes; i++) {
++        TestSlot *slot = test_backing_slot(s, offset + i);
++
++        if (slot) {
++            slot->data[offset + i - slot->offset] = 0;
++        }
++    }
++    return 0;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++test_backing_discard(BlockDriverState *bs, int64_t offset, int64_t bytes)
++{
++    TestBackingState *s = bs->opaque;
++
++    s->discard_count++;
++    return test_backing_zero(bs, offset, bytes, 0);
++}
++
++static int coroutine_fn GRAPH_RDLOCK test_backing_flush(BlockDriverState *bs)
++{
++    TestBackingState *s = bs->opaque;
++
++    s->flush_count++;
++    return 0;
++}
++
++static BlockDriver test_backing_driver = {
++    .format_name             = "xbox-volatile-hdd-test-backing",
++    .instance_size           = sizeof(TestBackingState),
++    .bdrv_open               = test_backing_open,
++    .bdrv_co_getlength       = test_backing_getlength,
++    .bdrv_co_preadv_part     = test_backing_preadv_part,
++    .bdrv_co_pwritev_part    = test_backing_pwritev_part,
++    .bdrv_co_pwrite_zeroes   = test_backing_zero,
++    .bdrv_co_pdiscard        = test_backing_discard,
++    .bdrv_co_flush           = test_backing_flush,
++};
++
++static BlockBackend *test_backing_new(TestBackingState **state)
++{
++    BlockBackend *blk;
++    BlockDriverState *bs;
++
++    blk = blk_new(qemu_get_aio_context(), BLK_PERM_CONSISTENT_READ,
++                  BLK_PERM_ALL);
++    bs = bdrv_new_open_driver(&test_backing_driver, NULL,
++                              0, &error_abort);
++    *state = bs->opaque;
++    blk_insert_bs(blk, bs, &error_abort);
++    bdrv_unref(bs);
++    return blk;
++}
++
++static void assert_read_only_backing(BlockBackend *blk)
++{
++    BlockDriverState *overlay = blk_bs(blk);
++    uint64_t perm;
++    uint64_t shared_perm;
++
++    g_assert_nonnull(overlay->backing);
++    g_assert_false(bdrv_is_read_only(overlay));
++    g_assert_true(bdrv_is_read_only(overlay->backing->bs));
++    blk_get_perm(blk, &perm, &shared_perm);
++    g_assert_true(perm & BLK_PERM_CONSISTENT_READ);
++    g_assert_true(perm & BLK_PERM_WRITE);
++    g_assert_cmphex(shared_perm, ==, BLK_PERM_ALL);
++}
++
++static void test_aio_done(void *opaque, int ret)
++{
++    *(int *)opaque = ret;
++}
++
++static uint32_t get_le32(const uint8_t *source)
++{
++    return source[0] | (source[1] << 8) | (source[2] << 16) |
++           (source[3] << 24);
++}
++
++static void test_blank_fatx(void)
++{
++    static const int64_t offsets[] = {
++        UINT64_C(0x00080000), UINT64_C(0x2ee80000),
++        UINT64_C(0x5dc80000),
++    };
++    static const uint32_t volume_ids[] = {
++        UINT32_C(0x000d0137), UINT32_C(0x000d01d4),
++        UINT32_C(0x000d02a4),
++    };
++    TestBackingState *state;
++    BlockBackend *blk = test_backing_new(&state);
++    uint8_t metadata[8192];
++
++    g_assert_true(xbox_volatile_hdd_attach(blk, &error_abort));
++    assert_read_only_backing(blk);
++    for (size_t i = 0; i < ARRAY_SIZE(offsets); i++) {
++        g_assert_cmpint(blk_pread(blk, offsets[i], sizeof(metadata), metadata,
++                                  0), ==, 0);
++        g_assert_cmpmem(metadata, 4, "FATX", 4);
++        g_assert_cmphex(get_le32(metadata + 4), ==, volume_ids[i]);
++        g_assert_cmphex(get_le32(metadata + 8), ==, 32);
++        g_assert_cmphex(get_le32(metadata + 12), ==, 1);
++        g_assert_cmphex(metadata[4096], ==, 0xf8);
++        g_assert_cmphex(metadata[4097], ==, 0xff);
++        g_assert_true(buffer_is_zero(metadata + 4100,
++                                     sizeof(metadata) - 4100));
++    }
++    g_assert_cmphex(state->slots[1].data[0], ==, 0xa5);
++    blk_unref(blk);
++}
++
++static void test_full_disk_cow_and_boundaries(void)
++{
++    TestBackingState *state;
++    BlockBackend *blk = test_backing_new(&state);
++    uint8_t write_buffer[TEST_SLOT_SIZE * 2];
++    uint8_t read_buffer[sizeof(write_buffer)];
++
++    memset(write_buffer, 0x3c, sizeof(write_buffer));
++    g_assert_true(xbox_volatile_hdd_attach(blk, &error_abort));
++    assert_read_only_backing(blk);
++    g_assert_cmpint(blk_pwrite(blk, XBOX_VOLATILE_HDD_CACHE_START - TEST_SLOT_SIZE,
++                              sizeof(write_buffer), write_buffer, 0), ==, 0);
++    g_assert_cmphex(state->slots[0].data[0], ==, 0xa5);
++    g_assert_cmphex(state->slots[1].data[0], ==, 0xa5);
++    memset(read_buffer, 0, sizeof(read_buffer));
++    g_assert_cmpint(blk_pread(blk, XBOX_VOLATILE_HDD_CACHE_START - TEST_SLOT_SIZE,
++                             sizeof(read_buffer), read_buffer, 0), ==, 0);
++    g_assert_cmpmem(read_buffer, sizeof(read_buffer), write_buffer,
++                    sizeof(write_buffer));
++
++    memset(write_buffer, 0x7e, TEST_SLOT_SIZE);
++    g_assert_cmpint(blk_pwrite(blk, XBOX_VOLATILE_HDD_CACHE_END,
++                              TEST_SLOT_SIZE, write_buffer, 0), ==, 0);
++    g_assert_cmphex(state->slots[2].data[0], ==, 0xa5);
++
++    g_assert_cmpint(blk_flush(blk), ==, 0);
++    g_assert_cmpuint(state->write_count, ==, 0);
++    g_assert_cmpuint(state->zero_count, ==, 0);
++    g_assert_cmpuint(state->flush_count, ==, 0);
++    blk_unref(blk);
++}
++
++static void test_zero_discard_and_failure(void)
++{
++    TestBackingState *state;
++    BlockBackend *blk = test_backing_new(&state);
++    uint8_t buffer[TEST_SLOT_SIZE];
++    Error *error = NULL;
++
++    memset(buffer, 0x9b, sizeof(buffer));
++    g_assert_false(xbox_volatile_hdd_attach_with_page_limit(blk, 2, &error));
++    g_assert_nonnull(error);
++    error_free(error);
++    blk_unref(blk);
++
++    blk = test_backing_new(&state);
++    g_assert_true(xbox_volatile_hdd_attach_with_page_limit(blk, 4,
++                                                           &error_abort));
++    assert_read_only_backing(blk);
++    g_assert_cmpint(blk_pwrite(blk, XBOX_VOLATILE_HDD_CACHE_START +
++                                   XBOX_VOLATILE_HDD_PAGE_SIZE,
++                              sizeof(buffer), buffer, 0), ==, 0);
++    g_assert_cmpint(blk_pwrite(blk, XBOX_VOLATILE_HDD_CACHE_START +
++                                   2 * XBOX_VOLATILE_HDD_PAGE_SIZE,
++                              sizeof(buffer), buffer, 0), ==, -ENOSPC);
++    g_assert_cmpint(blk_pwrite_zeroes(blk, XBOX_VOLATILE_HDD_CACHE_START +
++                                          XBOX_VOLATILE_HDD_PAGE_SIZE,
++                                     XBOX_VOLATILE_HDD_PAGE_SIZE, 0), ==, 0);
++    g_assert_cmpint(blk_pwrite(blk, XBOX_VOLATILE_HDD_CACHE_START +
++                                   2 * XBOX_VOLATILE_HDD_PAGE_SIZE,
++                              sizeof(buffer), buffer, 0), ==, 0);
++    g_assert_cmpint(blk_pdiscard(blk, XBOX_VOLATILE_HDD_CACHE_START +
++                                     2 * XBOX_VOLATILE_HDD_PAGE_SIZE,
++                                XBOX_VOLATILE_HDD_PAGE_SIZE), ==, 0);
++    g_assert_cmpint(blk_pwrite(blk, XBOX_VOLATILE_HDD_CACHE_START +
++                                   3 * XBOX_VOLATILE_HDD_PAGE_SIZE,
++                              sizeof(buffer), buffer, 0), ==, 0);
++
++    g_assert_cmpint(blk_pwrite_zeroes(blk, XBOX_VOLATILE_HDD_CACHE_START,
++                                     sizeof(buffer), 0), ==, 0);
++    memset(buffer, 0xff, sizeof(buffer));
++    g_assert_cmpint(blk_pread(blk, XBOX_VOLATILE_HDD_CACHE_START,
++                             sizeof(buffer), buffer, 0), ==, 0);
++    g_assert_true(buffer_is_zero(buffer, sizeof(buffer)));
++
++    memset(buffer, 0x11, sizeof(buffer));
++    g_assert_cmpint(blk_pwrite(blk, XBOX_VOLATILE_HDD_CACHE_START,
++                              sizeof(buffer), buffer, 0), ==, 0);
++    g_assert_cmpint(blk_pdiscard(blk, XBOX_VOLATILE_HDD_CACHE_START,
++                                sizeof(buffer)), ==, 0);
++    g_assert_cmpint(blk_pread(blk, XBOX_VOLATILE_HDD_CACHE_START,
++                             sizeof(buffer), buffer, 0), ==, 0);
++    g_assert_true(buffer_is_zero(buffer, sizeof(buffer)));
++
++    g_assert_cmpint(blk_pdiscard(blk, XBOX_VOLATILE_HDD_CACHE_END,
++                                XBOX_VOLATILE_HDD_PAGE_SIZE), ==, 0);
++    memset(buffer, 0xff, sizeof(buffer));
++    g_assert_cmpint(blk_pread(blk, XBOX_VOLATILE_HDD_CACHE_END,
++                             sizeof(buffer), buffer, 0), ==, 0);
++    g_assert_true(buffer_is_zero(buffer, sizeof(buffer)));
++    g_assert_cmpuint(state->write_count, ==, 0);
++    g_assert_cmpuint(state->zero_count, ==, 0);
++    g_assert_cmpuint(state->discard_count, ==, 0);
++    blk_unref(blk);
++}
++
++static void test_concurrent_write_discard(void)
++{
++    TestBackingState *state;
++    BlockBackend *blk = test_backing_new(&state);
++    g_autofree uint8_t *write_buffer =
++        g_malloc(XBOX_VOLATILE_HDD_PAGE_SIZE);
++    uint8_t read_buffer[TEST_SLOT_SIZE];
++    QEMUIOVector qiov;
++
++    memset(write_buffer, 0x5a, XBOX_VOLATILE_HDD_PAGE_SIZE);
++    qemu_iovec_init(&qiov, 1);
++    qemu_iovec_add(&qiov, write_buffer, XBOX_VOLATILE_HDD_PAGE_SIZE);
++    g_assert_true(xbox_volatile_hdd_attach_with_page_limit(
++        blk, 4, &error_abort));
++    assert_read_only_backing(blk);
++
++    for (unsigned int i = 0; i < 128; i++) {
++        int write_ret = TEST_NOT_DONE;
++        int discard_ret = TEST_NOT_DONE;
++        bool all_written = true;
++
++        blk_aio_pwritev(blk, XBOX_VOLATILE_HDD_CACHE_END, &qiov, 0,
++                        test_aio_done, &write_ret);
++        blk_aio_pdiscard(blk, XBOX_VOLATILE_HDD_CACHE_END,
++                         XBOX_VOLATILE_HDD_PAGE_SIZE,
++                         test_aio_done, &discard_ret);
++        while (write_ret == TEST_NOT_DONE || discard_ret == TEST_NOT_DONE) {
++            main_loop_wait(false);
++        }
++        g_assert_cmpint(write_ret, ==, 0);
++        g_assert_cmpint(discard_ret, ==, 0);
++        g_assert_cmpint(blk_pread(blk, XBOX_VOLATILE_HDD_CACHE_END,
++                                 sizeof(read_buffer), read_buffer, 0), ==, 0);
++        for (size_t byte = 0; byte < sizeof(read_buffer); byte++) {
++            all_written &= read_buffer[byte] == 0x5a;
++        }
++        g_assert_true(all_written ||
++                      buffer_is_zero(read_buffer, sizeof(read_buffer)));
++    }
++
++    g_assert_cmphex(state->slots[2].data[0], ==, 0xa5);
++    g_assert_cmpuint(state->write_count, ==, 0);
++    g_assert_cmpuint(state->zero_count, ==, 0);
++    g_assert_cmpuint(state->discard_count, ==, 0);
++    qemu_iovec_destroy(&qiov);
++    blk_unref(blk);
++}
++
++static void test_cache_only_write_skips_save_scan(void)
++{
++    g_autofree char *directory = test_vault_directory_new();
++    TestBackingState *state;
++    BlockBackend *blk = test_backing_new(&state);
++    uint8_t buffer[TEST_SLOT_SIZE];
++
++    memset(buffer, 0x42, sizeof(buffer));
++    g_setenv(XBOX_SAVE_VAULT_ENVIRONMENT, directory, true);
++    g_assert_true(xbox_volatile_hdd_attach(blk, &error_abort));
++    assert_read_only_backing(blk);
++    g_assert_cmpint(blk_pwrite(blk, XBOX_VOLATILE_HDD_CACHE_START,
++                              sizeof(buffer), buffer, 0), ==, 0);
++    /* The synthetic backing has no E: FATX volume; a scan would fail. */
++    g_assert_cmpint(blk_flush(blk), ==, 0);
++    g_assert_cmpint(xbox_volatile_hdd_adjust_exit_status(EXIT_SUCCESS),
++                    ==, EXIT_SUCCESS);
++    blk_unref(blk);
++    g_unsetenv(XBOX_SAVE_VAULT_ENVIRONMENT);
++    test_vault_directory_free(g_steal_pointer(&directory));
++}
++
++static void test_checkpoint_failure_retry_and_exit_status(void)
++{
++    const uint64_t e_bytes = XBOX_VOLATILE_HDD_E_END -
++                             XBOX_VOLATILE_HDD_E_START;
++    const uint64_t clusters = e_bytes / (16U * KiB) + 1U;
++    const uint64_t fat_bytes = ROUND_UP(clusters * 4U, 4096U);
++    const uint64_t root_offset = XBOX_VOLATILE_HDD_E_START + 4096U +
++                                 fat_bytes;
++    g_autofree char *directory = test_vault_directory_new();
++    g_autofree uint8_t *root = g_malloc(16U * KiB);
++    TestBackingState *state;
++    BlockBackend *blk = test_backing_new(&state);
++    uint8_t marker = 0x7a;
++    uint8_t superblock[4096] = { 0 };
++    uint8_t fat[8];
++
++    g_setenv(XBOX_SAVE_VAULT_ENVIRONMENT, directory, true);
++    g_assert_true(xbox_volatile_hdd_attach(blk, &error_abort));
++    assert_read_only_backing(blk);
++    g_assert_cmpint(blk_pwrite(blk, XBOX_VOLATILE_HDD_E_START + 2U * MiB,
++                              sizeof(marker), &marker, 0), ==, 0);
++    g_assert_cmpint(blk_flush(blk), ==, -EIO);
++    g_assert_true(xbox_volatile_hdd_save_failed());
++    g_assert_cmpint(xbox_volatile_hdd_adjust_exit_status(EXIT_SUCCESS),
++                    ==, EXIT_FAILURE);
++
++    memcpy(superblock, "FATX", 4U);
++    stl_le_p(superblock + 8U, 32U);
++    stl_le_p(superblock + 12U, 1U);
++    stl_le_p(fat, UINT32_C(0xfffffff8));
++    stl_le_p(fat + 4U, UINT32_MAX);
++    memset(root, 0xff, 16U * KiB);
++    g_assert_cmpint(blk_pwrite(blk, 0x100U, sizeof(marker), &marker, 0), ==, 0);
++    g_assert_cmpint(blk_pwrite(blk, XBOX_VOLATILE_HDD_E_START,
++                              sizeof(superblock), superblock, 0), ==, 0);
++    g_assert_cmpint(blk_pwrite(blk, XBOX_VOLATILE_HDD_E_START + 4096U,
++                              sizeof(fat), fat, 0), ==, 0);
++    g_assert_cmpint(blk_pwrite(blk, root_offset, 16U * KiB, root, 0), ==, 0);
++    g_assert_cmpint(blk_flush(blk), ==, 0);
++    g_assert_false(xbox_volatile_hdd_save_failed());
++    g_assert_cmpint(xbox_volatile_hdd_adjust_exit_status(EXIT_SUCCESS),
++                    ==, EXIT_SUCCESS);
++
++    blk_unref(blk);
++    blk = test_backing_new(&state);
++    state->valid_empty_e = true;
++    marker = 0U;
++    g_assert_true(xbox_volatile_hdd_attach(blk, &error_abort));
++    assert_read_only_backing(blk);
++    g_assert_cmpint(blk_pread(blk, 0x100U, sizeof(marker), &marker, 0), ==, 0);
++    g_assert_cmphex(marker, ==, 0x7a);
++    g_assert_cmpuint(state->write_count, ==, 0);
++    blk_unref(blk);
++    g_unsetenv(XBOX_SAVE_VAULT_ENVIRONMENT);
++    test_vault_directory_free(g_steal_pointer(&directory));
++}
++
++static void test_import_failure_detaches_overlay(void)
++{
++    static const uint8_t corrupt[] = "invalid vault";
++    g_autofree char *directory = test_vault_directory_new();
++    g_autofree char *slot = g_build_filename(
++        directory, "original-xbox-udata-0.gdox", NULL);
++    TestBackingState *state;
++    BlockBackend *blk = test_backing_new(&state);
++    Error *error = NULL;
++    int fd = g_open(slot, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
++
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(qemu_write_full(fd, corrupt, sizeof(corrupt)),
++                    ==, sizeof(corrupt));
++    g_assert_cmpint(qemu_close(fd), ==, 0);
++    g_setenv(XBOX_SAVE_VAULT_ENVIRONMENT, directory, true);
++    g_assert_false(xbox_volatile_hdd_attach(blk, &error));
++    g_assert_nonnull(error);
++    error_free(error);
++    g_assert_true(blk_bs(blk)->drv == &test_backing_driver);
++    g_assert_null(blk_bs(blk)->backing);
++    blk_unref(blk);
++    g_unsetenv(XBOX_SAVE_VAULT_ENVIRONMENT);
++    g_assert_cmpint(g_unlink(slot), ==, 0);
++    test_vault_directory_free(g_steal_pointer(&directory));
++}
++
++int main(int argc, char **argv)
++{
++#ifdef XBOX
++    qemu_init_main_loop_lock();
++    qemu_mutex_lock_main_loop();
++#endif
++    bdrv_init();
++    qemu_init_main_loop(&error_abort);
++    g_test_init(&argc, &argv, NULL);
++
++    g_test_add_func("/xbox-volatile-hdd/blank-fatx", test_blank_fatx);
++    g_test_add_func("/xbox-volatile-hdd/full-disk-cow-and-boundaries",
++                    test_full_disk_cow_and_boundaries);
++    g_test_add_func("/xbox-volatile-hdd/zero-discard-and-failure",
++                    test_zero_discard_and_failure);
++    g_test_add_func("/xbox-volatile-hdd/concurrent-write-discard",
++                    test_concurrent_write_discard);
++    g_test_add_func("/xbox-volatile-hdd/cache-only-write-skips-save-scan",
++                    test_cache_only_write_skips_save_scan);
++    g_test_add_func("/xbox-volatile-hdd/checkpoint-failure-retry-exit-status",
++                    test_checkpoint_failure_retry_and_exit_status);
++    g_test_add_func("/xbox-volatile-hdd/import-failure-detaches-overlay",
++                    test_import_failure_detaches_overlay);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-xemu-gdox-runtime.c b/tests/unit/test-xemu-gdox-runtime.c
+new file mode 100644
+index 0000000..891e63e
+--- /dev/null
++++ b/tests/unit/test-xemu-gdox-runtime.c
+@@ -0,0 +1,150 @@
++/*
++ * GDOX launch argument tests
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "ui/xemu-gdox-runtime.h"
++
++static void test_disabled(void)
++{
++    const char *argv[] = { "xemu", "-config_path", "xemu.toml", NULL };
++    XemuGdoxLaunch launch;
++    int argc = 3;
++
++    g_setenv("MESA_SHADER_CACHE_DISABLE", "preserved", true);
++    g_assert_true(xemu_gdox_launch_prepare(&argc, (char **)argv, &launch));
++    g_assert_cmpint(launch.mode, ==, XEMU_GDOX_LAUNCH_NORMAL);
++    g_assert_cmpint(argc, ==, 3);
++    g_assert_cmpstr(g_getenv("MESA_SHADER_CACHE_DISABLE"), ==, "preserved");
++}
++
++static void test_runtime(void)
++{
++    const char *argv[] = {
++        "xemu", XEMU_GDOX_RUNTIME_ARGUMENT,
++        XEMU_GDOX_SAVE_VAULT_ARGUMENT, "/private/gdox/saves",
++        "-config_path", "xemu.toml", NULL,
++    };
++    XemuGdoxLaunch launch;
++    int argc = 6;
++
++    g_assert_true(xemu_gdox_launch_prepare(&argc, (char **)argv, &launch));
++    g_assert_cmpint(launch.mode, ==, XEMU_GDOX_LAUNCH_RUNTIME);
++    g_assert_cmpint(argc, ==, 3);
++    g_assert_cmpstr(g_getenv(XEMU_GDOX_SAVE_VAULT_ENVIRONMENT), ==,
++                    "/private/gdox/saves");
++    g_assert_cmpstr(g_getenv("MESA_SHADER_CACHE_DISABLE"), ==, "1");
++    g_assert_cmpstr(g_getenv("__GL_SHADER_DISK_CACHE"), ==, "0");
++}
++
++static void test_runtime_invalid(void)
++{
++    const char *missing[] = { "xemu", XEMU_GDOX_RUNTIME_ARGUMENT, NULL };
++    const char *duplicate[] = {
++        "xemu", XEMU_GDOX_RUNTIME_ARGUMENT,
++        XEMU_GDOX_SAVE_VAULT_ARGUMENT, "/private/a",
++        XEMU_GDOX_SAVE_VAULT_ARGUMENT, "/private/b", NULL,
++    };
++    XemuGdoxLaunch launch;
++    int missing_argc = 2;
++    int duplicate_argc = 6;
++
++    g_assert_false(xemu_gdox_launch_prepare(
++        &missing_argc, (char **)missing, &launch));
++    g_assert_false(xemu_gdox_launch_prepare(
++        &duplicate_argc, (char **)duplicate, &launch));
++}
++
++static void test_migration(void)
++{
++    const char *argv[] = {
++        "xemu", XEMU_GDOX_EXPECTED_SHA_ARGUMENT,
++        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
++        XEMU_GDOX_SAVE_VAULT_ARGUMENT, "/private/vault",
++        XEMU_GDOX_MIGRATE_ARGUMENT, "/private/legacy.qcow2",
++        XEMU_GDOX_EXPECTED_BYTES_ARGUMENT, "1782120448",
++        XEMU_GDOX_CLEAN_HDD_ARGUMENT, "/runtime/clean.qcow2", NULL,
++    };
++    XemuGdoxLaunch launch;
++    int argc = 11;
++
++    g_assert_true(xemu_gdox_launch_prepare(&argc, (char **)argv, &launch));
++    g_assert_cmpint(launch.mode, ==, XEMU_GDOX_LAUNCH_MIGRATE);
++    g_assert_cmpint(argc, ==, 1);
++    g_assert_cmpstr(launch.migration.legacy_hdd, ==,
++                    "/private/legacy.qcow2");
++    g_assert_cmpuint(launch.migration.expected_source_bytes,
++                     ==, UINT64_C(1782120448));
++    g_assert_cmphex(launch.migration.expected_source_sha256[0], ==, 0x01);
++    g_assert_cmphex(launch.migration.expected_source_sha256[31], ==, 0xef);
++    g_assert_true(launch.migration.expected_source_sha256_valid);
++}
++
++static void test_migration_removal_without_expected_hash(void)
++{
++    const char *argv[] = {
++        "xemu", XEMU_GDOX_MIGRATE_ARGUMENT, "/private/legacy.qcow2",
++        XEMU_GDOX_REMOVE_SOURCE_ARGUMENT,
++        XEMU_GDOX_CLEAN_HDD_ARGUMENT, "/runtime/clean.qcow2",
++        XEMU_GDOX_SAVE_VAULT_ARGUMENT, "/private/vault",
++        XEMU_GDOX_EXPECTED_BYTES_ARGUMENT, "1782120448", NULL,
++    };
++    XemuGdoxLaunch launch;
++    int argc = 10;
++
++    g_assert_true(xemu_gdox_launch_prepare(&argc, (char **)argv, &launch));
++    g_assert_cmpint(launch.mode, ==, XEMU_GDOX_LAUNCH_MIGRATE_REMOVE);
++    g_assert_cmpint(argc, ==, 1);
++    g_assert_false(launch.migration.expected_source_sha256_valid);
++}
++
++static void test_migration_invalid_expectations(void)
++{
++    const char *uppercase[] = {
++        "xemu", XEMU_GDOX_MIGRATE_ARGUMENT, "/private/legacy.qcow2",
++        XEMU_GDOX_CLEAN_HDD_ARGUMENT, "/runtime/clean.qcow2",
++        XEMU_GDOX_SAVE_VAULT_ARGUMENT, "/private/vault",
++        XEMU_GDOX_EXPECTED_BYTES_ARGUMENT, "01",
++        XEMU_GDOX_EXPECTED_SHA_ARGUMENT,
++        "ABCDEF6789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
++        NULL,
++    };
++    XemuGdoxLaunch launch;
++    int argc = 11;
++
++    g_assert_false(xemu_gdox_launch_prepare(
++        &argc, (char **)uppercase, &launch));
++}
++
++static void test_validation(void)
++{
++    const char *argv[] = {
++        "xemu", XEMU_GDOX_CLEAN_HDD_ARGUMENT, "/runtime/clean.qcow2",
++        XEMU_GDOX_VALIDATE_ARGUMENT, "/private/vault", NULL,
++    };
++    XemuGdoxLaunch launch;
++    int argc = 5;
++
++    g_assert_true(xemu_gdox_launch_prepare(&argc, (char **)argv, &launch));
++    g_assert_cmpint(launch.mode, ==, XEMU_GDOX_LAUNCH_VALIDATE);
++    g_assert_cmpint(argc, ==, 1);
++    g_assert_cmpstr(launch.validation_vault, ==, "/private/vault");
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/xemu-gdox-launch/disabled", test_disabled);
++    g_test_add_func("/xemu-gdox-launch/runtime", test_runtime);
++    g_test_add_func("/xemu-gdox-launch/runtime-invalid", test_runtime_invalid);
++    g_test_add_func("/xemu-gdox-launch/migration", test_migration);
++    g_test_add_func("/xemu-gdox-launch/migration-invalid-expectations",
++                    test_migration_invalid_expectations);
++    g_test_add_func("/xemu-gdox-launch/migration-removal-no-expected-hash",
++                    test_migration_removal_without_expected_hash);
++    g_test_add_func("/xemu-gdox-launch/validation", test_validation);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-xemu-version.sh b/tests/unit/test-xemu-version.sh
+new file mode 100755
+index 0000000..09130a6
+--- /dev/null
++++ b/tests/unit/test-xemu-version.sh
+@@ -0,0 +1,32 @@
++#!/bin/bash
++
++set -eu
++
++source_root="$1"
++temporary=$(mktemp -d)
++trap 'rm -rf "$temporary"' EXIT
++
++printf '%s\n' '0000000000000000000000000000000000000000' \
++  > "$temporary/XEMU_COMMIT"
++printf '%s\n' '1.2.3' > "$temporary/XEMU_VERSION"
++
++first=$(SOURCE_DATE_EPOCH=946684800 \
++  "$source_root/scripts/xemu-version.sh" "$temporary")
++second=$(SOURCE_DATE_EPOCH=946684800 \
++  "$source_root/scripts/xemu-version.sh" "$temporary")
++
++test "$first" = "$second"
++printf '%s\n' "$first" | grep -Fq \
++  '#define XEMU_DATE          "2000-01-01T00:00:00Z"'
++
++if SOURCE_DATE_EPOCH=-1 \
++    "$source_root/scripts/xemu-version.sh" "$temporary" >/dev/null 2>&1; then
++  echo "negative SOURCE_DATE_EPOCH was accepted" >&2
++  exit 1
++fi
++
++if SOURCE_DATE_EPOCH=invalid \
++    "$source_root/scripts/xemu-version.sh" "$temporary" >/dev/null 2>&1; then
++  echo "non-numeric SOURCE_DATE_EPOCH was accepted" >&2
++  exit 1
++fi
+diff --git a/ui/meson.build b/ui/meson.build
+index 86acebb..2220085 100644
+--- a/ui/meson.build
++++ b/ui/meson.build
+@@ -22,6 +22,8 @@ subdir('thirdparty')
+ xemu_ss = ss.source_set()
+ xemu_ss.add(files(
+   'xemu-input.c',
++  'xemu-gdox-runtime.c',
++  'xemu-gdox-save-operation.c',
+   'xemu-monitor.c',
+   'xemu-net.c',
+   'xemu-settings.cc',

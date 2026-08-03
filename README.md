@@ -1,33 +1,11 @@
 # gdox
 
-gdox reads, plays, and preserves physical game discs through supported optical
-drives.
+gdox plays original Xbox and Xbox 360 games from supported physical discs or
+owned images. it can also make playable xisos and full-disc preservation
+images from original Xbox discs.
 
-the current release supports original xbox. it can send a physical disc
-directly to [xemu](https://xemu.app/), make a playable xiso, or create a
-full-disc preservation image.
-
-## now
-
-GDOX is an active development release. current system: original xbox.
-
-linux, steam deck, macos, and windows builds are available. android is in
-development.
-
-## source
-
-the original xbox path reads only what xemu asks for. it does not flash the
-drive or copy the game first.
-[how it works](https://gdox.korze.org/wtf/#original-xbox) explains the
-complete path.
-
-build and test:
-
-```sh
-cmake --preset dev
-cmake --build --preset dev --parallel
-ctest --preset dev --output-on-failure
-```
+exact platform and drive support is maintained in [status](docs/STATUS.md) and
+[Xbox 360 support](docs/XBOX360.md).
 
 [contributing](CONTRIBUTING.md) /
 [status](docs/STATUS.md) /

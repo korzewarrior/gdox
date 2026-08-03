@@ -1,0 +1,502 @@
+diff --git a/block/xbox-save-policy.c b/block/xbox-save-policy.c
+new file mode 100644
+index 0000000..a81db4e
+--- /dev/null
++++ b/block/xbox-save-policy.c
+@@ -0,0 +1,205 @@
++/*
++ * Reviewed Original Xbox TDATA save projection policy
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "block/xbox-save-policy.h"
++#include "qemu/bswap.h"
++
++static const XboxSavePolicy default_policy = {
++    .revision = XBOX_SAVE_POLICY_REVISION,
++    .rules = NULL,
++    .rule_count = 0U,
++};
++
++static const XboxSavePolicy *const supported_policies[] = {
++    &default_policy,
++};
++
++const XboxSavePolicy *xbox_save_policy_default(void)
++{
++    return &default_policy;
++}
++
++static bool policy_component_is_forbidden(const char *component,
++                                          size_t bytes)
++{
++    return (bytes == 1U && component[0] == '.') ||
++           (bytes == 2U && component[0] == '.' && component[1] == '.') ||
++           (bytes == 2U && component[0] == '$' &&
++            (g_ascii_tolower(component[1]) == 'c' ||
++             g_ascii_tolower(component[1]) == 'u'));
++}
++
++static bool policy_relative_path_is_valid(const char *path)
++{
++    const char *component;
++
++    if (!path || !path[0] || path[0] == '/' ||
++        path[strlen(path) - 1U] == '/') {
++        return false;
++    }
++    component = path;
++    for (const char *cursor = path; ; cursor++) {
++        if (*cursor == '/' || *cursor == '\0') {
++            size_t bytes = cursor - component;
++
++            if (bytes == 0U ||
++                policy_component_is_forbidden(component, bytes)) {
++                return false;
++            }
++            if (*cursor == '\0') {
++                return true;
++            }
++            component = cursor + 1;
++        } else if (*cursor == '\\') {
++            return false;
++        }
++    }
++}
++
++bool xbox_save_policy_is_valid(const XboxSavePolicy *policy)
++{
++    g_autofree char *previous = NULL;
++
++    if (!policy || policy->revision == 0U ||
++        (policy->rule_count > 0U && !policy->rules)) {
++        return false;
++    }
++    for (size_t i = 0; i < policy->rule_count; i++) {
++        const XboxSavePolicyRule *rule = &policy->rules[i];
++        g_autofree char *canonical = NULL;
++        g_autofree char *raw = NULL;
++
++        if (!rule->title_id || strlen(rule->title_id) != 8U ||
++            !rule->relative_path || !rule->provenance ||
++            !rule->provenance[0] ||
++            (rule->kind != XBOX_SAVE_POLICY_EXACT_FILE &&
++             rule->kind != XBOX_SAVE_POLICY_REVIEWED_SUBTREE) ||
++            !policy_relative_path_is_valid(rule->relative_path)) {
++            return false;
++        }
++        for (size_t j = 0; j < 8U; j++) {
++            if (!g_ascii_isxdigit(rule->title_id[j]) ||
++                rule->title_id[j] != g_ascii_tolower(rule->title_id[j])) {
++                return false;
++            }
++        }
++        raw = g_strdup_printf("%s/%s", rule->title_id,
++                              rule->relative_path);
++        canonical = g_ascii_strdown(raw, -1);
++        if (previous && strcmp(previous, canonical) >= 0) {
++            return false;
++        }
++        g_free(previous);
++        previous = g_steal_pointer(&canonical);
++    }
++    return true;
++}
++
++static char *policy_rule_path(const XboxSavePolicyRule *rule)
++{
++    return g_strdup_printf("%s/%s", rule->title_id, rule->relative_path);
++}
++
++static bool policy_path_is_at_or_below(const char *path, const char *root)
++{
++    size_t root_bytes = strlen(root);
++
++    return g_ascii_strcasecmp(path, root) == 0 ||
++        (g_ascii_strncasecmp(path, root, root_bytes) == 0 &&
++         path[root_bytes] == '/');
++}
++
++void xbox_save_policy_digest(const XboxSavePolicy *policy, uint8_t digest[32])
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    uint8_t revision[4];
++    gsize digest_bytes = 32U;
++
++    g_assert(digest && xbox_save_policy_is_valid(policy));
++    stl_le_p(revision, policy->revision);
++    g_checksum_update(checksum, revision, sizeof(revision));
++    for (size_t i = 0; i < policy->rule_count; i++) {
++        const XboxSavePolicyRule *rule = &policy->rules[i];
++        const uint8_t separator = 0U;
++        const uint8_t kind = rule->kind;
++
++        g_checksum_update(checksum, (const uint8_t *)rule->title_id,
++                          strlen(rule->title_id));
++        g_checksum_update(checksum, &separator, 1U);
++        g_checksum_update(checksum, (const uint8_t *)rule->relative_path,
++                          strlen(rule->relative_path));
++        g_checksum_update(checksum, &separator, 1U);
++        g_checksum_update(checksum, &kind, 1U);
++        g_checksum_update(checksum, &separator, 1U);
++        g_checksum_update(checksum, (const uint8_t *)rule->provenance,
++                          strlen(rule->provenance));
++        g_checksum_update(checksum, &separator, 1U);
++    }
++    g_checksum_get_digest(checksum, digest, &digest_bytes);
++    g_assert_cmpuint(digest_bytes, ==, 32U);
++}
++
++const XboxSavePolicy *xbox_save_policy_lookup(uint32_t revision,
++                                              const uint8_t digest[32])
++{
++    uint8_t candidate[32];
++
++    if (!digest) {
++        return NULL;
++    }
++    for (size_t i = 0; i < G_N_ELEMENTS(supported_policies); i++) {
++        const XboxSavePolicy *policy = supported_policies[i];
++
++        if (policy->revision != revision ||
++            !xbox_save_policy_is_valid(policy)) {
++            continue;
++        }
++        xbox_save_policy_digest(policy, candidate);
++        if (memcmp(candidate, digest, sizeof(candidate)) == 0) {
++            return policy;
++        }
++    }
++    return NULL;
++}
++
++bool xbox_save_policy_allows_file(const XboxSavePolicy *policy,
++                                  const char *tdata_path)
++{
++    for (size_t i = 0; policy && i < policy->rule_count; i++) {
++        const XboxSavePolicyRule *rule = &policy->rules[i];
++        g_autofree char *root = policy_rule_path(rule);
++
++        if (rule->kind == XBOX_SAVE_POLICY_EXACT_FILE) {
++            if (g_ascii_strcasecmp(tdata_path, root) == 0) {
++                return true;
++            }
++        } else if (rule->kind == XBOX_SAVE_POLICY_REVIEWED_SUBTREE &&
++                   policy_path_is_at_or_below(tdata_path, root)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++bool xbox_save_policy_needs_directory(const XboxSavePolicy *policy,
++                                      const char *tdata_path)
++{
++    size_t path_bytes = strlen(tdata_path);
++
++    for (size_t i = 0; policy && i < policy->rule_count; i++) {
++        g_autofree char *root = policy_rule_path(&policy->rules[i]);
++
++        if (g_ascii_strcasecmp(tdata_path, root) == 0 ||
++            policy_path_is_at_or_below(tdata_path, root) ||
++            (g_ascii_strncasecmp(root, tdata_path, path_bytes) == 0 &&
++             root[path_bytes] == '/')) {
++            return true;
++        }
++    }
++    return false;
++}
+diff --git a/block/xbox-save-security.c b/block/xbox-save-security.c
+new file mode 100644
+index 0000000..f56c463
+--- /dev/null
++++ b/block/xbox-save-security.c
+@@ -0,0 +1,195 @@
++/*
++ * Xbox save storage privacy checks
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "block/xbox-save-security.h"
++
++#ifdef _WIN32
++#include <aclapi.h>
++#include <io.h>
++#endif
++
++int xbox_save_fstat(int fd, GStatBuf *status)
++{
++#ifdef _WIN32
++    return _fstat64(fd, status);
++#else
++    return fstat(fd, status);
++#endif
++}
++
++bool xbox_save_path_is_link(const char *path, const GStatBuf *status)
++{
++#ifdef _WIN32
++    g_autofree gunichar2 *wide = g_utf8_to_utf16(path, -1, NULL, NULL, NULL);
++    DWORD attributes;
++
++    if (!wide) {
++        return true;
++    }
++    attributes = GetFileAttributesW((LPCWSTR)wide);
++    return attributes == INVALID_FILE_ATTRIBUTES ||
++           (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
++#else
++    return S_ISLNK(status->st_mode);
++#endif
++}
++
++#ifdef _WIN32
++static bool xbox_save_windows_handle_is_private(HANDLE handle, Error **errp)
++{
++    g_autofree uint8_t *token_buffer = NULL;
++    PSECURITY_DESCRIPTOR descriptor = NULL;
++    PSID owner = NULL;
++    PACL dacl = NULL;
++    HANDLE token = NULL;
++    TOKEN_USER *user;
++    ACL_SIZE_INFORMATION acl_info;
++    uint8_t system_buffer[SECURITY_MAX_SID_SIZE];
++    uint8_t administrators_buffer[SECURITY_MAX_SID_SIZE];
++    DWORD system_bytes = sizeof(system_buffer);
++    DWORD administrators_bytes = sizeof(administrators_buffer);
++    DWORD token_bytes = 0U;
++    DWORD status;
++    bool success = false;
++
++    status = GetSecurityInfo(handle, SE_FILE_OBJECT,
++                             OWNER_SECURITY_INFORMATION |
++                             DACL_SECURITY_INFORMATION,
++                             &owner, NULL, &dacl, NULL, &descriptor);
++    if (status != ERROR_SUCCESS || !owner || !dacl ||
++        !IsValidAcl(dacl) ||
++        !OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
++        error_setg(errp, "Xbox save storage has no verifiable private DACL");
++        goto done;
++    }
++    GetTokenInformation(token, TokenUser, NULL, 0U, &token_bytes);
++    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || token_bytes == 0U) {
++        error_setg(errp, "Could not inspect the Xbox save storage owner");
++        goto done;
++    }
++    token_buffer = g_try_malloc(token_bytes);
++    if (!token_buffer ||
++        !GetTokenInformation(token, TokenUser, token_buffer, token_bytes,
++                             &token_bytes) ||
++        !CreateWellKnownSid(WinLocalSystemSid, NULL, system_buffer,
++                            &system_bytes) ||
++        !CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL,
++                            administrators_buffer,
++                            &administrators_bytes)) {
++        error_setg(errp, "Could not inspect the Xbox save storage DACL");
++        goto done;
++    }
++    user = (TOKEN_USER *)token_buffer;
++    if (!EqualSid(owner, user->User.Sid) ||
++        !GetAclInformation(dacl, &acl_info, sizeof(acl_info),
++                           AclSizeInformation)) {
++        error_setg(errp, "Xbox save storage is not owned by the current user");
++        goto done;
++    }
++    for (DWORD i = 0U; i < acl_info.AceCount; i++) {
++        ACE_HEADER *header;
++        ACCESS_ALLOWED_ACE *allowed;
++        PSID sid;
++
++        if (!GetAce(dacl, i, (void **)&header)) {
++            error_setg(errp, "Could not inspect the Xbox save storage DACL");
++            goto done;
++        }
++        if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) {
++            if (header->AceType == ACCESS_ALLOWED_OBJECT_ACE_TYPE ||
++                header->AceType == ACCESS_ALLOWED_CALLBACK_ACE_TYPE ||
++                header->AceType == ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE) {
++                error_setg(errp, "Xbox save storage has an unsupported allow rule");
++                goto done;
++            }
++            continue;
++        }
++        allowed = (ACCESS_ALLOWED_ACE *)header;
++        sid = &allowed->SidStart;
++        if (!IsValidSid(sid) ||
++            (!EqualSid(sid, user->User.Sid) &&
++             !EqualSid(sid, system_buffer) &&
++             !EqualSid(sid, administrators_buffer))) {
++            error_setg(errp, "Xbox save storage grants access outside the current user");
++            goto done;
++        }
++    }
++    success = true;
++done:
++    if (token) {
++        CloseHandle(token);
++    }
++    if (descriptor) {
++        LocalFree(descriptor);
++    }
++    return success;
++}
++
++bool xbox_save_windows_path_is_private(const char *path, bool directory,
++                                       Error **errp)
++{
++    g_autofree gunichar2 *wide = g_utf8_to_utf16(path, -1, NULL, NULL, NULL);
++    HANDLE handle;
++    DWORD flags = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT;
++    FILE_ATTRIBUTE_TAG_INFO attributes;
++    bool success;
++
++    if (!wide) {
++        error_setg(errp, "Xbox save storage path is not valid UTF-8");
++        return false;
++    }
++    if (directory) {
++        flags |= FILE_FLAG_BACKUP_SEMANTICS;
++    }
++    handle = CreateFileW((LPCWSTR)wide, READ_CONTROL,
++                         FILE_SHARE_READ | FILE_SHARE_WRITE |
++                         FILE_SHARE_DELETE, NULL, OPEN_EXISTING, flags, NULL);
++    if (handle == INVALID_HANDLE_VALUE ||
++        !GetFileInformationByHandleEx(handle, FileAttributeTagInfo,
++                                      &attributes, sizeof(attributes)) ||
++        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
++        directory !=
++            ((attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)) {
++        if (handle != INVALID_HANDLE_VALUE) {
++            CloseHandle(handle);
++        }
++        error_setg_win32(errp, GetLastError(),
++                         "Could not securely open Xbox save storage");
++        return false;
++    }
++    success = xbox_save_windows_handle_is_private(handle, errp);
++    CloseHandle(handle);
++    return success;
++}
++
++bool xbox_save_windows_fd_is_private(int fd, Error **errp)
++{
++    HANDLE handle = (HANDLE)_get_osfhandle(fd);
++    FILE_ATTRIBUTE_TAG_INFO attributes;
++
++    if (handle == INVALID_HANDLE_VALUE ||
++        !GetFileInformationByHandleEx(handle, FileAttributeTagInfo,
++                                      &attributes, sizeof(attributes)) ||
++        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
++        error_setg(errp, "Xbox save storage handle is invalid");
++        return false;
++    }
++    return xbox_save_windows_handle_is_private(handle, errp);
++}
++#else
++bool xbox_save_windows_path_is_private(const char *path, bool directory,
++                                       Error **errp)
++{
++    return true;
++}
++
++bool xbox_save_windows_fd_is_private(int fd, Error **errp)
++{
++    return true;
++}
++#endif
+diff --git a/include/block/xbox-save-policy.h b/include/block/xbox-save-policy.h
+new file mode 100644
+index 0000000..eff169c
+--- /dev/null
++++ b/include/block/xbox-save-policy.h
+@@ -0,0 +1,58 @@
++/*
++ * Reviewed Original Xbox TDATA save projection policy
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef XBOX_SAVE_POLICY_H
++#define XBOX_SAVE_POLICY_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#define XBOX_SAVE_POLICY_REVISION 1U
++#define XBOX_SAVE_POLICY_DIGEST_BYTES 32U
++
++typedef enum XboxSavePolicyRuleKind {
++    XBOX_SAVE_POLICY_EXACT_FILE = 1,
++    XBOX_SAVE_POLICY_REVIEWED_SUBTREE = 2,
++} XboxSavePolicyRuleKind;
++
++typedef struct XboxSavePolicyRule {
++    /* Eight lowercase hexadecimal digits. */
++    const char *title_id;
++    /* FATX path relative to E:\\TDATA\\<title_id>. */
++    const char *relative_path;
++    XboxSavePolicyRuleKind kind;
++    /* Stable public evidence identifying this path as player save/profile. */
++    const char *provenance;
++} XboxSavePolicyRule;
++
++typedef struct XboxSavePolicy {
++    uint32_t revision;
++    const XboxSavePolicyRule *rules;
++    size_t rule_count;
++} XboxSavePolicy;
++
++/*
++ * The initial reviewed catalog is deliberately empty. Community reports prove
++ * that some titles use TDATA for saves, but they do not provide sufficiently
++ * authoritative, exhaustive path classification to distinguish those files
++ * from DLC, updates, caches, music, or modified game assets. Adding a rule
++ * requires an exact title/path and public provenance review.
++ */
++const XboxSavePolicy *xbox_save_policy_default(void);
++const XboxSavePolicy *xbox_save_policy_lookup(
++    uint32_t revision,
++    const uint8_t digest[XBOX_SAVE_POLICY_DIGEST_BYTES]);
++bool xbox_save_policy_is_valid(const XboxSavePolicy *policy);
++
++void xbox_save_policy_digest(const XboxSavePolicy *policy,
++                             uint8_t digest[XBOX_SAVE_POLICY_DIGEST_BYTES]);
++bool xbox_save_policy_allows_file(const XboxSavePolicy *policy,
++                                  const char *tdata_path);
++bool xbox_save_policy_needs_directory(const XboxSavePolicy *policy,
++                                      const char *tdata_path);
++
++#endif
+diff --git a/include/block/xbox-save-security.h b/include/block/xbox-save-security.h
+new file mode 100644
+index 0000000..8da64c5
+--- /dev/null
++++ b/include/block/xbox-save-security.h
+@@ -0,0 +1,20 @@
++/*
++ * Xbox save storage privacy checks
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef XBOX_SAVE_SECURITY_H
++#define XBOX_SAVE_SECURITY_H
++
++#include <glib/gstdio.h>
++
++#include "qapi/error.h"
++
++int xbox_save_fstat(int fd, GStatBuf *status);
++bool xbox_save_path_is_link(const char *path, const GStatBuf *status);
++bool xbox_save_windows_path_is_private(const char *path, bool directory,
++                                       Error **errp);
++bool xbox_save_windows_fd_is_private(int fd, Error **errp);
++
++#endif

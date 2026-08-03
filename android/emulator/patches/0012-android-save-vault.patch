@@ -1,0 +1,136 @@
+diff --git a/android/app/src/main/cpp/xemu_android.cpp b/android/app/src/main/cpp/xemu_android.cpp
+index 09204c5c69..66c83ef385 100644
+--- a/android/app/src/main/cpp/xemu_android.cpp
++++ b/android/app/src/main/cpp/xemu_android.cpp
+@@ -26,9 +26,11 @@
+ #include "gdox_qemu_disc.h"
+ extern "C" {
+ #include "qemu/osdep.h"
++#include "block/xbox-save-vault.h"
+ #include "system/runstate.h"
+ }
+ 
+ namespace {
++static_assert(XBOX_SAVE_VAULT_CAPABILITY_SCHEMA == 3U);
+ constexpr const char* kLogTag = "xemu-android";
+ constexpr const char* kPrefsName = "gdox";
+@@ -68,6 +70,63 @@ static bool EnsureDirExists(const std::string& path) {
+   return errno == EEXIST;
+ }
+ 
++static bool EnsurePrivateDirectory(const std::string& path) {
++  struct stat st {};
++  int directory;
++  bool valid;
++
++  if (path.empty()) return false;
++  if (mkdir(path.c_str(), S_IRWXU) != 0 && errno != EEXIST) return false;
++  directory = open(
++      path.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++  if (directory < 0) return false;
++  valid = fstat(directory, &st) == 0 && S_ISDIR(st.st_mode) &&
++      st.st_uid == geteuid() && fchmod(directory, S_IRWXU) == 0 &&
++      fstat(directory, &st) == 0 && S_ISDIR(st.st_mode) &&
++      st.st_uid == geteuid() && (st.st_mode & 0777) == S_IRWXU;
++  close(directory);
++  return valid;
++}
++
++static bool CanonicalPath(const std::string& path, std::string* output) {
++  char resolved[PATH_MAX];
++
++  if (!output || !realpath(path.c_str(), resolved)) return false;
++  *output = resolved;
++  return true;
++}
++
++static bool IsWithinDirectory(const std::string& root,
++                              const std::string& candidate) {
++  return candidate.size() > root.size() &&
++      candidate.compare(0, root.size(), root) == 0 &&
++      candidate[root.size()] == '/';
++}
++
++static std::string ResolveSaveVault() {
++  const char* internalPath = SDL_AndroidGetInternalStoragePath();
++  std::string internalRoot;
++  std::string current;
++  std::string canonical;
++  static constexpr const char* kComponents[] = {"xemu", "saves", "v1"};
++
++  if (!internalPath || internalPath[0] == '\0' ||
++      !CanonicalPath(internalPath, &internalRoot)) {
++    return {};
++  }
++  current = internalRoot;
++  for (const char* component : kComponents) {
++    current += "/";
++    current += component;
++    if (!EnsurePrivateDirectory(current)) return {};
++  }
++  if (!CanonicalPath(current, &canonical) ||
++      !IsWithinDirectory(internalRoot, canonical)) {
++    return {};
++  }
++  return canonical;
++}
++
+ static bool FileExists(const std::string& path) {
+   if (path.empty()) return false;
+   struct stat st {};
+@@ -362,6 +421,7 @@ struct SetupFiles {
+   std::string hdd;
+   std::string dvd;
+   std::string eeprom;
++  std::string save_vault;
+   std::string config_path;
+   std::string active_session_flag_path;
+ };
+@@ -477,6 +537,7 @@ static SetupFiles SyncSetupFiles() {
+   std::string base = std::string(basePath) + "/gdox";
+   EnsureDirExists(base);
+   out.eeprom = base + "/eeprom.bin";
++  out.save_vault = ResolveSaveVault();
+   out.active_session_flag_path = base + "/active_emulator_session.flag";
+ 
+   const std::string mcpxPath = GetPrefString(env, activity, "mcpxPath");
+@@ -634,8 +693,9 @@ extern "C" int SDL_main(int argc, char* argv[]) {
+   if (setenv("MESA_SHADER_CACHE_DISABLE", "1", 1) != 0 ||
+       setenv("__GL_SHADER_DISK_CACHE", "0", 1) != 0) {
+     LogErrorFmt("Could not disable persistent driver caches: %s", strerror(errno));
+     return 1;
+   }
++  unsetenv(XBOX_SAVE_VAULT_ENVIRONMENT);
+   // Prefer AAudio on Android, but keep Android AudioTrack as fallback.
+   SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, "aaudio,android",
+                           SDL_HINT_OVERRIDE);
+@@ -687,6 +747,29 @@ extern "C" int SDL_main(int argc, char* argv[]) {
+ 
+   SetupFiles setup = SyncSetupFiles();
+ 
++  if (setup.save_vault.empty()) {
++    LogError("Saved-game vault path is unavailable or unsafe");
++    SDL_ShowSimpleMessageBox(
++        SDL_MESSAGEBOX_ERROR,
++        "GDOX could not open saved-game storage",
++        "The app's private saved-game storage is unavailable or unsafe.",
++        nullptr);
++    ShutdownPhysicalDrive();
++    SDL_Quit();
++    return 1;
++  }
++  if (setenv(XBOX_SAVE_VAULT_ENVIRONMENT, setup.save_vault.c_str(), 1) != 0) {
++    LogErrorFmt("Could not configure the saved-game vault: %s", strerror(errno));
++    SDL_ShowSimpleMessageBox(
++        SDL_MESSAGEBOX_ERROR,
++        "GDOX could not open saved-game storage",
++        "The app's private saved-game storage is unavailable or unsafe.",
++        nullptr);
++    ShutdownPhysicalDrive();
++    SDL_Quit();
++    return 1;
++  }
++
+   if (!setup.config_path.empty()) {
+     LogInfo("SDL_main: loading config");
+     xemu_settings_set_path(setup.config_path.c_str());

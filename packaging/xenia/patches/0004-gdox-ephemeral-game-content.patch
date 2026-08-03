@@ -1,0 +1,262 @@
+diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+index 22cd25220..357d73fab 100644
+--- a/src/xenia/emulator.cc
++++ b/src/xenia/emulator.cc
+@@ -883,10 +883,14 @@ X_STATUS Emulator::InstallContentPackage(
+ 
++  const std::filesystem::path& installation_root =
++      kernel_state_->content_manager()->GetContentRoot(
++          installation_info.content_type_);
++
+   const std::filesystem::path installation_path =
+-      content_root() / installation_info.data_installation_path_;
++      installation_root / installation_info.data_installation_path_;
+ 
+   const std::filesystem::path header_path =
+-      content_root() / installation_info.header_installation_path_;
++      installation_root / installation_info.header_installation_path_;
+ 
+-  if (!std::filesystem::exists(content_root())) {
+-    const std::error_code ec = xe::filesystem::CreateFolder(content_root());
++  if (!std::filesystem::exists(installation_root)) {
++    const std::error_code ec = xe::filesystem::CreateFolder(installation_root);
+     if (ec) {
+@@ -899,3 +903,3 @@ X_STATUS Emulator::InstallContentPackage(
+ 
+-  const auto disk_space = std::filesystem::space(content_root());
++  const auto disk_space = std::filesystem::space(installation_root);
+   if (disk_space.available < installation_info.content_size_ * 1.1f) {
+diff --git a/src/xenia/kernel/xam/content_manager.cc b/src/xenia/kernel/xam/content_manager.cc
+index e91608fc0..3aab01404 100644
+--- a/src/xenia/kernel/xam/content_manager.cc
++++ b/src/xenia/kernel/xam/content_manager.cc
+@@ -12,2 +12,3 @@
+ #include "third_party/fmt/include/fmt/format.h"
++#include "xenia/base/cvar.h"
+ #include "xenia/base/filesystem.h"
+@@ -24,2 +25,7 @@ DECLARE_int32(license_mask);
+ 
++DEFINE_transient_bool(
++    gdox_persistent_content_saves_only, false,
++    "Keep only save and profile content in the persistent content root.",
++    "Storage");
++
+ namespace xe {
+@@ -78,3 +84,6 @@ ContentManager::ContentManager(KernelState* kernel_state,
+                                const std::filesystem::path& root_path)
+-    : kernel_state_(kernel_state), root_path_(root_path) {}
++    : kernel_state_(kernel_state),
++      root_path_(root_path),
++      ephemeral_root_path_(kernel_state->emulator()->storage_root() /
++                           "game_content") {}
+ 
+@@ -82,2 +91,25 @@ ContentManager::~ContentManager() = default;
+ 
++static_assert(
++    ContentManager::IsPersistentContentType(XContentType::kSavedGame));
++static_assert(ContentManager::IsPersistentContentType(XContentType::kProfile));
++static_assert(
++    ContentManager::IsPersistentContentType(XContentType::kXboxSavedGame));
++static_assert(!ContentManager::IsPersistentContentType(
++    XContentType::kMarketplaceContent));
++static_assert(
++    !ContentManager::IsPersistentContentType(XContentType::kInstalledGame));
++static_assert(
++    !ContentManager::IsPersistentContentType(XContentType::kCacheFile));
++static_assert(
++    !ContentManager::IsPersistentContentType(XContentType::kInstaller));
++
++const std::filesystem::path& ContentManager::GetContentRoot(
++    XContentType content_type) const {
++  if (!cvars::gdox_persistent_content_saves_only ||
++      IsPersistentContentType(content_type)) {
++    return root_path_;
++  }
++  return ephemeral_root_path_;
++}
++
+ std::filesystem::path ContentManager::ResolvePackageRoot(
+@@ -95,3 +127,4 @@ std::filesystem::path ContentManager::ResolvePackageRoot(
+   // content_root/title_id/content_type/
+-  return root_path_ / xuid_str / title_id_str / content_type_str;
++  return GetContentRoot(content_type) / xuid_str / title_id_str /
++         content_type_str;
+ }
+@@ -161,4 +194,4 @@ std::filesystem::path ContentManager::ResolvePackageHeaderPath(
+   // content_root/xuid/title_id/Headers/content_type/
+-  return root_path_ / xuid_str / title_id_str / kGameContentHeaderDirName /
+-         content_type_str / final_name;
++  return GetContentRoot(content_type) / xuid_str / title_id_str /
++         kGameContentHeaderDirName / content_type_str / final_name;
+ }
+@@ -176,3 +209,3 @@ std::unordered_set<uint32_t> ContentManager::FindPublisherTitleIds(
+   auto publisher_entries = xe::filesystem::FilterByName(
+-      xe::filesystem::ListDirectories(root_path_ /
++      xe::filesystem::ListDirectories(GetContentRoot(XContentType::kPublisher) /
+                                       fmt::format("{:016X}", xuid)),
+diff --git a/src/xenia/kernel/xam/content_manager.h b/src/xenia/kernel/xam/content_manager.h
+index 02b03c19f..a6aa16ed6 100644
+--- a/src/xenia/kernel/xam/content_manager.h
++++ b/src/xenia/kernel/xam/content_manager.h
+@@ -259,2 +259,8 @@ class ContentManager {
+                          const XCONTENT_AGGREGATE_DATA& data);
++  static constexpr bool IsPersistentContentType(XContentType content_type) {
++    return content_type == XContentType::kSavedGame ||
++           content_type == XContentType::kProfile ||
++           content_type == XContentType::kXboxSavedGame;
++  }
++  const std::filesystem::path& GetContentRoot(XContentType content_type) const;
+   std::filesystem::path ResolveGameUserContentPath(const uint64_t xuid);
+@@ -285,2 +291,3 @@ class ContentManager {
+   std::filesystem::path root_path_;
++  std::filesystem::path ephemeral_root_path_;
+ 
+diff --git a/src/xenia/kernel/xam/xam_content.cc b/src/xenia/kernel/xam/xam_content.cc
+index d8a6d696a..9d46a98d0 100644
+--- a/src/xenia/kernel/xam/xam_content.cc
++++ b/src/xenia/kernel/xam/xam_content.cc
+@@ -779,2 +779,3 @@ dword_result_t xeXamContentLaunchImage(dword_t user_index,
+   vfs::Entry* entry;
++  XContentType content_type = XContentType::kInstalledGame;
+   if (!image_location) {
+@@ -782,2 +783,3 @@ dword_result_t xeXamContentLaunchImage(dword_t user_index,
+         *content_data_ptr.as<XCONTENT_DATA*>();
++    content_type = content_data.content_type;
+     const uint32_t title_id = xe::string_util::from_string<uint32_t>(
+@@ -801,4 +803,5 @@ dword_result_t xeXamContentLaunchImage(dword_t user_index,
+ 
+-  const std::filesystem::path host_path =
+-      kernel_state()->emulator()->content_root() / entry->name();
++  const std::filesystem::path& content_root =
++      kernel_state()->content_manager()->GetContentRoot(content_type);
++  const std::filesystem::path host_path = content_root / entry->name();
+ 
+@@ -806,4 +809,4 @@ dword_result_t xeXamContentLaunchImage(dword_t user_index,
+     uint64_t progress = 0;
+-    vfs::VirtualFileSystem::ExtractContentFile(
+-        entry, kernel_state()->emulator()->content_root(), progress, true);
++    vfs::VirtualFileSystem::ExtractContentFile(entry, content_root, progress,
++                                               true);
+   }
+diff --git a/src/xenia/kernel/xam/xam_module.cc b/src/xenia/kernel/xam/xam_module.cc
+index a02c57d90..1cde94d21 100644
+--- a/src/xenia/kernel/xam/xam_module.cc
++++ b/src/xenia/kernel/xam/xam_module.cc
+@@ -65,3 +65,5 @@ XamModule::~XamModule() {}
+ void XamModule::LoadLoaderData() {
+-  FILE* file = xe::filesystem::OpenFile(kXamModuleLoaderDataFileName, "rb");
++  const std::filesystem::path loader_data_path =
++      emulator_->storage_root() / kXamModuleLoaderDataFileName;
++  FILE* file = xe::filesystem::OpenFile(loader_data_path, "rb");
+ 
+@@ -99,3 +101,3 @@ void XamModule::LoadLoaderData() {
+   // We read launch data. Let's remove it till next request.
+-  std::filesystem::remove(kXamModuleLoaderDataFileName);
++  std::filesystem::remove(loader_data_path);
+ }
+@@ -103,3 +105,5 @@ void XamModule::LoadLoaderData() {
+ void XamModule::SaveLoaderData() {
+-  FILE* file = xe::filesystem::OpenFile(kXamModuleLoaderDataFileName, "wb");
++  const std::filesystem::path loader_data_path =
++      emulator_->storage_root() / kXamModuleLoaderDataFileName;
++  FILE* file = xe::filesystem::OpenFile(loader_data_path, "wb");
+ 
+diff --git a/src/xenia/kernel/xam/xam_user.cc b/src/xenia/kernel/xam/xam_user.cc
+index 2f4c21702..ee4ee94da 100644
+--- a/src/xenia/kernel/xam/xam_user.cc
++++ b/src/xenia/kernel/xam/xam_user.cc
+@@ -926,4 +926,6 @@ dword_result_t XamWriteGamerTile_entry(
+     const std::filesystem::path gamer_pictures_storage_path =
+-        kernel_state()->emulator()->content_root() / common_content_str /
+-        kDashboardStringID / content_type_str / content_title_id_str;
++        kernel_state()->content_manager()->GetContentRoot(
++            XContentType::kGamerPicture) /
++        common_content_str / kDashboardStringID / content_type_str /
++        content_title_id_str;
+ 
+diff --git a/src/xenia/base/gdox_storage_capability.h b/src/xenia/base/gdox_storage_capability.h
+new file mode 100644
+--- /dev/null
++++ b/src/xenia/base/gdox_storage_capability.h
+@@ -0,0 +1,35 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 GDOX contributors.                                         *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#ifndef XENIA_BASE_GDOX_STORAGE_CAPABILITY_H_
++#define XENIA_BASE_GDOX_STORAGE_CAPABILITY_H_
++
++#include <cstring>
++#include <cwchar>
++
++namespace xe {
++
++inline constexpr char kGdoxStorageCapabilityResponse[] =
++    "{\"schema\":1,\"runtime\":\"xenia\",\"storage\":{"
++    "\"persistent\":\"saves-profiles-only\","
++    "\"game_content\":\"ephemeral\"}}\n";
++
++inline bool IsGdoxStorageCapabilityQuery(int argc, char* const* argv) {
++  return argc == 2 && argv != nullptr && argv[1] != nullptr &&
++         std::strcmp(argv[1], "--gdox-storage-capabilities") == 0;
++}
++
++inline bool IsGdoxStorageCapabilityQuery(const wchar_t* command_line) {
++  return command_line != nullptr &&
++         std::wcscmp(command_line, L"--gdox-storage-capabilities") == 0;
++}
++
++}  // namespace xe
++
++#endif  // XENIA_BASE_GDOX_STORAGE_CAPABILITY_H_
+diff --git a/src/xenia/ui/windowed_app_main_posix.cc b/src/xenia/ui/windowed_app_main_posix.cc
+--- a/src/xenia/ui/windowed_app_main_posix.cc
++++ b/src/xenia/ui/windowed_app_main_posix.cc
+@@ -11,10 +11,16 @@
+ #include <cstdlib>
+ 
+ #include "xenia/base/cvar.h"
++#include "xenia/base/gdox_storage_capability.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/ui/windowed_app.h"
+ #include "xenia/ui/windowed_app_context_gtk.h"
+ 
+ int main(int argc_pre_gtk, char** argv_pre_gtk) {
++  if (xe::IsGdoxStorageCapabilityQuery(argc_pre_gtk, argv_pre_gtk)) {
++    std::fputs(xe::kGdoxStorageCapabilityResponse, stdout);
++    return EXIT_SUCCESS;
++  }
++
+   // Before touching anything GTK+, make sure that when running on Wayland,
+   // we'll still get an X11 (Xwayland) window
+diff --git a/src/xenia/ui/windowed_app_main_win.cc b/src/xenia/ui/windowed_app_main_win.cc
+--- a/src/xenia/ui/windowed_app_main_win.cc
++++ b/src/xenia/ui/windowed_app_main_win.cc
+@@ -12,3 +12,4 @@
+ #include "xenia/base/console.h"
+ #include "xenia/base/cvar.h"
++#include "xenia/base/gdox_storage_capability.h"
+ #include "xenia/base/main_win.h"
+@@ -309,3 +310,17 @@ int UnhandledExceptionFilterThunk(_EXCEPTION_POINTERS* exception_info) {
+ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev,
+                     LPWSTR command_line, int show_cmd) {
++  if (xe::IsGdoxStorageCapabilityQuery(command_line)) {
++    HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
++    DWORD written = 0;
++    const DWORD response_size = static_cast<DWORD>(
++        sizeof(xe::kGdoxStorageCapabilityResponse) - 1);
++    if (output == nullptr || output == INVALID_HANDLE_VALUE ||
++        !WriteFile(output, xe::kGdoxStorageCapabilityResponse, response_size,
++                   &written, nullptr) ||
++        written != response_size) {
++      return EXIT_FAILURE;
++    }
++    return EXIT_SUCCESS;
++  }
++
+   MODULEINFO modinfo;

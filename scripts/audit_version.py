@@ -3,20 +3,21 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
 import sys
+from pathlib import Path
 
 sys.dont_write_bytecode = True
 from project_version import project_version, validated_project_version
-
 
 ROOT = Path(__file__).resolve().parents[1]
 DERIVED_VERSION_FILES = (
     "scripts/build_linux_packages.py",
     "scripts/package_android_source.py",
+    "scripts/package_private_candidate.py",
     "scripts/package_release.py",
     "scripts/package_source.py",
+    "scripts/release_notes.py",
 )
 CURRENT_DOCUMENTS = (
     "README.md",
