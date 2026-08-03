@@ -21,6 +21,8 @@
 
 typedef struct gdox_windows_scsi_context {
     HANDLE device;
+    uint8_t last_sense[GDOX_WINDOWS_SENSE_BYTES];
+    size_t last_sense_bytes;
 } gdox_windows_scsi_context;
 
 typedef struct gdox_windows_scsi_packet {
@@ -160,6 +162,29 @@ static bool execute_command(
     return true;
 }
 
+static void cache_command_sense(
+    gdox_windows_scsi_context *context,
+    bool succeeded,
+    const gdox_windows_scsi_packet *packet
+)
+{
+    const uint8_t response_code = packet != NULL
+        ? (uint8_t)(packet->sense[0] & 0x7fU)
+        : 0U;
+
+    context->last_sense_bytes = 0U;
+    if (!succeeded
+        && (response_code == 0x70U || response_code == 0x71U
+            || response_code == 0x72U || response_code == 0x73U)) {
+        memcpy(
+            context->last_sense,
+            packet->sense,
+            sizeof(context->last_sense)
+        );
+        context->last_sense_bytes = sizeof(context->last_sense);
+    }
+}
+
 static bool windows_command_in(
     void *raw_context,
     const char *name,
@@ -172,8 +197,9 @@ static bool windows_command_in(
     gdox_error *error
 )
 {
-    const gdox_windows_scsi_context *context = raw_context;
-    return execute_command(
+    gdox_windows_scsi_context *context = raw_context;
+    gdox_windows_scsi_packet packet = {0};
+    const bool succeeded = execute_command(
         context->device,
         name,
         cdb,
@@ -183,9 +209,11 @@ static bool windows_command_in(
         output_bytes,
         timeout_ms,
         transferred,
-        NULL,
+        &packet,
         error
     );
+    cache_command_sense(context, succeeded, &packet);
+    return succeeded;
 }
 
 static bool windows_command_out(
@@ -200,8 +228,9 @@ static bool windows_command_out(
     gdox_error *error
 )
 {
-    const gdox_windows_scsi_context *context = raw_context;
-    return execute_command(
+    gdox_windows_scsi_context *context = raw_context;
+    gdox_windows_scsi_packet packet = {0};
+    const bool succeeded = execute_command(
         context->device,
         name,
         cdb,
@@ -211,9 +240,11 @@ static bool windows_command_out(
         input_bytes,
         timeout_ms,
         transferred,
-        NULL,
+        &packet,
         error
     );
+    cache_command_sense(context, succeeded, &packet);
+    return succeeded;
 }
 
 static bool windows_command_none(
@@ -225,8 +256,9 @@ static bool windows_command_none(
     gdox_error *error
 )
 {
-    const gdox_windows_scsi_context *context = raw_context;
-    return execute_command(
+    gdox_windows_scsi_context *context = raw_context;
+    gdox_windows_scsi_packet packet = {0};
+    const bool succeeded = execute_command(
         context->device,
         name,
         cdb,
@@ -236,9 +268,11 @@ static bool windows_command_none(
         0U,
         timeout_ms,
         NULL,
-        NULL,
+        &packet,
         error
     );
+    cache_command_sense(context, succeeded, &packet);
+    return succeeded;
 }
 
 static bool windows_reset(void *raw_context, gdox_error *error)
@@ -272,12 +306,35 @@ static bool windows_close(void *raw_context, gdox_error *error)
     return true;
 }
 
+static bool windows_last_sense(
+    const void *raw_context,
+    uint8_t *output,
+    size_t output_bytes,
+    size_t *sense_bytes
+)
+{
+    const gdox_windows_scsi_context *context = raw_context;
+    const size_t copied = context->last_sense_bytes < output_bytes
+        ? context->last_sense_bytes
+        : output_bytes;
+
+    if (copied == 0U) {
+        *sense_bytes = 0U;
+        return false;
+    }
+    memcpy(output, context->last_sense, copied);
+    *sense_bytes = copied;
+    return true;
+}
+
 static const gdox_scsi_transport_ops windows_ops = {
     windows_command_in,
     windows_command_out,
     windows_command_none,
     windows_reset,
     windows_close,
+    NULL,
+    windows_last_sense,
 };
 
 static bool descriptor_string_copy(
@@ -810,25 +867,5 @@ bool gdox_usb_bot_present_all(
     for (index = 0U; index < GDOX_USB_BOT_IDENTITY_COUNT; ++index) {
         drive_present[index] = observations[index].drive_present;
     }
-    return true;
-}
-
-bool gdox_usb_bot_restore_kernel_driver(
-    gdox_usb_bot_identity identity,
-    bool *reattached,
-    gdox_error *error
-)
-{
-    (void)identity;
-    gdox_error_clear(error);
-    if (reattached == NULL) {
-        gdox_error_set(
-            error,
-            GDOX_ERROR_INVALID_ARGUMENT,
-            "reattachment output is required"
-        );
-        return false;
-    }
-    *reattached = false;
     return true;
 }

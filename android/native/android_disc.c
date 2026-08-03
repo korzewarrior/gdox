@@ -1,6 +1,5 @@
 #include "gdox/android_disc.h"
 
-#include "core/hdd_cache.h"
 #include "gdox/disc.h"
 #include "gdox/live.h"
 #include "gdox/optical.h"
@@ -360,6 +359,7 @@ bool gdox_android_disc_identify(
 {
     gdox_sector_source source = {0};
     gdox_live_disc_info live_info;
+    const gdox_mt1887_media_profile *media = NULL;
     gdox_error close_error;
     bool identified;
 
@@ -373,17 +373,35 @@ bool gdox_android_disc_identify(
         return false;
     }
     memset(info, 0, sizeof(*info));
-    identified = open_android_source(
-        file_descriptor,
+    identified = gdox_mt1887_detected_source_open(
+        open_android_transport,
+        &file_descriptor,
+        GDOX_ANDROID_READ_SPEED_KBPS,
         3U,
         UINT32_C(20000),
         &source,
+        &media,
         error
-    ) && gdox_live_disc_identify(&source, &live_info, error);
-    if (identified) {
-        memcpy(info->title, live_info.title, sizeof(info->title));
-        info->title_id_present = live_info.title_id_present;
-        info->title_id = live_info.title_id;
+    );
+    if (identified && media->kind == GDOX_MT1887_MEDIA_XGD1) {
+        identified = gdox_live_disc_identify(&source, &live_info, error);
+        if (identified) {
+            info->platform = GDOX_ANDROID_DISC_XBOX;
+            memcpy(info->title, live_info.title, sizeof(info->title));
+            info->title_id_present = live_info.title_id_present;
+            info->title_id = live_info.title_id;
+        }
+    } else if (identified
+        && (media->kind == GDOX_MT1887_MEDIA_GP63_XGD2
+            || media->kind == GDOX_MT1887_MEDIA_GP63_XGD3)) {
+        info->platform = GDOX_ANDROID_DISC_XBOX_360;
+    } else if (identified) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INTERNAL,
+            "detected Android disc has no supported platform identity"
+        );
+        identified = false;
     }
     if (gdox_source_is_valid(&source)
         && !gdox_source_close(&source, &close_error)) {
@@ -391,15 +409,6 @@ bool gdox_android_disc_identify(
         return false;
     }
     return identified;
-}
-
-bool gdox_android_hdd_reset_cache(
-    const char *path,
-    bool *changed,
-    gdox_error *error
-)
-{
-    return gdox_hdd_reset_cache_partitions(path, changed, error);
 }
 
 bool gdox_android_disc_open(
@@ -414,6 +423,7 @@ bool gdox_android_disc_open(
     gdox_android_disc *disc;
     gdox_sector_source source = {0};
     gdox_live_disc_info live_info;
+    const gdox_live_disc_options live_options = {UINT32_C(128)};
 
     gdox_error_clear(error);
     if (file_descriptor < 0 || output == NULL || *output != NULL) {
@@ -440,8 +450,9 @@ bool gdox_android_disc_open(
             &source,
             error
         )
-        || !gdox_live_disc_build(
+        || !gdox_live_disc_build_configured(
             &source,
+            &live_options,
             &disc->live,
             &live_info,
             error
@@ -451,6 +462,8 @@ bool gdox_android_disc_open(
         return false;
     }
     if (info != NULL) {
+        memset(info, 0, sizeof(*info));
+        info->platform = GDOX_ANDROID_DISC_XBOX;
         memcpy(info->title, live_info.title, sizeof(info->title));
         info->title_id_present = live_info.title_id_present;
         info->title_id = live_info.title_id;
@@ -490,9 +503,16 @@ bool gdox_android_disc_read_at(
     );
 }
 
-bool gdox_android_disc_media_present(const gdox_android_disc *disc)
+bool gdox_android_disc_observe_media(
+    const gdox_android_disc *disc,
+    gdox_media_observation *output
+)
 {
-    return disc != NULL && gdox_disc_media_present(&disc->live);
+    if (output == NULL) {
+        return false;
+    }
+    *output = (gdox_media_observation){0};
+    return disc != NULL && gdox_disc_observe_media(&disc->live, output);
 }
 
 bool gdox_android_disc_physical_read_stats(

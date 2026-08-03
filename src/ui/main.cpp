@@ -1,14 +1,21 @@
 #include "ui/presentation.hpp"
 #include "ui/gamepad_input_policy.h"
 
+#include "app/background.h"
+#include "app/background_lifecycle.h"
+#if !defined(_WIN32)
+#include "app/termination.h"
+#endif
+
 #include "raylib.h"
 #include "rlImGui.h"
 #include "imgui.h"
 
-#include <algorithm>
-#include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
+#include <cstdio>
+#include <thread>
 
 namespace {
 
@@ -17,39 +24,24 @@ constexpr int desktop_width = 880;
 constexpr int desktop_height = 680;
 constexpr int desktop_min_width = 680;
 constexpr int desktop_min_height = 560;
-
-float desktop_interface_scale()
-{
-    const Vector2 dpi = GetWindowScaleDPI();
-    float scale = std::max(dpi.x, dpi.y);
-    const int monitor = GetCurrentMonitor();
-    const int monitor_width = GetMonitorWidth(monitor);
-    const int monitor_height = GetMonitorHeight(monitor);
-    if (monitor_width >= 3200 && monitor_height >= 1800) {
-        scale = std::max(scale, 1.35F);
-    }
-    const float fit = std::min(
-        static_cast<float>(monitor_width) * 0.90F
-            / static_cast<float>(desktop_width),
-        static_cast<float>(monitor_height) * 0.85F
-            / static_cast<float>(desktop_height)
-    );
-    scale = std::min(scale, std::max(1.0F, fit));
-    if (scale < 1.20F) {
-        return 1.0F;
-    }
-    return std::clamp(scale, 1.0F, 1.35F);
-}
-
-int scaled_size(int size, float scale)
-{
-    return static_cast<int>(std::lround(static_cast<float>(size) * scale));
-}
+constexpr unsigned int shutdown_attempts = 4U;
+constexpr auto shutdown_retry_delay = std::chrono::milliseconds(100);
+constexpr auto shutdown_recovery_delay = std::chrono::seconds(1);
+constexpr auto gaming_playback_poll_delay = std::chrono::milliseconds(100);
 
 bool gaming_mode()
 {
     const char *value = std::getenv("GDOX_GAMING_MODE");
     return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
+gdox_host_profile packaged_host_profile()
+{
+    const char *value = std::getenv("GDOX_HOST_PROFILE");
+
+    return value != nullptr && std::strcmp(value, "handheld") == 0
+        ? GDOX_HOST_PROFILE_HANDHELD
+        : GDOX_HOST_PROFILE_DESKTOP;
 }
 
 void select_adjacent_page(gdox_app &app, int direction)
@@ -96,11 +88,11 @@ bool gamepad_buttons_released()
 }
 
 struct window_state {
-    bool window_hidden = false;
+    bool emulator_window_hidden = false;
     gdox_gamepad_input_policy gamepad{};
 };
 
-float initialize_window(bool deck)
+bool initialize_window(bool deck)
 {
     unsigned int flags =
         FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_MSAA_4X_HINT;
@@ -108,26 +100,19 @@ float initialize_window(bool deck)
     flags |= deck ? FLAG_WINDOW_UNDECORATED : FLAG_WINDOW_HIGHDPI;
     SetConfigFlags(flags);
     InitWindow(deck ? 1280 : desktop_width, deck ? 800 : desktop_height, "GDOX");
-
-    const float interface_scale = deck ? 1.0F : desktop_interface_scale();
-    if (!deck && interface_scale > 1.0F) {
-        SetWindowSize(
-            scaled_size(desktop_width, interface_scale),
-            scaled_size(desktop_height, interface_scale)
-        );
+    if (!IsWindowReady()) {
+        return false;
     }
-    SetWindowMinSize(
-        scaled_size(desktop_min_width, interface_scale),
-        scaled_size(desktop_min_height, interface_scale)
-    );
+
+    SetWindowMinSize(desktop_min_width, desktop_min_height);
     if (deck) {
         SetExitKey(KEY_NULL);
     }
     SetTargetFPS(60);
-    return interface_scale;
+    return true;
 }
 
-void initialize_imgui(bool deck, float interface_scale)
+void initialize_imgui(bool deck)
 {
     rlImGuiSetup(true);
     ImGuiIO &io = ImGui::GetIO();
@@ -136,59 +121,59 @@ void initialize_imgui(bool deck, float interface_scale)
     io.ConfigNavCursorVisibleAlways = deck;
     io.ConfigNavEscapeClearFocusItem = !deck;
     gdox::ui::initialize_presentation();
-    if (!deck && interface_scale <= 1.0F) {
+    if (!deck) {
         return;
     }
 
     ImGuiStyle &style = ImGui::GetStyle();
-    style.ScaleAllSizes(deck ? 1.18F : interface_scale);
-    style.FontScaleMain = deck ? 1.20F : interface_scale;
-    if (deck) {
-        ImGui::SetNavCursorVisible(true);
-    }
+    style.ScaleAllSizes(1.18F);
+    style.FontScaleMain = 1.20F;
+    ImGui::SetNavCursorVisible(true);
 }
 
 bool wait_while_emulator_owns_display(
     bool deck,
-    bool emulator_running,
+    bool playback_running,
     window_state &state
 )
 {
-    if (!deck || !emulator_running) {
+    if (!deck || !playback_running) {
         return false;
     }
-    if (!state.window_hidden) {
+    if (!state.emulator_window_hidden) {
         SetWindowState(FLAG_WINDOW_HIDDEN);
-        state.window_hidden = true;
+        state.emulator_window_hidden = true;
     }
-    WaitTime(0.025);
+    std::this_thread::sleep_for(gaming_playback_poll_delay);
     return true;
 }
 
 void restore_deck_window(bool deck, window_state &state, ImGuiIO &io)
 {
-    if (!deck || !state.window_hidden) {
+    if (!deck || !state.emulator_window_hidden) {
         return;
     }
     ClearWindowState(FLAG_WINDOW_HIDDEN);
+    RestoreWindow();
+    SetWindowFocused();
     ImGui::SetNavCursorVisible(true);
     io.ClearInputKeys();
-    state.window_hidden = false;
+    state.emulator_window_hidden = false;
 }
 
 void update_gamepad_input(
-    bool emulator_running,
+    bool playback_running,
     window_state &state,
     ImGuiIO &io
 )
 {
     const bool focused = IsWindowFocused();
     const bool buttons_released =
-        !emulator_running && gamepad_buttons_released();
+        !playback_running && gamepad_buttons_released();
 
     gdox_gamepad_input_update(
         &state.gamepad,
-        emulator_running,
+        playback_running,
         focused,
         buttons_released
     );
@@ -235,50 +220,371 @@ bool draw_frame(gdox_app &app, bool deck)
     return quit_requested;
 }
 
+void close_desktop_window()
+{
+    gdox::ui::shutdown_presentation();
+    rlImGuiShutdown();
+    CloseWindow();
+}
+
+bool shutdown_application_batch(gdox_app &app, gdox_error &error)
+{
+    for (unsigned int attempt = 0U; attempt < shutdown_attempts; ++attempt) {
+        if (gdox_app_shutdown(&app, &error)) {
+            return true;
+        }
+        if (app.runtime == nullptr) {
+            return false;
+        }
+        if (attempt + 1U < shutdown_attempts) {
+            std::this_thread::sleep_for(shutdown_retry_delay);
+        }
+    }
+    return false;
+}
+
+bool shutdown_application(gdox_app &app)
+{
+    gdox_error error;
+
+    while (!shutdown_application_batch(app, error)) {
+        if (app.runtime == nullptr) {
+            std::fprintf(
+                stderr,
+                "GDOX: shutdown completed with an error: %s\n",
+                error.message
+            );
+            return false;
+        }
+        std::fprintf(
+            stderr,
+            "GDOX: shutdown is waiting for safe device cleanup: %s\n",
+            error.message
+        );
+        std::this_thread::sleep_for(shutdown_recovery_delay);
+    }
+    return true;
 }
 
 #if defined(_WIN32)
-extern "C" int WinMain(void *, void *, char *, int)
-#else
-int main()
+struct native_shutdown_context {
+    gdox_app *app;
+    bool initialized;
+    bool complete;
+    bool success;
+};
+
+void complete_native_shutdown(void *opaque)
+{
+    auto *context = static_cast<native_shutdown_context *>(opaque);
+
+    if (context == nullptr || !context->initialized || context->complete) {
+        return;
+    }
+    context->success = shutdown_application(*context->app);
+    context->complete = true;
+}
 #endif
+
+gdox_background_action poll_background_host(
+    gdox_app_background *host,
+    bool background_only
+)
+{
+    switch (gdox_app_background_poll(host, background_only)) {
+        case GDOX_APP_BACKGROUND_OPEN:
+            return GDOX_BACKGROUND_OPEN_REQUESTED;
+        case GDOX_APP_BACKGROUND_QUIT:
+            return GDOX_BACKGROUND_QUIT_REQUESTED;
+        case GDOX_APP_BACKGROUND_AVAILABLE:
+            return GDOX_BACKGROUND_FACILITY_AVAILABLE;
+        case GDOX_APP_BACKGROUND_UNAVAILABLE:
+            return GDOX_BACKGROUND_FACILITY_UNAVAILABLE;
+        case GDOX_APP_BACKGROUND_NONE:
+            return GDOX_BACKGROUND_NO_ACTION;
+    }
+    return GDOX_BACKGROUND_NO_ACTION;
+}
+
+int run_application(bool start_hidden)
 {
     gdox_app app{};
     const bool deck = gaming_mode();
+    gdox_app_instance *instance;
+    gdox_app_background *background_host;
+    gdox_background_lifecycle lifecycle;
     window_state ui_state;
-    bool quit_requested = false;
-    gdox_app_initialize(&app);
+    bool another_instance = false;
+    bool window_open = false;
+#if defined(_WIN32)
+    native_shutdown_context native_shutdown{&app, false, false, false};
+#endif
+#if defined(__APPLE__)
+    bool close_requested_during_window_initialization = false;
+#endif
+#if !defined(_WIN32)
+    bool termination_handler_installed = false;
+#endif
+    int exit_code = 0;
+
+    instance = gdox_app_instance_acquire(&another_instance);
+    if (instance == nullptr) {
+        if (another_instance) {
+            if (gdox_app_instance_activate_existing()) {
+                return 0;
+            }
+            gdox_app_instance_report_conflict();
+        } else {
+            gdox_app_instance_report_failure();
+        }
+        return 1;
+    }
     gdox_gamepad_input_initialize(&ui_state.gamepad);
+    background_host = deck ? nullptr : gdox_app_background_create();
+#if defined(_WIN32)
+    gdox_app_background_set_shutdown_handler(
+        background_host,
+        complete_native_shutdown,
+        &native_shutdown
+    );
+#endif
+    gdox_background_lifecycle_initialize(
+        &lifecycle,
+        start_hidden && !deck,
+        background_host != nullptr
+    );
+    gdox_app_background_set_window_visible(
+        background_host, lifecycle.state == GDOX_BACKGROUND_VISIBLE
+    );
 
-    const float interface_scale = initialize_window(deck);
-    initialize_imgui(deck, interface_scale);
-    ImGuiIO &io = ImGui::GetIO();
+    if (lifecycle.state == GDOX_BACKGROUND_VISIBLE) {
+        if (!initialize_window(deck)) {
+            std::fprintf(
+                stderr,
+                "GDOX: could not initialize the application window\n"
+            );
+            gdox_app_background_destroy(background_host);
+            gdox_app_instance_release(instance);
+            return 1;
+        }
+        initialize_imgui(deck);
+        window_open = true;
+        gdox_app_background_set_window_visible(background_host, true);
+#if defined(__APPLE__)
+        close_requested_during_window_initialization = WindowShouldClose();
+#endif
+    }
+#if !defined(_WIN32)
+    {
+        gdox_error signal_error;
 
-    while (!quit_requested) {
+        termination_handler_installed = gdox_app_termination_install(
+            &signal_error
+        );
+        if (!termination_handler_installed) {
+            std::fprintf(
+                stderr,
+                "GDOX: %s\n",
+                signal_error.message
+            );
+            if (window_open) {
+                close_desktop_window();
+            }
+            gdox_app_background_destroy(background_host);
+            gdox_app_instance_release(instance);
+            return 1;
+        }
+    }
+#endif
+    gdox_app_initialize(
+        &app,
+        packaged_host_profile()
+    );
+#if defined(_WIN32)
+    native_shutdown.initialized = true;
+#endif
+#if defined(__APPLE__)
+    if (close_requested_during_window_initialization) {
+        gdox_background_lifecycle_apply(
+            &lifecycle, GDOX_BACKGROUND_QUIT_REQUESTED
+        );
+    }
+#endif
+
+    while (lifecycle.state != GDOX_BACKGROUND_STOPPING) {
+#if !defined(_WIN32)
+        if (gdox_app_termination_requested()) {
+            gdox_background_lifecycle_apply(
+                &lifecycle, GDOX_BACKGROUND_QUIT_REQUESTED
+            );
+            continue;
+        }
+#endif
+        if (gdox_app_instance_take_activation(instance)) {
+            gdox_background_lifecycle_apply(
+                &lifecycle, GDOX_BACKGROUND_OPEN_REQUESTED
+            );
+        }
         gdox_app_tick(&app);
         const gdox_app_snapshot *snapshot = gdox_app_snapshot_get(&app);
-        const bool xemu_running = snapshot != nullptr && snapshot->can_close;
+        if (background_host != nullptr) {
+            gdox_app_background_set_status(
+                background_host,
+                snapshot != nullptr ? snapshot->status : "Starting"
+            );
+            gdox_background_lifecycle_apply(
+                &lifecycle,
+                poll_background_host(
+                    background_host,
+                    lifecycle.state == GDOX_BACKGROUND_HIDDEN
+                )
+            );
+        }
+        if (lifecycle.state == GDOX_BACKGROUND_STOPPING) {
+            break;
+        }
+        if (lifecycle.state == GDOX_BACKGROUND_HIDDEN) {
+            if (window_open) {
+                close_desktop_window();
+                window_open = false;
+                gdox_app_background_set_window_visible(
+                    background_host, false
+                );
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+        if (!window_open) {
+            if (!initialize_window(deck)) {
+                std::fprintf(
+                    stderr,
+                    "GDOX: could not reopen the application window\n"
+                );
+                exit_code = 1;
+                gdox_background_lifecycle_apply(
+                    &lifecycle, GDOX_BACKGROUND_QUIT_REQUESTED
+                );
+                continue;
+            }
+            initialize_imgui(deck);
+            ui_state.emulator_window_hidden = false;
+            window_open = true;
+            gdox_app_background_set_window_visible(background_host, true);
+#if defined(__APPLE__)
+            if (WindowShouldClose()) {
+                gdox_background_lifecycle_apply(
+                    &lifecycle, GDOX_BACKGROUND_QUIT_REQUESTED
+                );
+                continue;
+            }
+#endif
+        }
 
-        update_gamepad_input(xemu_running, ui_state, io);
+        if (gdox_background_lifecycle_take_window_activation(&lifecycle)) {
+            RestoreWindow();
+            SetWindowFocused();
+        }
+
+        ImGuiIO &io = ImGui::GetIO();
+        const bool playback_running =
+            snapshot != nullptr && snapshot->can_close;
+        update_gamepad_input(playback_running, ui_state, io);
         if (wait_while_emulator_owns_display(
                 deck,
-                xemu_running,
+                playback_running,
                 ui_state
             )) {
             continue;
         }
         restore_deck_window(deck, ui_state, io);
         if (WindowShouldClose()) {
-            break;
+            gdox_background_lifecycle_apply(
+                &lifecycle, GDOX_BACKGROUND_WINDOW_CLOSED
+            );
+            continue;
         }
         handle_page_navigation(deck, ui_state, app);
         import_dropped_files(app);
-        quit_requested = draw_frame(app, deck);
+        if (draw_frame(app, deck)) {
+            gdox_background_lifecycle_apply(
+                &lifecycle, GDOX_BACKGROUND_QUIT_REQUESTED
+            );
+        }
     }
 
-    gdox_app_shutdown(&app);
-    gdox::ui::shutdown_presentation();
-    rlImGuiShutdown();
-    CloseWindow();
-    return 0;
+#if defined(_WIN32)
+    if (!native_shutdown.complete) {
+        if (!shutdown_application(app)) {
+            exit_code = 1;
+        }
+    } else if (!native_shutdown.success) {
+        exit_code = 1;
+    }
+#else
+    if (!shutdown_application(app)) {
+        exit_code = 1;
+    }
+#endif
+    gdox_app_background_complete_shutdown(background_host);
+    if (window_open) {
+        close_desktop_window();
+    }
+#if !defined(_WIN32)
+    if (termination_handler_installed) {
+        gdox_app_termination_uninstall();
+    }
+#endif
+    gdox_app_background_destroy(background_host);
+    gdox_app_instance_release(instance);
+    return exit_code;
 }
+
+int print_version()
+{
+    return std::printf("GDOX %s\n", GDOX_VERSION) < 0 ? 1 : 0;
+}
+
+#if defined(_WIN32)
+bool command_line_requests_version(const char *command_line)
+{
+    static constexpr char option[] = "--version";
+    const char *cursor = command_line;
+
+    while (*cursor == ' ' || *cursor == '\t') {
+        ++cursor;
+    }
+    if (std::strncmp(cursor, option, sizeof(option) - 1U) != 0) {
+        return false;
+    }
+    cursor += sizeof(option) - 1U;
+    while (*cursor == ' ' || *cursor == '\t') {
+        ++cursor;
+    }
+    return *cursor == '\0';
+}
+#endif
+
+}
+
+#if defined(_WIN32)
+extern "C" int WinMain(void *, void *, char *command_line, int)
+{
+    if (command_line_requests_version(command_line)) {
+        return print_version();
+    }
+    return run_application(
+        gdox_background_command_line_requests_hidden(command_line)
+    );
+}
+#else
+int main(int argument_count, char **arguments)
+{
+    if (argument_count == 2
+        && std::strcmp(arguments[1], "--version") == 0) {
+        return print_version();
+    }
+    return run_application(gdox_background_arguments_request_hidden(
+        argument_count, arguments
+    ));
+}
+#endif

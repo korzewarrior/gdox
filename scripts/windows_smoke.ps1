@@ -44,34 +44,89 @@ public static class GdoxWindow {
         UIntPtr wParam,
         IntPtr lParam
     );
+
+    [DllImport("user32.dll", CharSet = CharSet.Ansi)]
+    public static extern IntPtr FindWindow(
+        string className,
+        string windowName
+    );
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(
+        IntPtr handle,
+        out uint processId
+    );
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr handle);
 }
 "@
         $Process = Start-Process `
             -FilePath $Executable `
+            -ArgumentList "--background" `
             -WorkingDirectory $PackageRoot `
             -PassThru
-        Start-Sleep -Seconds $Seconds
-        for ($Attempt = 0; $Attempt -lt 10; $Attempt++) {
+        $BackgroundWindow = [IntPtr]::Zero
+        for ($Attempt = 0; $Attempt -lt 40; $Attempt++) {
             $Process.Refresh()
-            if ($Process.HasExited -or $Process.MainWindowHandle -ne 0) {
+            if ($Process.HasExited) {
                 break
             }
-            Start-Sleep -Seconds 1
+            $BackgroundWindow = [GdoxWindow]::FindWindow(
+                "GDOXBackgroundHost",
+                "GDOX background host"
+            )
+            if ($BackgroundWindow -ne [IntPtr]::Zero) {
+                break
+            }
+            Start-Sleep -Milliseconds 250
         }
         if ($Process.HasExited) {
-            throw "GDOX exited before the window check (code $($Process.ExitCode))."
+            throw "GDOX exited before the background check (code $($Process.ExitCode))."
         }
-        if ($Process.MainWindowHandle -eq 0) {
-            throw "GDOX did not create an interactive desktop window."
+        if ($BackgroundWindow -eq [IntPtr]::Zero) {
+            throw "GDOX did not create its notification-area host."
         }
-        [void][GdoxWindow]::PostMessage(
-            $Process.MainWindowHandle,
-            0x0010,
+        [uint32]$BackgroundProcessId = 0
+        [void][GdoxWindow]::GetWindowThreadProcessId(
+            $BackgroundWindow,
+            [ref]$BackgroundProcessId
+        )
+        if ($BackgroundProcessId -ne $Process.Id) {
+            throw "The notification-area host belongs to another process."
+        }
+        if ([GdoxWindow]::IsWindowVisible($BackgroundWindow)) {
+            throw "The notification-area host unexpectedly became visible."
+        }
+        Start-Sleep -Seconds $Seconds
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            throw "GDOX did not remain active in the notification area."
+        }
+        if ([GdoxWindow]::FindWindow(
+            "GDOXBackgroundHost",
+            "GDOX background host"
+        ) -ne $BackgroundWindow) {
+            throw "GDOX replaced or removed its notification-area host."
+        }
+        if (-not [GdoxWindow]::PostMessage(
+            $BackgroundWindow,
+            0x0011,
             [UIntPtr]::Zero,
             [IntPtr]::Zero
-        )
+        )) {
+            throw "Could not send WM_QUERYENDSESSION to GDOX."
+        }
+        if (-not [GdoxWindow]::PostMessage(
+            $BackgroundWindow,
+            0x0016,
+            [UIntPtr]::new([uint64]1),
+            [IntPtr]::Zero
+        )) {
+            throw "Could not send WM_ENDSESSION to GDOX."
+        }
         if (-not $Process.WaitForExit(30000)) {
-            throw "GDOX did not close after receiving WM_CLOSE."
+            throw "GDOX did not stop after a Windows session-ending request."
         }
         if ($Process.ExitCode -ne 0) {
             throw "GDOX exited with code $($Process.ExitCode)."
@@ -140,7 +195,7 @@ try {
     if ($Result -ne "passed") {
         throw $Result
     }
-    Write-Output "windows_desktop_gui=passed"
+    Write-Output "windows_background_lifecycle=passed"
 } finally {
     Unregister-ScheduledTask `
         -TaskName $TaskName `

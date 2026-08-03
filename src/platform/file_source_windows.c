@@ -81,6 +81,17 @@ static bool file_media_present(const void *context)
     return true;
 }
 
+static void file_observe_media(
+    const void *context,
+    gdox_media_observation *output
+)
+{
+    (void)context;
+    output->readiness = GDOX_MEDIA_READINESS_PRESENT;
+    output->generation = 0U;
+    output->event = GDOX_MEDIA_EVENT_NONE;
+}
+
 static bool file_close(void *context, gdox_error *error)
 {
     gdox_file_context *file = context;
@@ -102,6 +113,8 @@ static const gdox_sector_source_ops file_ops = {
     NULL,
     NULL,
     NULL,
+    NULL,
+    file_observe_media,
 };
 
 bool gdox_source_open_file(

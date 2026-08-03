@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define GDOX_MACOS_ERROR_CAPACITY 512U
 #define GDOX_MACOS_OPEN_MOUNT_BUSY 7
@@ -70,7 +71,26 @@ void gdox_macos_scsi_close(GdoxMacScsiDevice *device);
 
 typedef struct gdox_macos_scsi_context {
     GdoxMacScsiDevice *device;
+    uint8_t last_sense[18];
+    size_t last_sense_bytes;
 } gdox_macos_scsi_context;
+
+static void cache_command_sense(
+    gdox_macos_scsi_context *context,
+    int status,
+    const uint8_t sense[18]
+)
+{
+    const uint8_t response_code = (uint8_t)(sense[0] & 0x7fU);
+
+    context->last_sense_bytes = 0U;
+    if (status != 0
+        && (response_code == 0x70U || response_code == 0x71U
+            || response_code == 0x72U || response_code == 0x73U)) {
+        memcpy(context->last_sense, sense, sizeof(context->last_sense));
+        context->last_sense_bytes = sizeof(context->last_sense);
+    }
+}
 
 static void set_native_error(
     gdox_error *error,
@@ -117,6 +137,7 @@ static bool macos_command_in(
         detail,
         sizeof(detail)
     );
+    cache_command_sense(context, status, sense);
     if (status != 0) {
         set_native_error(error, name, detail);
         return false;
@@ -152,6 +173,7 @@ static bool macos_command_out(
         detail,
         sizeof(detail)
     );
+    cache_command_sense(context, status, sense);
     if (status != 0) {
         set_native_error(error, name, detail);
         return false;
@@ -181,6 +203,7 @@ static bool macos_command_none(
         detail,
         sizeof(detail)
     );
+    cache_command_sense(context, status, sense);
     if (status != 0) {
         set_native_error(error, name, detail);
         return false;
@@ -209,12 +232,35 @@ static bool macos_close(void *raw_context, gdox_error *error)
     return true;
 }
 
+static bool macos_last_sense(
+    const void *raw_context,
+    uint8_t *output,
+    size_t output_bytes,
+    size_t *sense_bytes
+)
+{
+    const gdox_macos_scsi_context *context = raw_context;
+    const size_t copied = context->last_sense_bytes < output_bytes
+        ? context->last_sense_bytes
+        : output_bytes;
+
+    if (copied == 0U) {
+        *sense_bytes = 0U;
+        return false;
+    }
+    memcpy(output, context->last_sense, copied);
+    *sense_bytes = copied;
+    return true;
+}
+
 static const gdox_scsi_transport_ops macos_ops = {
     macos_command_in,
     macos_command_out,
     macos_command_none,
     macos_reset,
     macos_close,
+    NULL,
+    macos_last_sense,
 };
 
 static bool supported_identity(gdox_usb_bot_identity identity)
@@ -391,21 +437,5 @@ bool gdox_usb_bot_present_all(
     for (index = 0U; index < GDOX_USB_BOT_IDENTITY_COUNT; ++index) {
         drive_present[index] = observed_drives[index] != 0;
     }
-    return true;
-}
-
-bool gdox_usb_bot_restore_kernel_driver(
-    gdox_usb_bot_identity identity,
-    bool *reattached,
-    gdox_error *error
-)
-{
-    (void)identity;
-    gdox_error_clear(error);
-    if (reattached == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "reattachment output is required");
-        return false;
-    }
-    *reattached = false;
     return true;
 }

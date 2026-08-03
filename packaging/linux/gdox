@@ -1,16 +1,34 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-if [ -r /etc/os-release ] \
-    && grep -q '^VARIANT_ID=steamdeck$' /etc/os-release; then
+launcher=$(readlink -f -- "$0")
+root=$(CDPATH='' cd -- "$(dirname -- "$launcher")" && pwd)
+export GDOX_HOST_PROFILE=desktop
+
+gamescope_session()
+{
+    if [ "${SteamGamepadUI:-}" = "1" ]; then
+        return 0
+    fi
+    for desktop_name in \
+        "${XDG_CURRENT_DESKTOP:-}" \
+        "${XDG_SESSION_DESKTOP:-}" \
+        "${DESKTOP_SESSION:-}"
+    do
+        case ":${desktop_name}:" in
+            *:gamescope:*|*:gamescope-*:*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+if [ -z "${GDOX_GAMING_MODE+x}" ] && gamescope_session; then
     export GDOX_GAMING_MODE=1
 fi
-runtime_libraries="${root}/runtime/xemu/AppDir/usr/lib"
 if [ -n "${LD_LIBRARY_PATH:-}" ]; then
-    runtime_libraries="${root}/lib:${runtime_libraries}:${LD_LIBRARY_PATH}"
+    runtime_libraries="${root}/lib:${LD_LIBRARY_PATH}"
 else
-    runtime_libraries="${root}/lib:${runtime_libraries}"
+    runtime_libraries="${root}/lib"
 fi
 export LD_LIBRARY_PATH="${runtime_libraries}"
 exec "${root}/libexec/gdox" "$@"

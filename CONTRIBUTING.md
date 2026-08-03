@@ -1,7 +1,7 @@
 # contributing
 
-the current public release supports original xbox. additional exact drive
-profiles are the main need.
+the current public release supports original Xbox and Xbox 360. additional
+exact drive profiles are the main need.
 
 send the full model, firmware revision, usb enclosure or connection, and a
 clear label photo through [discord](https://discord.gg/TEzuUEJk4B) or an issue.

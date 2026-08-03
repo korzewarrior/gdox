@@ -60,9 +60,11 @@ magic at both ends of the sector. General reads use `READ(10)` and are split
 into commands of at most 32 sectors, or 64 KiB.
 
 Manual tray handling is required. GDOX never sends a load or eject command to
-this mechanism.
+this mechanism. During desktop live play, its physical eject button stops the
+emulator and begins safe drive restoration. After GDOX reports that the drive
+was released, press the physical button again to open the tray.
 
-The tested A202 drive streamed an original Xbox disc through the ordinary
-compact-XISO and read-only NBD path into xemu on Arch Linux. The session
+The tested A202 drive streamed an original Xbox disc through the shared
+game-partition and read-only NBD path into xemu on Arch Linux. The session
 included sustained high-LBA reads and was followed by an independent stock
 state verification on Windows 11.

@@ -6,7 +6,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define PRESERVATION_READ_BLOCKS 31U
 #define PRESERVATION_VERIFY_BUFFER ((size_t)4U * 1024U * 1024U)
@@ -33,15 +32,6 @@ static uint64_t output_sector_count(const gdox_preservation_input *input)
         : gdox_source_sector_count(input->source);
 }
 
-static double current_seconds(void)
-{
-    struct timespec value;
-    if (timespec_get(&value, TIME_UTC) != TIME_UTC) {
-        return 0.0;
-    }
-    return (double)value.tv_sec + (double)value.tv_nsec / 1000000000.0;
-}
-
 static bool is_cancelled(const writer_state *state)
 {
     return state->cancelled != NULL
@@ -57,7 +47,7 @@ static void report_progress(
 )
 {
     gdox_preservation_progress progress;
-    const double now = current_seconds();
+    const double now = gdox_preservation_monotonic_seconds();
     double elapsed;
     if (state->progress == NULL) {
         return;
@@ -584,7 +574,7 @@ static bool write_and_verify_preservation(
     if (!state->request->verify) {
         return true;
     }
-    state->started = current_seconds();
+    state->started = gdox_preservation_monotonic_seconds();
     state->last_progress = 0.0;
     if (hash_file(part_path, total_bytes, state, &verified, error)
         && hashes_equal(&verified, &state->result->hashes)) {
@@ -720,7 +710,7 @@ bool gdox_preservation_run(
     state.progress = progress;
     state.callback_context = callback_context;
     state.result = result;
-    state.started = current_seconds();
+    state.started = gdox_preservation_monotonic_seconds();
     state.last_progress = 0.0;
     result->format = request->format;
     result->bytes = total_bytes;

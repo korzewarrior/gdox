@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import os
-from pathlib import Path
 import shutil
 import tarfile
 import zipfile
+from pathlib import Path
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def copy_file(source: Path, destination: Path, *, executable: bool = False) -> None:
@@ -56,16 +65,19 @@ def _create_tar(stage: Path, output: Path) -> None:
             info.mode = 0o755 if info.mode & 0o111 else 0o644
         return info
 
-    with output.open("wb") as raw:
-        with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
-            with tarfile.open(
-                fileobj=compressed,
-                mode="w",
-                format=tarfile.PAX_FORMAT,
-            ) as archive:
-                archive.add(
-                    stage,
-                    arcname=stage.name,
-                    recursive=True,
-                    filter=normalize,
-                )
+    with output.open("wb") as raw, gzip.GzipFile(
+        filename="",
+        fileobj=raw,
+        mode="wb",
+        mtime=0,
+    ) as compressed, tarfile.open(
+        fileobj=compressed,
+        mode="w",
+        format=tarfile.PAX_FORMAT,
+    ) as archive:
+        archive.add(
+            stage,
+            arcname=stage.name,
+            recursive=True,
+            filter=normalize,
+        )

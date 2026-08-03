@@ -4,7 +4,10 @@
 
 #include "core/emulator_configuration.h"
 #include "platform/portable_sync.h"
+#include "platform/session_storage.h"
+#include "platform/windows_command.h"
 #include "platform/windows_support.h"
+#include "platform/xemu_runtime_session.h"
 
 #include <windows.h>
 
@@ -23,19 +26,44 @@ struct gdox_emulator_process {
     DWORD identifier;
     bool reaped;
     int exit_code;
+    gdox_session_storage session;
 };
 
-typedef struct wide_command {
-    wchar_t *text;
-    size_t length;
-    size_t capacity;
-} wide_command;
+static bool cleanup_process_session(
+    gdox_emulator_process *process,
+    gdox_error *error
+)
+{
+    return !process->session.active
+        || gdox_session_storage_cleanup(&process->session, error);
+}
 
 static bool wide_regular_file(const wchar_t *path)
 {
     const DWORD attributes = GetFileAttributesW(path);
     return attributes != INVALID_FILE_ATTRIBUTES
         && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0U;
+}
+
+static bool wide_directory(const wchar_t *path)
+{
+    const DWORD attributes = GetFileAttributesW(path);
+
+    return attributes != INVALID_FILE_ATTRIBUTES
+        && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0U
+        && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0U;
+}
+
+static bool wide_absolute_path(const wchar_t *path)
+{
+    const size_t characters = path != NULL ? wcslen(path) : 0U;
+
+    return (characters >= 3U
+            && ((path[0] >= L'A' && path[0] <= L'Z')
+                || (path[0] >= L'a' && path[0] <= L'z'))
+            && path[1] == L':'
+            && (path[2] == L'\\' || path[2] == L'/'))
+        || (characters >= 2U && path[0] == L'\\' && path[1] == L'\\');
 }
 
 static bool regular_file(const char *path)
@@ -85,6 +113,22 @@ static bool environment_path(
         return false;
     }
     return wide_to_utf8(value, output);
+}
+
+static bool environment_value(
+    const wchar_t *name,
+    char output[GDOX_EMULATOR_PATH_CAPACITY]
+)
+{
+    wchar_t value[GDOX_WINDOWS_PATH_CAPACITY];
+    const DWORD length = GetEnvironmentVariableW(
+        name,
+        value,
+        GDOX_WINDOWS_PATH_CAPACITY
+    );
+
+    return length != 0U && length < GDOX_WINDOWS_PATH_CAPACITY
+        && wide_to_utf8(value, output);
 }
 
 static bool module_directory(wchar_t output[GDOX_WINDOWS_PATH_CAPACITY])
@@ -183,67 +227,6 @@ static bool find_xemu(char output[GDOX_EMULATOR_PATH_CAPACITY])
         && wide_regular_file(path) && wide_to_utf8(path, output);
 }
 
-static bool managed_configuration_wide(
-    wchar_t output[GDOX_WINDOWS_PATH_CAPACITY]
-)
-{
-    wchar_t base[GDOX_WINDOWS_PATH_CAPACITY];
-    const DWORD length = GetEnvironmentVariableW(
-        L"APPDATA",
-        base,
-        GDOX_WINDOWS_PATH_CAPACITY
-    );
-
-    return length != 0U && length < GDOX_WINDOWS_PATH_CAPACITY
-        && append_wide_path(
-            base,
-            L"gdox\\gdox\\data\\xemu\\xemu.toml",
-            output
-        );
-}
-
-static bool create_parent_directories_wide(const wchar_t *path)
-{
-    wchar_t partial[GDOX_WINDOWS_PATH_CAPACITY];
-    size_t index;
-    const size_t bytes = wcslen(path);
-
-    if (bytes >= GDOX_WINDOWS_PATH_CAPACITY) {
-        return false;
-    }
-    memcpy(partial, path, (bytes + 1U) * sizeof(wchar_t));
-    for (index = 3U; index < bytes; ++index) {
-        if (partial[index] != L'\\') {
-            continue;
-        }
-        partial[index] = L'\0';
-        if (!CreateDirectoryW(partial, NULL)
-            && GetLastError() != ERROR_ALREADY_EXISTS) {
-            return false;
-        }
-        partial[index] = L'\\';
-    }
-    return true;
-}
-
-/*
- * GDOX never edits an external xemu installation's own configuration. The
- * first time one is discovered, its configuration is copied into GDOX's
- * managed location and all later updates apply to the copy.
- */
-static bool adopt_external_configuration(
-    const wchar_t *external,
-    char output[GDOX_EMULATOR_PATH_CAPACITY]
-)
-{
-    wchar_t managed[GDOX_WINDOWS_PATH_CAPACITY];
-
-    return managed_configuration_wide(managed)
-        && create_parent_directories_wide(managed)
-        && CopyFileW(external, managed, TRUE)
-        && wide_to_utf8(managed, output);
-}
-
 static bool external_configuration(
     const char *executable,
     wchar_t output[GDOX_WINDOWS_PATH_CAPACITY]
@@ -279,27 +262,16 @@ static bool external_configuration(
 
 static bool find_configuration(
     const char *executable,
-    char output[GDOX_EMULATOR_PATH_CAPACITY]
+    char output[GDOX_EMULATOR_PATH_CAPACITY],
+    bool *required
 )
 {
     wchar_t base[GDOX_WINDOWS_PATH_CAPACITY];
     wchar_t external[GDOX_WINDOWS_PATH_CAPACITY];
     DWORD length;
 
-    if (environment_path(L"GDOX_XEMU_CONFIG", output)) {
-        return true;
-    }
-    length = GetEnvironmentVariableW(
-        L"APPDATA",
-        base,
-        GDOX_WINDOWS_PATH_CAPACITY
-    );
-    if (length != 0U && length < GDOX_WINDOWS_PATH_CAPACITY
-        && candidate(
-            base,
-            L"gdox\\gdox\\data\\xemu\\xemu.toml",
-            output
-        )) {
+    *required = environment_value(L"GDOX_XEMU_CONFIG", output);
+    if (*required) {
         return true;
     }
     length = GetEnvironmentVariableW(
@@ -312,7 +284,7 @@ static bool find_configuration(
         return true;
     }
     return external_configuration(executable, external)
-        && adopt_external_configuration(external, output);
+        && wide_to_utf8(external, output);
 }
 
 bool gdox_emulator_discover_executable(
@@ -350,18 +322,25 @@ bool gdox_emulator_validate_executable(
     return true;
 }
 
-bool gdox_emulator_discover(gdox_emulator_paths *paths, gdox_error *error)
+bool gdox_emulator_discover_configuration(
+    const char *executable,
+    char output[GDOX_EMULATOR_PATH_CAPACITY],
+    bool *required,
+    gdox_error *error
+)
 {
     gdox_error_clear(error);
-    if (paths == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "emulator path output is required");
+    if (output == NULL || required == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "emulator configuration outputs are required"
+        );
         return false;
     }
-    memset(paths, 0, sizeof(*paths));
-    if (!gdox_emulator_discover_executable(paths->executable, error)) {
-        return false;
-    }
-    if (!find_configuration(paths->executable, paths->configuration)) {
+    output[0] = '\0';
+    *required = false;
+    if (!find_configuration(executable, output, required)) {
         gdox_error_set(error, GDOX_ERROR_NOT_FOUND, "xemu configuration was not found");
         return false;
     }
@@ -532,6 +511,7 @@ bool gdox_emulator_prepare(
 {
     char *original = NULL;
     char *updated = NULL;
+    bool persistent_save_export;
     bool success = false;
 
     gdox_error_clear(error);
@@ -539,6 +519,19 @@ bool gdox_emulator_prepare(
         || !regular_file(options->configuration)) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "valid xemu paths are required");
         return false;
+    }
+    if (!gdox_emulator_query_storage_capabilities(
+            options->executable, &persistent_save_export, error
+        )) {
+        goto cleanup;
+    }
+    if (!persistent_save_export) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_UNSUPPORTED,
+            "xemu does not provide persistent logical save export"
+        );
+        goto cleanup;
     }
     if (!read_text_file(options->configuration, &original, error)
         || !gdox_emulator_configuration_update(
@@ -561,159 +554,6 @@ cleanup:
     return success;
 }
 
-static bool command_reserve(
-    wide_command *command,
-    size_t additional,
-    gdox_error *error
-)
-{
-    size_t needed;
-    size_t capacity;
-    wchar_t *resized;
-    if (additional > SIZE_MAX - command->length - 1U) {
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "xemu command line is too long");
-        return false;
-    }
-    needed = command->length + additional + 1U;
-    if (needed <= command->capacity) {
-        return true;
-    }
-    capacity = command->capacity == 0U ? 1024U : command->capacity;
-    while (capacity < needed) {
-        if (capacity > SIZE_MAX / 2U) {
-            capacity = needed;
-            break;
-        }
-        capacity *= 2U;
-    }
-    resized = realloc(command->text, capacity * sizeof(*resized));
-    if (resized == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate xemu command line");
-        return false;
-    }
-    command->text = resized;
-    command->capacity = capacity;
-    return true;
-}
-
-static bool command_character(
-    wide_command *command,
-    wchar_t character,
-    gdox_error *error
-)
-{
-    if (!command_reserve(command, 1U, error)) {
-        return false;
-    }
-    command->text[command->length++] = character;
-    command->text[command->length] = L'\0';
-    return true;
-}
-
-static bool command_repeat(
-    wide_command *command,
-    wchar_t character,
-    size_t count,
-    gdox_error *error
-)
-{
-    if (!command_reserve(command, count, error)) {
-        return false;
-    }
-    for (size_t index = 0U; index < count; ++index) {
-        command->text[command->length++] = character;
-    }
-    command->text[command->length] = L'\0';
-    return true;
-}
-
-static bool command_backslash_run(
-    wide_command *command,
-    size_t count,
-    bool before_quote,
-    bool closes_argument,
-    gdox_error *error
-)
-{
-    size_t output_count = count;
-
-    if (before_quote || closes_argument) {
-        const size_t extra = before_quote ? 1U : 0U;
-        if (count > (SIZE_MAX - extra) / 2U) {
-            gdox_error_set(
-                error,
-                GDOX_ERROR_INTERNAL,
-                "xemu command line is too long"
-            );
-            return false;
-        }
-        output_count = count * 2U + extra;
-    }
-    return command_repeat(command, L'\\', output_count, error);
-}
-
-static bool command_argument(
-    wide_command *command,
-    const wchar_t *argument,
-    gdox_error *error
-)
-{
-    const wchar_t *cursor = argument;
-    size_t backslashes = 0U;
-
-    if (command->length != 0U
-        && !command_character(command, L' ', error)) {
-        return false;
-    }
-    if (!command_character(command, L'"', error)) {
-        return false;
-    }
-    while (*cursor != L'\0') {
-        if (*cursor == L'\\') {
-            ++backslashes;
-            ++cursor;
-            continue;
-        }
-        if (!command_backslash_run(
-                command,
-                backslashes,
-                *cursor == L'"',
-                false,
-                error
-            )) {
-            return false;
-        }
-        backslashes = 0U;
-        if (!command_character(command, *cursor++, error)) {
-            return false;
-        }
-    }
-    return command_backslash_run(
-        command,
-        backslashes,
-        false,
-        true,
-        error
-    )
-        && command_character(command, L'"', error);
-}
-
-static bool append_utf8_argument(
-    wide_command *command,
-    const char *argument,
-    gdox_error *error
-)
-{
-    wchar_t *wide = gdox_windows_wide_path(argument, error);
-    bool success;
-    if (wide == NULL) {
-        return false;
-    }
-    success = command_argument(command, wide, error);
-    free(wide);
-    return success;
-}
-
 bool gdox_emulator_launch(
     const gdox_emulator_options *options,
     const char *dvd_uri,
@@ -721,19 +561,29 @@ bool gdox_emulator_launch(
     gdox_error *error
 )
 {
-    gdox_emulator_process *process;
-    wchar_t *executable;
-    wide_command command = {0};
+    gdox_emulator_process *process = NULL;
+    wchar_t *executable = NULL;
+    wchar_t *configuration = NULL;
+    wchar_t *save_vault = NULL;
+    wchar_t *session_directory = NULL;
+    wchar_t executable_path[GDOX_WINDOWS_PATH_CAPACITY];
+    wchar_t configuration_path[GDOX_WINDOWS_PATH_CAPACITY];
+    wchar_t save_vault_path[GDOX_WINDOWS_PATH_CAPACITY];
+    gdox_windows_command command = {0};
+    gdox_xemu_environment environment = {0};
     STARTUPINFOW startup = {0};
     PROCESS_INFORMATION information = {0};
     HANDLE null_output = INVALID_HANDLE_VALUE;
-    DWORD creation_flags = 0U;
-    bool success;
+    DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT;
+    bool success = false;
+    DWORD characters;
 
     gdox_error_clear(error);
-    if (options == NULL || dvd_uri == NULL || dvd_uri[0] == '\0'
+    if (options == NULL || options->save_vault == NULL
+        || options->save_vault[0] == '\0'
+        || dvd_uri == NULL || dvd_uri[0] == '\0'
         || process_output == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "emulator options, disc URI, and process output are required");
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "emulator options, save vault, disc URI, and process output are required");
         return false;
     }
     *process_output = NULL;
@@ -742,19 +592,105 @@ bool gdox_emulator_launch(
     }
     executable = gdox_windows_wide_path(options->executable, error);
     if (executable == NULL) {
-        return false;
+        goto cleanup;
     }
-    success = command_argument(&command, executable, error)
-        && command_argument(&command, L"-config_path", error)
-        && append_utf8_argument(&command, options->configuration, error)
-        && (!options->fullscreen
-            || command_argument(&command, L"-full-screen", error))
-        && command_argument(&command, L"-dvd_path", error)
-        && append_utf8_argument(&command, dvd_uri, error);
-    if (!success) {
-        free(executable);
-        free(command.text);
-        return false;
+    configuration = gdox_windows_wide_path(options->configuration, error);
+    save_vault = gdox_windows_wide_path(options->save_vault, error);
+    if (configuration == NULL || save_vault == NULL) {
+        goto cleanup;
+    }
+    characters = executable != NULL ? GetFullPathNameW(
+        executable, GDOX_WINDOWS_PATH_CAPACITY, executable_path, NULL
+    ) : 0U;
+    if (characters == 0U || characters >= GDOX_WINDOWS_PATH_CAPACITY) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "xemu executable path is unavailable"
+        );
+        goto cleanup;
+    }
+    characters = GetFullPathNameW(
+        configuration,
+        GDOX_WINDOWS_PATH_CAPACITY,
+        configuration_path,
+        NULL
+    );
+    if (characters == 0U || characters >= GDOX_WINDOWS_PATH_CAPACITY) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "xemu configuration path is unavailable"
+        );
+        goto cleanup;
+    }
+    if (!wide_absolute_path(save_vault)) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "xemu save vault path must be absolute"
+        );
+        goto cleanup;
+    }
+    characters = GetFullPathNameW(
+        save_vault,
+        GDOX_WINDOWS_PATH_CAPACITY,
+        save_vault_path,
+        NULL
+    );
+    if (characters == 0U || characters >= GDOX_WINDOWS_PATH_CAPACITY
+        || !wide_directory(save_vault_path)) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_SOURCE,
+            "xemu save vault is unavailable or is not a directory"
+        );
+        goto cleanup;
+    }
+    if (!gdox_windows_command_add_wide(&command, executable_path, error)
+        || !gdox_windows_command_add_wide(
+            &command, L"--gdox-runtime", error
+        )
+        || !gdox_windows_command_add_wide(
+            &command, L"--gdox-save-vault", error
+        )
+        || !gdox_windows_command_add_wide(
+            &command, save_vault_path, error
+        )) {
+        goto cleanup;
+    }
+    if (!gdox_windows_command_add_wide(&command, L"-config_path", error)
+        || !gdox_windows_command_add_wide(
+            &command, configuration_path, error
+        )
+        || (options->fullscreen
+            && !gdox_windows_command_add_wide(
+                &command, L"-full-screen", error
+            ))
+        || !gdox_windows_command_add_wide(&command, L"-dvd_path", error)
+        || !gdox_windows_command_add_utf8(&command, dvd_uri, error)) {
+        goto cleanup;
+    }
+    process = calloc(1U, sizeof(*process));
+    if (process == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INTERNAL,
+            "could not allocate emulator process"
+        );
+        goto cleanup;
+    }
+    if (!gdox_xemu_runtime_session_open(&process->session, error)
+        || !gdox_xemu_environment_create(
+            process->session.root, &environment, error
+        )) {
+        goto cleanup;
+    }
+    session_directory = gdox_windows_wide_path(
+        process->session.root, error
+    );
+    if (session_directory == NULL) {
+        goto cleanup;
     }
     startup.cb = sizeof(startup);
     if (!options->console_output) {
@@ -768,54 +704,130 @@ bool gdox_emulator_launch(
             NULL
         );
         if (null_output == INVALID_HANDLE_VALUE) {
-            free(executable);
-            free(command.text);
             gdox_windows_io_error(error, "could not open null output for xemu", GetLastError());
-            return false;
+            goto cleanup;
         }
         startup.dwFlags = STARTF_USESTDHANDLES;
         startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
         startup.hStdOutput = null_output;
         startup.hStdError = null_output;
-        creation_flags = CREATE_NO_WINDOW;
+        creation_flags |= CREATE_NO_WINDOW;
     }
     if (!CreateProcessW(
-            executable,
+            executable_path,
             command.text,
             NULL,
             NULL,
             options->console_output ? FALSE : TRUE,
             creation_flags,
-            NULL,
-            NULL,
+            environment.block,
+            session_directory,
             &startup,
             &information
         )) {
         const DWORD code = GetLastError();
-        if (null_output != INVALID_HANDLE_VALUE) {
-            (void)CloseHandle(null_output);
-        }
-        free(executable);
-        free(command.text);
         gdox_windows_io_error(error, "could not launch xemu", code);
-        return false;
-    }
-    if (null_output != INVALID_HANDLE_VALUE) {
-        (void)CloseHandle(null_output);
-    }
-    (void)CloseHandle(information.hThread);
-    free(executable);
-    free(command.text);
-    process = calloc(1U, sizeof(*process));
-    if (process == NULL) {
-        (void)TerminateProcess(information.hProcess, 1U);
-        (void)CloseHandle(information.hProcess);
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate emulator process");
-        return false;
+        goto cleanup;
     }
     process->handle = information.hProcess;
     process->identifier = information.dwProcessId;
+    success = true;
     *process_output = process;
+
+cleanup:
+    if (null_output != INVALID_HANDLE_VALUE) {
+        (void)CloseHandle(null_output);
+    }
+    if (information.hThread != NULL) {
+        (void)CloseHandle(information.hThread);
+    }
+    free(executable);
+    free(configuration);
+    free(save_vault);
+    free(session_directory);
+    gdox_windows_command_destroy(&command);
+    gdox_xemu_environment_destroy(&environment);
+    if (!success && process != NULL) {
+        gdox_error cleanup_error;
+
+        if (!cleanup_process_session(process, &cleanup_error)) {
+            char message[GDOX_ERROR_MESSAGE_CAPACITY];
+
+            (void)snprintf(
+                message,
+                sizeof(message),
+                "%.96s; xemu session cleanup failed: %.96s",
+                gdox_error_is_set(error) ? error->message : "xemu launch failed",
+                cleanup_error.message
+            );
+            gdox_error_set(error, GDOX_ERROR_IO, message);
+        }
+        free(process);
+    }
+    return success;
+}
+
+enum {
+    GDOX_EMULATOR_STOP_POLL_MS = 50U,
+    GDOX_EMULATOR_FORCED_REAP_MS = 5000U,
+};
+
+static void mark_reaped(gdox_emulator_process *process, int exit_code)
+{
+    process->reaped = true;
+    process->exit_code = exit_code;
+}
+
+static bool query_process(
+    gdox_emulator_process *process,
+    bool *running,
+    int *exit_code,
+    gdox_error *error
+)
+{
+    DWORD wait_result;
+    DWORD code;
+
+    if (process->reaped) {
+        if (!cleanup_process_session(process, error)) {
+            return false;
+        }
+        *running = false;
+        *exit_code = process->exit_code;
+        return true;
+    }
+    wait_result = WaitForSingleObject(process->handle, 0U);
+    if (wait_result == WAIT_TIMEOUT) {
+        *running = true;
+        *exit_code = 0;
+        return true;
+    }
+    if (wait_result == WAIT_FAILED) {
+        gdox_windows_io_error(
+            error,
+            "could not query xemu process",
+            GetLastError()
+        );
+        return false;
+    }
+    if (wait_result != WAIT_OBJECT_0) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INTERNAL,
+            "received an unexpected xemu process wait result"
+        );
+        return false;
+    }
+    if (!GetExitCodeProcess(process->handle, &code)) {
+        gdox_windows_io_error(error, "could not query xemu process", GetLastError());
+        return false;
+    }
+    mark_reaped(process, (int)code);
+    if (!cleanup_process_session(process, error)) {
+        return false;
+    }
+    *running = false;
+    *exit_code = process->exit_code;
     return true;
 }
 
@@ -826,31 +838,12 @@ bool gdox_emulator_poll(
     gdox_error *error
 )
 {
-    DWORD code;
     gdox_error_clear(error);
     if (process == NULL || running == NULL || exit_code == NULL) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "process and status outputs are required");
         return false;
     }
-    if (process->reaped) {
-        *running = false;
-        *exit_code = process->exit_code;
-        return true;
-    }
-    if (!GetExitCodeProcess(process->handle, &code)) {
-        gdox_windows_io_error(error, "could not query xemu process", GetLastError());
-        return false;
-    }
-    if (code == STILL_ACTIVE) {
-        *running = true;
-        *exit_code = 0;
-        return true;
-    }
-    process->reaped = true;
-    process->exit_code = (int)code;
-    *running = false;
-    *exit_code = process->exit_code;
-    return true;
+    return query_process(process, running, exit_code, error);
 }
 
 static BOOL CALLBACK request_window_close(HWND window, LPARAM parameter)
@@ -863,6 +856,154 @@ static BOOL CALLBACK request_window_close(HWND window, LPARAM parameter)
     return TRUE;
 }
 
+static void remember_error(gdox_error *saved, const gdox_error *candidate)
+{
+    if (!gdox_error_is_set(saved) && gdox_error_is_set(candidate)) {
+        *saved = *candidate;
+    }
+}
+
+static bool wait_for_exit(
+    gdox_emulator_process *process,
+    uint32_t timeout_ms,
+    int *exit_code,
+    gdox_error *saved_error
+)
+{
+    uint32_t waited = 0U;
+
+    for (;;) {
+        gdox_error query_error;
+        bool running = true;
+        int observed_exit = -1;
+
+        gdox_error_clear(&query_error);
+        if (query_process(
+                process, &running, &observed_exit, &query_error
+            )) {
+            if (!running) {
+                *exit_code = observed_exit;
+                return true;
+            }
+        } else {
+            remember_error(saved_error, &query_error);
+        }
+        if (waited >= timeout_ms) {
+            return false;
+        }
+        {
+            const uint32_t remaining = timeout_ms - waited;
+            const uint32_t delay = remaining < GDOX_EMULATOR_STOP_POLL_MS
+                ? remaining
+                : GDOX_EMULATOR_STOP_POLL_MS;
+            const DWORD result = WaitForSingleObject(process->handle, delay);
+
+            if (result == WAIT_OBJECT_0) {
+                DWORD code = 1U;
+
+                if (!GetExitCodeProcess(process->handle, &code)) {
+                    gdox_windows_io_error(
+                        &query_error,
+                        "could not read the stopped xemu process status",
+                        GetLastError()
+                    );
+                    remember_error(saved_error, &query_error);
+                }
+                mark_reaped(process, (int)code);
+                *exit_code = process->exit_code;
+                return true;
+            }
+            if (result == WAIT_FAILED) {
+                gdox_windows_io_error(
+                    &query_error,
+                    "could not wait for xemu to stop",
+                    GetLastError()
+                );
+                remember_error(saved_error, &query_error);
+                gdox_sleep_ms(delay);
+            }
+            waited += delay;
+        }
+    }
+}
+
+static bool terminate_owned_process(
+    gdox_emulator_process *process,
+    uint32_t grace_ms,
+    int *exit_code,
+    gdox_error *error
+)
+{
+    gdox_error saved_error;
+
+    gdox_error_clear(&saved_error);
+    if (wait_for_exit(process, 0U, exit_code, &saved_error)) {
+        gdox_error_clear(error);
+        return true;
+    }
+    (void)EnumWindows(request_window_close, (LPARAM)process->identifier);
+    if (wait_for_exit(process, grace_ms, exit_code, &saved_error)) {
+        gdox_error_clear(error);
+        return true;
+    }
+    if (!TerminateProcess(process->handle, 1U)) {
+        gdox_error terminate_error;
+
+        gdox_windows_io_error(
+            &terminate_error,
+            "could not force xemu to stop",
+            GetLastError()
+        );
+        remember_error(&saved_error, &terminate_error);
+    }
+    if (wait_for_exit(
+            process,
+            GDOX_EMULATOR_FORCED_REAP_MS,
+            exit_code,
+            &saved_error
+        )) {
+        gdox_error_clear(error);
+        return true;
+    }
+    if (gdox_error_is_set(&saved_error)) {
+        *error = saved_error;
+    } else {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_IO,
+            "xemu did not exit after forced termination"
+        );
+    }
+    *exit_code = -1;
+    return false;
+}
+
+static void force_terminal_cleanup(gdox_emulator_process *process)
+{
+    while (!process->reaped) {
+        gdox_error query_error;
+        bool running = true;
+        int exit_code = -1;
+
+        gdox_error_clear(&query_error);
+        if (query_process(
+                process, &running, &exit_code, &query_error
+            ) && !running) {
+            return;
+        }
+        (void)TerminateProcess(process->handle, 1U);
+        if (WaitForSingleObject(process->handle, INFINITE)
+            == WAIT_OBJECT_0) {
+            DWORD code = 1U;
+
+            (void)GetExitCodeProcess(process->handle, &code);
+            mark_reaped(process, (int)code);
+            return;
+        }
+        gdox_sleep_ms(10U);
+    }
+}
+
 bool gdox_emulator_stop(
     gdox_emulator_process *process,
     uint32_t grace_ms,
@@ -870,38 +1011,12 @@ bool gdox_emulator_stop(
     gdox_error *error
 )
 {
-    uint32_t waited = 0U;
-    bool running;
-
     gdox_error_clear(error);
     if (process == NULL || exit_code == NULL) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "process and exit code are required");
         return false;
     }
-    if (!gdox_emulator_poll(process, &running, exit_code, error) || !running) {
-        return !gdox_error_is_set(error);
-    }
-    (void)EnumWindows(request_window_close, (LPARAM)process->identifier);
-    while (waited < grace_ms) {
-        gdox_sleep_ms(50U);
-        waited += 50U;
-        if (!gdox_emulator_poll(process, &running, exit_code, error)
-            || !running) {
-            return !gdox_error_is_set(error);
-        }
-    }
-    if (!TerminateProcess(process->handle, 1U)) {
-        gdox_windows_io_error(error, "could not stop xemu", GetLastError());
-        return false;
-    }
-    if (WaitForSingleObject(process->handle, 5000U) != WAIT_OBJECT_0
-        || !gdox_emulator_poll(process, &running, exit_code, error)) {
-        if (!gdox_error_is_set(error)) {
-            gdox_error_set(error, GDOX_ERROR_IO, "xemu did not stop");
-        }
-        return false;
-    }
-    return !running;
+    return terminate_owned_process(process, grace_ms, exit_code, error);
 }
 
 void gdox_emulator_process_destroy(gdox_emulator_process *process)
@@ -909,9 +1024,13 @@ void gdox_emulator_process_destroy(gdox_emulator_process *process)
     if (process != NULL) {
         int exit_code;
         gdox_error ignored;
-        if (!process->reaped) {
-            (void)gdox_emulator_stop(process, 1000U, &exit_code, &ignored);
+        if (!process->reaped
+            && !terminate_owned_process(
+                process, 1000U, &exit_code, &ignored
+            )) {
+            force_terminal_cleanup(process);
         }
+        (void)cleanup_process_session(process, &ignored);
         (void)CloseHandle(process->handle);
         free(process);
     }

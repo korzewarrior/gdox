@@ -112,6 +112,8 @@ static const gdox_sector_source_ops pattern_ops = {
     pattern_evidence,
     NULL,
     NULL,
+    NULL,
+    NULL,
 };
 
 static bool make_pattern_source(

@@ -22,6 +22,30 @@ typedef struct gdox_patch_context {
     size_t patch_count;
 } gdox_patch_context;
 
+gdox_removable_session_status gdox_removable_session_classify(
+    const gdox_media_observation *observation,
+    bool generation_known,
+    uint64_t expected_generation
+)
+{
+    if (observation == NULL) {
+        return GDOX_REMOVABLE_SESSION_UNAVAILABLE;
+    }
+    if ((generation_known
+            && observation->generation != expected_generation)
+        || observation->event == GDOX_MEDIA_EVENT_NEW_MEDIA
+        || observation->event == GDOX_MEDIA_EVENT_REMOVAL
+        || observation->event == GDOX_MEDIA_EVENT_CHANGED) {
+        return GDOX_REMOVABLE_SESSION_CHANGED;
+    }
+    if (observation->event == GDOX_MEDIA_EVENT_EJECT_REQUEST) {
+        return GDOX_REMOVABLE_SESSION_EJECT_REQUESTED;
+    }
+    return observation->readiness == GDOX_MEDIA_READINESS_PRESENT
+        ? GDOX_REMOVABLE_SESSION_PRESENT
+        : GDOX_REMOVABLE_SESSION_UNAVAILABLE;
+}
+
 void gdox_disc_evidence_clear(gdox_disc_evidence *evidence)
 {
     if (evidence != NULL) {
@@ -96,15 +120,44 @@ bool gdox_source_read(
     return source->ops->read(source->context, lba, blocks, output, output_bytes, error);
 }
 
-bool gdox_source_media_present(const gdox_sector_source *source)
+bool gdox_source_observe_media(
+    const gdox_sector_source *source,
+    gdox_media_observation *output
+)
 {
+    if (output == NULL) {
+        return false;
+    }
+    output->readiness = GDOX_MEDIA_READINESS_UNKNOWN;
+    output->generation = 0U;
+    output->event = GDOX_MEDIA_EVENT_NONE;
     if (!gdox_source_is_valid(source)) {
         return false;
     }
-    if (source->ops->media_present == NULL) {
+    if (source->ops->observe_media != NULL) {
+        source->ops->observe_media(source->context, output);
+        if (output->readiness < GDOX_MEDIA_READINESS_UNKNOWN
+            || output->readiness > GDOX_MEDIA_READINESS_PRESENT) {
+            output->readiness = GDOX_MEDIA_READINESS_UNKNOWN;
+        }
+        if (output->event < GDOX_MEDIA_EVENT_NONE
+            || output->event > GDOX_MEDIA_EVENT_CHANGED) {
+            output->event = GDOX_MEDIA_EVENT_NONE;
+        }
         return true;
     }
-    return source->ops->media_present(source->context);
+    output->readiness = source->ops->media_present == NULL
+        || source->ops->media_present(source->context)
+        ? GDOX_MEDIA_READINESS_PRESENT
+        : GDOX_MEDIA_READINESS_ABSENT;
+    return true;
+}
+
+bool gdox_source_media_present(const gdox_sector_source *source)
+{
+    gdox_media_observation observation;
+    return gdox_source_observe_media(source, &observation)
+        && observation.readiness == GDOX_MEDIA_READINESS_PRESENT;
 }
 
 bool gdox_source_evidence(
@@ -145,6 +198,19 @@ void gdox_source_abort(gdox_sector_source *source)
     }
 }
 
+bool gdox_source_prepare_close(gdox_sector_source *source, gdox_error *error)
+{
+    gdox_error_clear(error);
+    if (!gdox_source_is_valid(source)) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "source is not open");
+        return false;
+    }
+    if (source->ops->prepare_close == NULL) {
+        return true;
+    }
+    return source->ops->prepare_close(source->context, error);
+}
+
 bool gdox_source_close(gdox_sector_source *source, gdox_error *error)
 {
     void *context;
@@ -153,6 +219,9 @@ bool gdox_source_close(gdox_sector_source *source, gdox_error *error)
     gdox_error_clear(error);
     if (!gdox_source_is_valid(source)) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "source is not open");
+        return false;
+    }
+    if (!gdox_source_prepare_close(source, error)) {
         return false;
     }
     context = source->context;
@@ -212,6 +281,15 @@ static bool partition_media_present(const void *context)
     return gdox_source_media_present(&partition->inner);
 }
 
+static void partition_observe_media(
+    const void *context,
+    gdox_media_observation *output
+)
+{
+    const gdox_partition_context *partition = context;
+    (void)gdox_source_observe_media(&partition->inner, output);
+}
+
 static bool partition_evidence(
     const void *context,
     gdox_disc_evidence *output
@@ -238,6 +316,12 @@ static bool partition_close(void *context, gdox_error *error)
     return closed;
 }
 
+static bool partition_prepare_close(void *context, gdox_error *error)
+{
+    gdox_partition_context *partition = context;
+    return gdox_source_prepare_close(&partition->inner, error);
+}
+
 static void partition_abort(void *context)
 {
     gdox_partition_context *partition = context;
@@ -252,6 +336,8 @@ static const gdox_sector_source_ops partition_ops = {
     partition_evidence,
     partition_physical_read_stats,
     partition_abort,
+    partition_prepare_close,
+    partition_observe_media,
 };
 
 bool gdox_source_make_partition(
@@ -265,11 +351,12 @@ bool gdox_source_make_partition(
     uint64_t sectors;
 
     gdox_error_clear(error);
-    if (inner == NULL || output == NULL || inner == output || !gdox_source_is_valid(inner)) {
+    if (inner == NULL || output == NULL || inner == output
+        || !gdox_source_is_valid(inner) || gdox_source_is_valid(output)) {
         gdox_error_set(
             error,
             GDOX_ERROR_INVALID_ARGUMENT,
-            "partition source requires distinct, valid input and output sources"
+            "partition source requires a valid input and empty, distinct output"
         );
         return false;
     }
@@ -382,6 +469,15 @@ static bool patch_media_present(const void *context)
     return gdox_source_media_present(&patched->inner);
 }
 
+static void patch_observe_media(
+    const void *context,
+    gdox_media_observation *output
+)
+{
+    const gdox_patch_context *patched = context;
+    (void)gdox_source_observe_media(&patched->inner, output);
+}
+
 static bool patch_evidence(
     const void *context,
     gdox_disc_evidence *output
@@ -409,6 +505,12 @@ static bool patch_close(void *context, gdox_error *error)
     return closed;
 }
 
+static bool patch_prepare_close(void *context, gdox_error *error)
+{
+    gdox_patch_context *patched = context;
+    return gdox_source_prepare_close(&patched->inner, error);
+}
+
 static void patch_abort(void *context)
 {
     gdox_patch_context *patched = context;
@@ -423,6 +525,8 @@ static const gdox_sector_source_ops patch_ops = {
     patch_evidence,
     patch_physical_read_stats,
     patch_abort,
+    patch_prepare_close,
+    patch_observe_media,
 };
 
 bool gdox_source_make_patched(
@@ -440,12 +544,13 @@ bool gdox_source_make_patched(
     size_t unique_count;
 
     gdox_error_clear(error);
-    if (inner == NULL || output == NULL || inner == output || !gdox_source_is_valid(inner)
+    if (inner == NULL || output == NULL || inner == output
+        || !gdox_source_is_valid(inner) || gdox_source_is_valid(output)
         || (patch_count != 0U && patches == NULL)) {
         gdox_error_set(
             error,
             GDOX_ERROR_INVALID_ARGUMENT,
-            "patched source requires distinct, valid sources and a patch array"
+            "patched source requires a valid input, empty distinct output, and a patch array"
         );
         return false;
     }

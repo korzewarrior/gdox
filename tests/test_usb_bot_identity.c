@@ -105,6 +105,7 @@ static void run(void)
         2U,
     };
     candidate candidates[2];
+    gdox_usb_bot_identity recovery;
 
     GDOX_TEST_CHECK(gp63 != NULL);
     GDOX_TEST_CHECK(gp65 != NULL);
@@ -113,6 +114,27 @@ static void run(void)
     if (gp63 == NULL || gp65 == NULL || gp08 == NULL || asus == NULL) {
         return;
     }
+    GDOX_TEST_CHECK(gdox_usb_bot_recovery_identity(
+        GDOX_GP63_USB_VENDOR_ID,
+        GDOX_GP63_USB_PRODUCT_ID,
+        &recovery
+    ));
+    GDOX_TEST_CHECK(recovery == GDOX_USB_BOT_GP63);
+    GDOX_TEST_CHECK(gdox_usb_bot_recovery_identity(
+        GDOX_GP08_USB_VENDOR_ID,
+        GDOX_GP08_USB_PRODUCT_ID,
+        &recovery
+    ));
+    GDOX_TEST_CHECK(recovery == GDOX_USB_BOT_GP08);
+    GDOX_TEST_CHECK(gdox_usb_bot_recovery_identity(
+        GDOX_ASUS_USB_VENDOR_ID,
+        GDOX_ASUS_USB_PRODUCT_ID,
+        &recovery
+    ));
+    GDOX_TEST_CHECK(recovery == GDOX_USB_BOT_ASUS_NR09);
+    GDOX_TEST_CHECK(!gdox_usb_bot_recovery_identity(
+        UINT16_C(0xffff), UINT16_C(0xffff), &recovery
+    ));
     GDOX_TEST_CHECK(gp63->vendor_id == gp65->vendor_id);
     GDOX_TEST_CHECK(gp63->product_id == gp65->product_id);
     GDOX_TEST_CHECK(gdox_usb_bot_identity_matches(

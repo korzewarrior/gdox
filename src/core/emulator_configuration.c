@@ -179,7 +179,7 @@ static bool enter_toml_line(
         gdox_error_set(
             error,
             GDOX_ERROR_INVALID_SOURCE,
-            "xemu configuration repeats a display section"
+            "xemu configuration repeats a managed section"
         );
         return false;
     }
@@ -208,7 +208,7 @@ static bool write_toml_line(
         gdox_error_set(
             error,
             GDOX_ERROR_INVALID_SOURCE,
-            "xemu configuration repeats a display key"
+            "xemu configuration repeats a managed key"
         );
         return false;
     }
@@ -302,7 +302,8 @@ static bool supported_file_key(const char *key)
     return key != NULL
         && (strcmp(key, "bootrom_path") == 0
             || strcmp(key, "flashrom_path") == 0
-            || strcmp(key, "hdd_path") == 0);
+            || strcmp(key, "hdd_path") == 0
+            || strcmp(key, "eeprom_path") == 0);
 }
 
 static bool decode_string(
@@ -478,6 +479,9 @@ bool gdox_emulator_configuration_update(
     char height[16];
     const char *aspect;
     const char *fit;
+    char *general = NULL;
+    char *system = NULL;
+    char *performance = NULL;
     char *quality = NULL;
     char *ui_aspect = NULL;
     char *ui_fit = NULL;
@@ -540,6 +544,30 @@ bool gdox_emulator_configuration_update(
     );
     if (!set_toml_key(
             original,
+            "general",
+            "show_welcome",
+            "false",
+            &general,
+            error
+        )
+        || !set_toml_key(
+            general,
+            "sys",
+            "volatile_hard_disk",
+            "true",
+            &system,
+            error
+        )
+        || !set_toml_key(
+            system,
+            "perf",
+            "cache_shaders",
+            "false",
+            &performance,
+            error
+        )
+        || !set_toml_key(
+            performance,
             "display.quality",
             "surface_scale",
             scale,
@@ -601,6 +629,9 @@ bool gdox_emulator_configuration_update(
     success = true;
 
 cleanup:
+    free(general);
+    free(system);
+    free(performance);
     free(quality);
     free(ui_aspect);
     free(ui_fit);

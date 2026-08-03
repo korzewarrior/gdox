@@ -19,17 +19,53 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify release commit is main
+        run: |
+          git fetch --no-tags --depth=1 origin \
+            +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --yes \
             cmake ninja-build libusb-1.0-0-dev libssl-dev libdbus-1-dev \
             libgl1-mesa-dev libglu1-mesa-dev \
-            libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev
+            libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev \
+            shellcheck zstd
       - name: Verify source tree
         run: |
           python scripts/project_version.py --validate "${GITHUB_REF_NAME}"
           make check
+          python scripts/fetch_runtime.py publishable \
+            --target x86_64-unknown-linux-gnu
+          python scripts/fetch_runtime.py publishable \
+            --target x86_64-pc-windows-msvc
+          python scripts/fetch_runtime.py publishable \
+            --target x86_64-apple-darwin
+          python scripts/fetch_runtime.py publishable \
+            --target aarch64-apple-darwin
+
+  linux:
+    needs: quality
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build and package Linux and Steam Deck
+        env:
+          GDOX_OUTPUT_ROOT: ${{ github.workspace }}/dist
+          GDOX_CACHE_ROOT: ${{ runner.temp }}/gdox-release-cache
+        run: python scripts/build_linux_packages.py --version "${GITHUB_REF_NAME}"
+      - name: Audit release payload
+        run: python scripts/audit_release.py --path dist/release
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gdox-linux
+          path: |
+            dist/release/*.tar.gz
+            dist/release/*.sha256
+          if-no-files-found: error
 
   unix:
     needs: quality
@@ -39,9 +75,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact: dist/.build/x86_64-unknown-linux-gnu/gdox
           - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact: dist/.build/x86_64-apple-darwin/gdox.app
@@ -51,32 +84,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes \
-            cmake ninja-build libusb-1.0-0-dev libssl-dev libdbus-1-dev \
-            libgl1-mesa-dev libglu1-mesa-dev \
-            libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev
       - name: Build
         run: >-
           python scripts/build_release.py
           --target "${{ matrix.target }}"
           --build-dir "dist/.build/${{ matrix.target }}"
+          --skip-host-neutral-tests
+          --clean
       - name: Package
         run: >-
           python scripts/package_release.py
           --version "${{ github.ref_name }}"
           --target "${{ matrix.target }}"
-          --artifact "${{ matrix.artifact }}"
-          --output dist/release
-      - name: Package Steam Deck build
-        if: runner.os == 'Linux'
-        run: >-
-          python scripts/package_release.py
-          --version "${{ github.ref_name }}"
-          --target x86_64-steamdeck-linux-gnu
           --artifact "${{ matrix.artifact }}"
           --output dist/release
       - name: Audit release payload
@@ -93,7 +112,7 @@ jobs:
     needs: quality
     permissions:
       contents: read
-    runs-on: windows-latest
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build
@@ -102,6 +121,7 @@ jobs:
           scripts\build_msvc.cmd
           "%CD%"
           "%CD%\dist\.build\x86_64-pc-windows-msvc"
+          --skip-host-neutral-tests
       - name: Package
         run: >-
           python scripts/package_release.py
@@ -109,6 +129,22 @@ jobs:
           --target x86_64-pc-windows-msvc
           --artifact dist/.build/x86_64-pc-windows-msvc/gdox.exe
           --output dist/release
+      - name: Validate extracted package and Windows background lifecycle
+        shell: pwsh
+        run: |
+          $Archives = @(
+            Get-ChildItem `
+              -LiteralPath dist/release `
+              -Filter "gdox-*-x86_64-pc-windows-msvc.zip"
+          )
+          if ($Archives.Count -ne 1) {
+            throw "Expected one Windows release archive, found $($Archives.Count)."
+          }
+          & scripts/validate_windows_package.ps1 `
+            -Archive $Archives[0].FullName `
+            -TestExecutable dist/.build/x86_64-pc-windows-msvc/gdox_tests.exe `
+            -SmokeScript scripts/windows_smoke.ps1 `
+            -WorkingRoot "$env:RUNNER_TEMP/gdox-package-smoke"
       - name: Audit release payload
         run: python scripts/audit_release.py --path dist/release
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -126,6 +162,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install source audit dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes zstd
       - name: Package GDOX source
         run: >-
           python scripts/package_source.py
@@ -143,15 +183,23 @@ jobs:
             dist/*-source.tar.gz.sha256
             dist/*.tar.zst
             dist/*.tar.zst.sha256
+            dist/libnbd-*.tar.gz
+            dist/libnbd-*.tar.gz.sha256
+            dist/libnbd-*-PKGBUILD
+            dist/libnbd-*-PKGBUILD.sha256
           if-no-files-found: error
 
   publish:
-    needs: [unix, windows, source]
+    needs: [linux, unix, windows, source]
     permissions:
       contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install release audit dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes minisign zstd
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: "*"
@@ -163,8 +211,6 @@ jobs:
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes minisign
           cd dist
           find . -maxdepth 1 -type f ! -name '*.sha256' ! -name 'SHA256SUMS*' \
             -printf '%f\n' | sort | xargs sha256sum > "$RUNNER_TEMP/SHA256SUMS"
@@ -175,15 +221,30 @@ jobs:
             -x SHA256SUMS.minisig -m SHA256SUMS
           rm "$RUNNER_TEMP/minisign.key"
           minisign -V -p ../packaging/minisign.pub -m SHA256SUMS
+      - name: Prepare reviewed release notes
+        run: >-
+          python scripts/release_notes.py
+          --version "${GITHUB_REF_NAME}"
+          --require-released
+          --output "$RUNNER_TEMP/RELEASE_NOTES.md"
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          release_version=$(python scripts/project_version.py --validate "${GITHUB_REF_NAME}")
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            test "$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq .isDraft)" = true || {
+              echo "refusing to replace assets on a published release" >&2
+              exit 1
+            }
+            gh release edit "${GITHUB_REF_NAME}" \
+              --title "gdox ${release_version}" \
+              --notes-file "$RUNNER_TEMP/RELEASE_NOTES.md"
             gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
           else
             gh release create "${GITHUB_REF_NAME}" \
               --draft \
-              --generate-notes \
+              --title "gdox ${release_version}" \
+              --notes-file "$RUNNER_TEMP/RELEASE_NOTES.md" \
               dist/*
           fi

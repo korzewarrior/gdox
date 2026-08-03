@@ -11,6 +11,9 @@ typedef struct test_scsi_context {
     const uint8_t *input;
     size_t input_bytes;
     uint32_t timeout_ms;
+    unsigned int prepare_calls;
+    unsigned int close_calls;
+    unsigned int prepare_failures;
 } test_scsi_context;
 
 static bool command_in(
@@ -90,7 +93,21 @@ static bool reset(void *context, gdox_error *error)
 
 static bool close_transport(void *context, gdox_error *error)
 {
-    (void)context;
+    test_scsi_context *test_context = context;
+    ++test_context->close_calls;
+    gdox_error_clear(error);
+    return true;
+}
+
+static bool prepare_close_transport(void *context, gdox_error *error)
+{
+    test_scsi_context *test_context = context;
+    ++test_context->prepare_calls;
+    if (test_context->prepare_failures != 0U) {
+        --test_context->prepare_failures;
+        gdox_error_set(error, GDOX_ERROR_IO, "simulated transport prepare failure");
+        return false;
+    }
     gdox_error_clear(error);
     return true;
 }
@@ -101,6 +118,8 @@ static const gdox_scsi_transport_ops test_ops = {
     command_none,
     reset,
     close_transport,
+    prepare_close_transport,
+    NULL,
 };
 
 void gdox_test_scsi_transport(void)
@@ -166,4 +185,14 @@ void gdox_test_scsi_transport(void)
     ));
     GDOX_TEST_CHECK(error.code == GDOX_ERROR_INVALID_ARGUMENT);
     GDOX_TEST_CHECK(!context.command_out_called);
+
+    context.prepare_failures = 1U;
+    GDOX_TEST_CHECK(!gdox_scsi_transport_close(&transport, &error));
+    GDOX_TEST_CHECK(error.code == GDOX_ERROR_IO);
+    GDOX_TEST_CHECK(gdox_scsi_transport_is_valid(&transport));
+    GDOX_TEST_CHECK(context.close_calls == 0U);
+    GDOX_TEST_CHECK(gdox_scsi_transport_close(&transport, &error));
+    GDOX_TEST_CHECK(!gdox_scsi_transport_is_valid(&transport));
+    GDOX_TEST_CHECK(context.prepare_calls == 2U);
+    GDOX_TEST_CHECK(context.close_calls == 1U);
 }

@@ -1,33 +1,31 @@
 # gdox
 
-gdox reads, plays, and preserves physical game discs through supported optical
-drives.
+gdox plays original Xbox and Xbox 360 games from supported physical discs or
+owned images. it can also make playable xisos and full-disc preservation
+images from original Xbox discs.
 
-the current release supports original xbox. it can send a physical disc
-directly to [xemu](https://xemu.app/), make a playable xiso, or create a
-full-disc preservation image.
+[download](https://gdox.korze.org/download/) /
+[user guide](docs/USER_GUIDE.md) /
+[supported drives](https://gdox.korze.org/drives/)
 
-## now
+## support
 
-GDOX is an active development release. current system: original xbox.
+| platform | original Xbox | Xbox 360 |
+|---|---|---|
+| windows 11 x86-64 | discs, images, preservation | discs and images |
+| linux x86-64 | discs, images, preservation | discs and images |
+| steam deck | discs, images, preservation | discs and images |
+| macos apple silicon | discs, images, preservation | — |
+| macos intel | images | — |
+| android arm64 | in development | — |
 
-linux, steam deck, macos, and windows builds are available. android is in
-development.
+original Xbox physical play supports four exact optical-drive profiles. Xbox
+360 physical play supports the exact GP63EX70/RF02 profile on the host and
+media combinations in [Xbox 360 support](docs/XBOX360.md). similar drive names,
+firmware revisions, and USB bridges are not interchangeable.
 
-## source
-
-the original xbox path reads only what xemu asks for. it does not flash the
-drive or copy the game first.
-[how it works](https://gdox.korze.org/wtf/#original-xbox) explains the
-complete path.
-
-build and test:
-
-```sh
-cmake --preset dev
-cmake --build --preset dev --parallel
-ctest --preset dev --output-on-failure
-```
+gdox reads game data from the disc or image while the emulator runs. saves and
+profiles persist; game contents, shader caches, and session files do not.
 
 [contributing](CONTRIBUTING.md) /
 [status](docs/STATUS.md) /

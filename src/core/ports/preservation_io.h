@@ -9,6 +9,7 @@
 
 typedef struct gdox_preservation_file gdox_preservation_file;
 
+double gdox_preservation_monotonic_seconds(void);
 bool gdox_preservation_file_create(
     const char *path,
     gdox_preservation_file **output,

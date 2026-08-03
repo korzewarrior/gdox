@@ -9,6 +9,13 @@ internal object GdoxCoreFiles {
   private const val legacyPreferencesName = "x1box_prefs"
   private const val migrationKey = "gdox_preferences_migrated"
   private const val activeSessionMarkerName = "active_emulator_session.flag"
+  private const val mcpxSize = 512L
+  private val mcpx10Md5 = byteArrayOf(
+    0xd4.toByte(), 0x9c.toByte(), 0x52, 0xa4.toByte(),
+    0x10, 0x2f, 0x6d, 0xf7.toByte(),
+    0xbc.toByte(), 0xf8.toByte(), 0xd0.toByte(), 0x61,
+    0x7a, 0xc4.toByte(), 0x75, 0xed.toByte()
+  )
 
   enum class Source(
     val title: String,
@@ -30,13 +37,6 @@ internal object GdoxCoreFiles {
       "flashPath",
       "flashUri",
       "flash.bin"
-    ),
-    HDD(
-      "Xbox hard disk",
-      "A writable raw or QCOW2 Xbox hard-disk image",
-      "hddPath",
-      "hddUri",
-      "hdd.qcow2"
     )
   }
 
@@ -77,11 +77,13 @@ internal object GdoxCoreFiles {
   fun clearOrderlySessionMarker(context: Context): Boolean {
     val root = context.getExternalFilesDir(null) ?: context.filesDir
     val marker = File(File(root, "gdox"), activeSessionMarkerName)
-    return !marker.exists() || marker.delete()
+    if (!GdoxSecureFiles.pathExistsNoFollow(marker)) return true
+    return GdoxSecureFiles.regularFileNoFollow(marker) &&
+      GdoxSecureFiles.durableDelete(marker)
   }
 
   fun configured(context: Context): Boolean =
-    Source.entries.all { ready(context, it) }
+    Source.entries.all { ready(context, it) } && managedHdd(context) != null
 
   fun ready(context: Context, source: Source): Boolean {
     val value = preferences(context).getString(source.pathKey, null)
@@ -92,11 +94,28 @@ internal object GdoxCoreFiles {
   fun valid(source: Source, file: File): Boolean {
     if (!file.isFile || !file.canRead()) return false
     return when (source) {
-      Source.MCPX -> file.length() == 512L
+      Source.MCPX -> validMcpx(file)
       Source.FLASH -> file.length() == 1024L * 1024L
-      Source.HDD -> file.length() >= 1024L * 1024L
     }
   }
+
+  fun managedHdd(context: Context): File? =
+    GdoxManagedHdd.resolve(context, ::preferences)
+
+  fun managedHddProblem(context: Context): String? =
+    GdoxManagedHdd.problem(context)
+
+  private fun validMcpx(file: File): Boolean {
+    if (file.length() != mcpxSize) return false
+    val digest = fileMd5(file) ?: return false
+    return validMcpx10Digest(digest)
+  }
+
+  internal fun validMcpx10Digest(digest: ByteArray): Boolean =
+    digest.contentEquals(mcpx10Md5)
+
+  internal fun fileMd5(file: File): ByteArray? =
+    GdoxSecureFiles.digest(file, "MD5")
 
   fun label(context: Context, source: Source): String {
     val value = preferences(context).getString(source.pathKey, null)

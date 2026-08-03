@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+install_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
+bridge_library="${install_root}/runtime/bridge/lib"
+if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+    export LD_LIBRARY_PATH="${bridge_library}:${LD_LIBRARY_PATH}"
+else
+    export LD_LIBRARY_PATH="${bridge_library}"
+fi
+exec "${install_root}/libexec/nbdfuse.bin" "$@"

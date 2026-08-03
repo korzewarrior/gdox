@@ -2,7 +2,7 @@
 [Desktop Entry]
 Type=Application
 Name=GDOX
-Comment=Insert an original Xbox disc and play it
+Comment=Insert an Xbox or Xbox 360 disc and play it
 Exec=gdox
 Icon=gdox
 StartupWMClass=gdox

@@ -55,6 +55,27 @@ const gdox_usb_bot_identity_spec *gdox_usb_bot_identity_get(
     return NULL;
 }
 
+bool gdox_usb_bot_recovery_identity(
+    uint16_t vendor_id,
+    uint16_t product_id,
+    gdox_usb_bot_identity *identity
+)
+{
+    size_t index;
+
+    if (identity == NULL) {
+        return false;
+    }
+    for (index = 0U; index < GDOX_USB_BOT_IDENTITY_COUNT; ++index) {
+        if (identities[index].vendor_id == vendor_id
+            && identities[index].product_id == product_id) {
+            *identity = identities[index].identity;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool gdox_usb_bot_identity_matches(
     gdox_usb_bot_identity requested,
     const gdox_usb_bot_observed_identity *observed

@@ -5,12 +5,8 @@ add_library(
     STATIC
         src/platform/asus_nr09_source.c
         src/platform/gp08_source.c
-        src/platform/mmc_commands.c
-        src/platform/mt1887_source.c
-        src/platform/mt1887_profile.c
         src/platform/optical.c
-        src/platform/scsi_transport.c
-        src/platform/usb_bot_identity.c
+        ${GDOX_MT1887_OPTICAL_SOURCES}
 )
 add_library(gdox::optical ALIAS gdox_optical)
 target_include_directories(gdox_optical PRIVATE src)
@@ -47,7 +43,12 @@ elseif(PkgConfig_FOUND)
 endif()
 
 if(NOT APPLE AND NOT WIN32 AND TARGET PkgConfig::LIBUSB)
-    target_sources(gdox_optical PRIVATE src/platform/usb_bot_libusb.c)
+    target_sources(
+        gdox_optical
+        PRIVATE
+            src/platform/usb_bot_libusb.c
+            src/platform/usb_bot_libusb_handoff.c
+    )
     target_link_libraries(gdox_optical PRIVATE PkgConfig::LIBUSB)
     target_compile_definitions(gdox_optical PUBLIC GDOX_HAS_LIBUSB=1)
 elseif(NOT APPLE AND NOT WIN32)

@@ -113,27 +113,6 @@ void choose_firmware(gdox_app &app, bool mcpx)
     }
 }
 
-void choose_hdd(gdox_app &app)
-{
-    if (!dialogs_ready()) {
-        set_notice("Hard disk picker is unavailable");
-        return;
-    }
-    nfdu8char_t *path = nullptr;
-    nfdopendialogu8args_t arguments{};
-    const nfdresult_t result = NFD_OpenDialogU8_With(&path, &arguments);
-    if (result == NFD_OKAY) {
-        if (!gdox_app_set_hdd_override(&app, path)) {
-            set_notice("That Xbox hard disk image could not be used");
-        } else {
-            set_notice("");
-        }
-        NFD_FreePathU8(path);
-    } else if (result == NFD_ERROR) {
-        set_dialog_error("Hard disk picker");
-    }
-}
-
 void source_actions_spacing()
 {
     ImGui::Dummy(ImVec2(0.0F, 8.0F));
@@ -178,6 +157,8 @@ void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
     int resolution = 0;
     bool fullscreen = snapshot.settings.fullscreen;
     bool display_changed = false;
+    const bool handheld =
+        app.host_profile == GDOX_HOST_PROFILE_HANDHELD;
 
     for (std::size_t index = 0U; index < widths.size(); ++index) {
         if (snapshot.settings.window_width == widths[index]
@@ -197,9 +178,10 @@ void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
     ImGui::SetWindowFontScale(1.0F);
     ImGui::Dummy(ImVec2(0.0F, 8.0F));
 
-    ImGui::TextUnformatted("xemu display");
+    ImGui::TextUnformatted("Playback display");
     ImGui::Separator();
     ImGui::SetNextItemWidth(250.0F);
+    ImGui::BeginDisabled(handheld);
     if (ImGui::Combo(
             "Rendering scale",
             &scale_index,
@@ -216,6 +198,10 @@ void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
         )) {
         scale = scale_index + 1;
         display_changed = true;
+    }
+    ImGui::EndDisabled();
+    if (handheld) {
+        ImGui::TextColored(muted, "Steam Deck playback uses fixed 1x rendering.");
     }
     ImGui::SetNextItemWidth(250.0F);
     if (ImGui::Combo(
@@ -244,7 +230,7 @@ void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
         )) {
         display_changed = true;
     }
-    if (ImGui::Checkbox("Start xemu fullscreen", &fullscreen)) {
+    if (ImGui::Checkbox("Start playback fullscreen", &fullscreen)) {
         display_changed = true;
     }
     if (display_changed) {
@@ -260,7 +246,7 @@ void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
     }
     ImGui::TextColored(
         muted,
-        "Changes are saved. A running xemu session restarts automatically."
+        "Changes are saved. Running playback restarts automatically."
     );
     ImGui::Dummy(ImVec2(0.0F, 14.0F));
 
@@ -307,6 +293,16 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
         "Physical discs remain the default and are never replaced automatically."
     );
     source_actions_spacing();
+    if (snapshot.media_platform == GDOX_MEDIA_PLATFORM_XBOX_360) {
+        path_row(
+            "xenia",
+            "Verified Xenia executable",
+            snapshot.xenia_executable,
+            "Not available"
+        );
+        ImGui::TextColored(muted, "%s", snapshot.xenia_setup);
+        source_actions_spacing();
+    }
     path_row("xemu", "xemu executable", snapshot.xemu_executable, "Not available");
     if (ImGui::Button("Choose xemu...", ImVec2(142.0F, 34.0F))) {
         choose_xemu(app);
@@ -341,19 +337,7 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
     }
     source_actions_spacing();
     path_row("hdd", "Xbox hard disk", snapshot.hdd_path, "Not prepared");
-    if (ImGui::Button("Choose hard disk...", ImVec2(170.0F, 34.0F))) {
-        choose_hdd(app);
-    }
-    if (snapshot.settings.hdd_override[0] != '\0') {
-        ImGui::SameLine();
-        if (ImGui::Button("Use included", ImVec2(122.0F, 34.0F))) {
-            if (!gdox_app_set_hdd_override(&app, "")) {
-                set_notice("The included Xbox hard disk could not be prepared");
-            } else {
-                set_notice("");
-            }
-        }
-    }
+    ImGui::TextColored(muted, "Verified clean image; only logical saves persist");
     source_actions_spacing();
     path_row(
         "preservation",

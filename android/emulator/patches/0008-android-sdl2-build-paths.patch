@@ -1,0 +1,15 @@
+diff --git a/android/app/src/main/cpp/CMakeLists.txt b/android/app/src/main/cpp/CMakeLists.txt
+--- a/android/app/src/main/cpp/CMakeLists.txt
++++ b/android/app/src/main/cpp/CMakeLists.txt
+@@ -41,6 +41,11 @@ if(NOT DEFINED SDL2_LOCAL_DIR AND EXISTS "${SDL2_LOCAL_DEFAULT}/CMakeLists.txt")
+ endif()
+ 
+ if(DEFINED SDL2_LOCAL_DIR)
++  add_compile_options(
++    "-ffile-prefix-map=${SDL2_LOCAL_DIR}=sdl2"
++    "-fdebug-prefix-map=${SDL2_LOCAL_DIR}=sdl2"
++    "-fmacro-prefix-map=${SDL2_LOCAL_DIR}=sdl2"
++  )
+   message(STATUS "Using local SDL2 at ${SDL2_LOCAL_DIR}")
+   add_subdirectory("${SDL2_LOCAL_DIR}" "${CMAKE_BINARY_DIR}/sdl2-local")
+ elseif(XEMU_FETCH_SDL2)
