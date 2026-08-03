@@ -25,14 +25,11 @@ typedef enum gdox_emulator_fit {
     GDOX_EMULATOR_FIT_STRETCH
 } gdox_emulator_fit;
 
-typedef struct gdox_emulator_paths {
-    char executable[GDOX_EMULATOR_PATH_CAPACITY];
-    char configuration[GDOX_EMULATOR_PATH_CAPACITY];
-} gdox_emulator_paths;
-
 typedef struct gdox_emulator_options {
     const char *executable;
     const char *configuration;
+    /* Persistent logical E:\\UDATA vault; all other guest HDD writes are volatile. */
+    const char *save_vault;
     uint8_t internal_resolution_scale;
     gdox_emulator_aspect aspect;
     gdox_emulator_fit fit;
@@ -48,11 +45,27 @@ bool gdox_emulator_discover_executable(
     char output[GDOX_EMULATOR_PATH_CAPACITY],
     gdox_error *error
 );
+/* Finds an external configuration without copying or editing it. */
+bool gdox_emulator_discover_configuration(
+    const char *executable,
+    char output[GDOX_EMULATOR_PATH_CAPACITY],
+    bool *required,
+    gdox_error *error
+);
 bool gdox_emulator_validate_executable(
     const char *path,
     gdox_error *error
 );
-bool gdox_emulator_discover(gdox_emulator_paths *paths, gdox_error *error);
+/*
+ * Runs the non-graphical, bounded GDOX capability query and rejects unknown
+ * or unpatched xemu executables. The save-export result is returned exactly
+ * as reported by an exact reviewed capability schema.
+ */
+bool gdox_emulator_query_storage_capabilities(
+    const char *path,
+    bool *persistent_save_export,
+    gdox_error *error
+);
 bool gdox_emulator_prepare(
     const gdox_emulator_options *options,
     gdox_error *error

@@ -59,10 +59,17 @@ class GdoxSourcesActivity : Activity() {
     content.addView(
       GdoxUi.body(
         this,
-        "Choose the three support files required by the emulator."
+        "Choose the two console files required by the emulator. GDOX provides " +
+          "its clean, read-only system drive."
       ),
       margin(top = 8, bottom = 26)
     )
+    GdoxCoreFiles.managedHddProblem(this)?.let { problem ->
+      content.addView(
+        GdoxUi.body(this, problem),
+        margin(bottom = 18)
+      )
+    }
 
     GdoxCoreFiles.Source.entries.forEach { source ->
       content.addView(sourceRow(source), margin(bottom = 14))
@@ -120,13 +127,9 @@ class GdoxSourcesActivity : Activity() {
   private fun choose(source: GdoxCoreFiles.Source) {
     if (copying) return
     pending = source
-    val type = when (source) {
-      GdoxCoreFiles.Source.HDD -> "*/*"
-      else -> "application/octet-stream"
-    }
     val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
       addCategory(Intent.CATEGORY_OPENABLE)
-      this.type = type
+      type = "application/octet-stream"
       addFlags(
         Intent.FLAG_GRANT_READ_URI_PERMISSION or
           Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION

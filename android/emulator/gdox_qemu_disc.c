@@ -35,7 +35,9 @@ typedef struct gdox_qemu_disc_state {
     uint64_t previous_end;
     uint64_t physical_commands_at_open;
     uint64_t physical_bytes_at_open;
+    uint64_t media_generation;
     bool has_previous_end;
+    bool media_generation_known;
     bool read_ahead_valid;
     bool physical_read_reported;
     bool removal_reported;
@@ -44,6 +46,77 @@ typedef struct gdox_qemu_disc_state {
 static pthread_mutex_t staged_mutex = PTHREAD_MUTEX_INITIALIZER;
 static gdox_android_disc *staged_disc;
 static gdox_android_disc *active_disc;
+static bool global_media_end_reported;
+static uint64_t session_media_generation;
+static bool session_media_generation_known;
+
+static gdox_removable_session_status gdox_observe_disc(
+    const gdox_android_disc *disc,
+    bool generation_known,
+    uint64_t expected_generation,
+    gdox_media_observation *observation
+)
+{
+    *observation = (gdox_media_observation){0};
+    if (disc == NULL
+        || !gdox_android_disc_observe_media(disc, observation)) {
+        return GDOX_REMOVABLE_SESSION_UNAVAILABLE;
+    }
+    return gdox_removable_session_classify(
+        observation, generation_known, expected_generation
+    );
+}
+
+static const char *gdox_media_end_description(
+    gdox_removable_session_status status
+)
+{
+    switch (status) {
+        case GDOX_REMOVABLE_SESSION_EJECT_REQUESTED:
+            return "physical-disc eject requested; ending session";
+        case GDOX_REMOVABLE_SESSION_CHANGED:
+            return "physical disc changed; ending session";
+        case GDOX_REMOVABLE_SESSION_UNAVAILABLE:
+            return "physical disc was removed; ending session";
+        case GDOX_REMOVABLE_SESSION_PRESENT:
+            break;
+    }
+    return "physical-disc session ended";
+}
+
+static gdox_removable_session_status gdox_observe_state(
+    gdox_qemu_disc_state *state
+)
+{
+    gdox_media_observation observation;
+    const gdox_removable_session_status status = gdox_observe_disc(
+        state->disc,
+        state->media_generation_known,
+        state->media_generation,
+        &observation
+    );
+
+    if (status == GDOX_REMOVABLE_SESSION_PRESENT
+        && !state->media_generation_known) {
+        state->media_generation = observation.generation;
+        state->media_generation_known = true;
+    }
+    return status;
+}
+
+static void gdox_end_state_session(
+    gdox_qemu_disc_state *state,
+    gdox_removable_session_status status
+)
+{
+    if (state->removal_reported
+        || status == GDOX_REMOVABLE_SESSION_PRESENT) {
+        return;
+    }
+    state->removal_reported = true;
+    info_report("GDOX %s", gdox_media_end_description(status));
+    qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_UI);
+}
 
 bool gdox_qemu_disc_prepare(
     int file_descriptor,
@@ -53,6 +126,8 @@ bool gdox_qemu_disc_prepare(
 {
     gdox_android_disc *disc = NULL;
     gdox_android_disc_info info;
+    gdox_media_observation observation = {0};
+    bool generation_known;
 
     if (!gdox_android_disc_open(
             file_descriptor,
@@ -64,6 +139,7 @@ bool gdox_qemu_disc_prepare(
         )) {
         return false;
     }
+    generation_known = gdox_android_disc_observe_media(disc, &observation);
     pthread_mutex_lock(&staged_mutex);
     if (staged_disc != NULL) {
         pthread_mutex_unlock(&staged_mutex);
@@ -76,6 +152,9 @@ bool gdox_qemu_disc_prepare(
         return false;
     }
     staged_disc = disc;
+    global_media_end_reported = false;
+    session_media_generation = observation.generation;
+    session_media_generation_known = generation_known;
     pthread_mutex_unlock(&staged_mutex);
     if (output_info != NULL) {
         memset(output_info, 0, sizeof(*output_info));
@@ -93,13 +172,30 @@ bool gdox_qemu_disc_prepare(
 bool gdox_qemu_disc_media_present(void)
 {
     gdox_android_disc *disc;
-    bool present;
+    gdox_media_observation observation;
+    gdox_removable_session_status status;
+    uint64_t expected_generation;
+    bool generation_known;
+    bool report_end = false;
 
     pthread_mutex_lock(&staged_mutex);
     disc = active_disc != NULL ? active_disc : staged_disc;
-    present = disc != NULL && gdox_android_disc_media_present(disc);
+    expected_generation = session_media_generation;
+    generation_known = session_media_generation_known;
+    status = gdox_observe_disc(
+        disc, generation_known, expected_generation, &observation
+    );
+    if (disc != NULL && status != GDOX_REMOVABLE_SESSION_PRESENT
+        && !global_media_end_reported) {
+        global_media_end_reported = true;
+        report_end = true;
+    }
     pthread_mutex_unlock(&staged_mutex);
-    return present;
+    if (report_end) {
+        info_report("GDOX %s", gdox_media_end_description(status));
+        qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_UI);
+    }
+    return status == GDOX_REMOVABLE_SESSION_PRESENT;
 }
 
 void gdox_qemu_disc_shutdown(void)
@@ -113,6 +209,9 @@ void gdox_qemu_disc_shutdown(void)
     active = active_disc;
     staged_disc = NULL;
     active_disc = NULL;
+    global_media_end_reported = false;
+    session_media_generation = 0U;
+    session_media_generation_known = false;
     pthread_mutex_unlock(&staged_mutex);
     if (prepared != NULL) {
         (void)gdox_android_disc_close(prepared, &ignored);
@@ -173,6 +272,8 @@ static int gdox_open(
     state->disc = staged_disc;
     staged_disc = NULL;
     active_disc = state->disc;
+    state->media_generation = session_media_generation;
+    state->media_generation_known = session_media_generation_known;
     pthread_mutex_unlock(&staged_mutex);
     if (state->disc == NULL) {
         error_setg(error, "no GDOX physical disc is prepared");
@@ -182,6 +283,12 @@ static int gdox_open(
     if (gdox_android_disc_physical_read_stats(state->disc, &stats)) {
         state->physical_commands_at_open = stats.commands;
         state->physical_bytes_at_open = stats.bytes;
+    }
+    {
+        const gdox_removable_session_status status =
+            gdox_observe_state(state);
+
+        gdox_end_state_session(state, status);
     }
     state->read_ahead = g_try_malloc(GDOX_READ_AHEAD_BYTES);
     info_report(
@@ -346,7 +453,7 @@ static int coroutine_fn gdox_read(
     uint8_t *buffer;
     uint8_t *destination;
     size_t read_bytes;
-    bool present;
+    gdox_removable_session_status media_status;
     bool borrowed;
 
     (void)flags;
@@ -411,15 +518,13 @@ static int coroutine_fn gdox_read(
             &error
         )
         || read_bytes != (size_t)bytes) {
-        present = gdox_android_disc_media_present(state->disc);
+        media_status = gdox_observe_state(state);
         error_report("GDOX physical-disc read failed: %s", error.message);
-        if (!present && !state->removal_reported) {
-            state->removal_reported = true;
-            info_report("GDOX physical disc was removed; ending session");
-            qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_UI);
-        }
+        gdox_end_state_session(state, media_status);
         g_free(buffer);
-        return present ? -EIO : -ENOMEDIUM;
+        return media_status == GDOX_REMOVABLE_SESSION_PRESENT
+            ? -EIO
+            : -ENOMEDIUM;
     }
     if (!borrowed
         && qemu_iovec_from_buf(vectors, 0U, buffer, read_bytes) != read_bytes) {
@@ -484,15 +589,10 @@ static int coroutine_fn gdox_read(
 static bool coroutine_fn gdox_is_inserted(BlockDriverState *block)
 {
     gdox_qemu_disc_state *state = block->opaque;
-    const bool present = state->disc != NULL
-        && gdox_android_disc_media_present(state->disc);
+    const gdox_removable_session_status status = gdox_observe_state(state);
 
-    if (!present && state->disc != NULL && !state->removal_reported) {
-        state->removal_reported = true;
-        info_report("GDOX physical disc was removed; ending session");
-        qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_UI);
-    }
-    return present;
+    gdox_end_state_session(state, status);
+    return status == GDOX_REMOVABLE_SESSION_PRESENT;
 }
 
 static void gdox_close(BlockDriverState *block)
@@ -518,6 +618,9 @@ static void gdox_close(BlockDriverState *block)
     pthread_mutex_lock(&staged_mutex);
     if (active_disc == state->disc) {
         active_disc = NULL;
+        session_media_generation = 0U;
+        session_media_generation_known = false;
+        global_media_end_reported = false;
     }
     pthread_mutex_unlock(&staged_mutex);
     if (!gdox_android_disc_close(state->disc, &error)) {

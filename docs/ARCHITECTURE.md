@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the current Original Xbox implementation in gdox.
+This document describes the Xbox media and playback implementation in gdox.
 
 GDOX is a layered application with one active-media session owner.
 Dependencies point inward:
@@ -10,18 +10,22 @@ Dear ImGui pages
       │
 application snapshot and commands
       │
-runtime state machine ── compact XISO view / read-only NBD export / xemu process
+runtime coordinator ── tagged playback owner ─┬─ xemu process
+                                              └─ Xenia process
       │
-explicit media source ─┬─ read-only image file
-                       └─ optical adapter ── platform USB/SCSI transport
+validated media session ─┬─ read-only image file
+                         └─ optical adapter ── platform USB/SCSI transport
+      │
+      ├─ Original Xbox ── game partition / prepared boot XBE / request-local patch / NBD
+      └─ Xbox 360 ── GDFX/XEX identity / reviewed policy / stable launch view
 
 preservation service ── filesystem, hashes, evidence, output I/O
 ```
 
 ## Core
 
-`src/core` contains disc, XDVDFS, compact-XISO, disc-image, preservation,
-evidence, and hashing logic. Its public contracts are
+`src/core` contains disc, XDVDFS, GDFX/XEX, compact-XISO, disc-image,
+preservation, evidence, and hashing logic. Its public contracts are
 in `include/gdox`. Operating-system services used by core are declared as
 core-owned ports under `src/core/ports`; implementations live under
 `src/platform`. Core code does not include platform implementation headers or
@@ -31,9 +35,10 @@ Sector sources use the `gdox_sector_source` interface. Preservation therefore
 operates on the same bounded read contract whether the source is a physical
 disc or a test fixture.
 
-`cmake/GdoxSources.cmake` is the single source manifest for the portable
-live-disc and HDD scratch services compiled into both desktop and Android.
-Android does not maintain a copied core. `scripts/audit_architecture.py`
+`cmake/GdoxSources.cmake` is the single source manifest. Original Xbox
+live-disc and HDD services compile into both desktop and Android;
+compact-XISO preservation and Xbox 360 media parsing remain separate desktop
+source sets. Android does not maintain a copied core. `scripts/audit_architecture.py`
 rejects outward dependencies from core, including direct platform includes;
 Android dependencies in desktop layers or public headers; and an Android build
 that stops consuming these shared source sets. The desktop build exposes the
@@ -56,13 +61,21 @@ Both the desktop executable and headless runtime-request tests link that target,
 so sanitizer and warning builds cover the same implementation shipped by the
 application.
 
-The runtime is split by ownership: `runtime.c` owns the worker thread, selected
-media, read-only NBD export, and xemu process; `runtime_media.c` opens validated
-physical or image-backed media; `runtime_preservation.c` owns the
-physical-to-file workflow; and `runtime_controls.c` owns commands, preferences,
-firmware imports, and source overrides. Their shared contract is private to
+The runtime is split by ownership. `runtime.c` coordinates the worker cycle;
+`runtime_actions.c` applies typed user actions; `runtime_session.c` owns source
+and session transitions; `runtime_media.c` validates and retains physical or
+image-backed media; `runtime_playback.c` enforces one tagged emulator owner;
+`runtime_xemu.c` and `runtime_xenia.c` adapt their independent backends; and
+`runtime_state.c` owns canonical snapshot transitions. Preservation and
+control services remain separate. Their shared contract is private to
 `src/app`. Only the worker can transition a media session. UI code never owns
-an optical handle or image file.
+an optical handle, image file, export, or emulator process.
+
+Playback ownership is assigned before launch dispatch and remains assigned
+until the typed child is reaped or forcibly disposed. A failed stop cannot
+publish a false stopped state or allow media teardown beneath a live child.
+Architecture checks enforce the module graph and reject responsibility from
+collapsing back into the worker coordinator.
 
 `runtime_commands.c` owns the production command queue and pure action
 planner. Requests retain FIFO order, own path payloads, and remain queued when
@@ -71,9 +84,11 @@ over separate idle-discovery, live-session, emulator, and media-removal stages.
 
 `optical_monitor.c` is the pure state machine between passive device
 observation and active session initialization. It requires stable media before
-one initialization attempt. A failed attempt is latched until an explicit
-Start command; a transient USB disappearance cannot create an automatic retry
-loop.
+initialization, permits two bounded retries for an unidentified transport
+failure, and latches invalid media or exhausted retries until a Start command
+or confirmed removal. A completed session boundary rearms discovery with the
+same readiness dwell, so a replacement disc does not depend on observing an
+empty tray after teardown.
 
 Published snapshots are copied under a mutex. Preferences, runtime, and UI use
 one composed settings value, which is preserved across worker publications by
@@ -82,44 +97,133 @@ path and are renamed only after finalization.
 
 Closing a session aborts the optical retry ladder before any thread join, so
 teardown does not wait for recovery to run out. Recovery within one source
-read is bounded by a fixed time budget, and a drive that is no longer
-enumerable fails reads immediately instead of entering recovery.
+read has one fixed deadline. The initial READ command, recovery commands,
+state verification, speed request, retry READ, and every backoff cap their
+timeouts to the remaining budget. The optical source owns that retry policy;
+the NBD transport executes each request once and reports the source result. A
+drive that is no longer enumerable fails reads immediately instead of entering
+recovery.
 
-Play does not expose the physical mastering layout directly. The runtime
-locates the game partition, applies the required in-memory media patches, and
-builds a virtual compact XISO view before starting the read-only NBD export.
-Directory sectors are synthesized in memory while file sectors continue to
-stream from the selected source. This gives xemu a conventional single-layer
-layout without installing or copying the game.
+During an active desktop physical session, media observation remains inside the
+owned source. Its source mutex serializes nonblocking GESN and bounded TUR
+commands with sector reads. Each source drains queued media events at the
+session boundary. A physical eject request is bound to its media generation;
+removal or replacement advances that generation and invalidates the request.
+Playback must stop and the source must be restored and released before an eject
+request can be completed. Failed teardown is retried without replacing the
+original request identity.
 
-Physical playback has no persistent game-sector cache or image fallback. When
-the physical source is selected, every desktop NBD request for game-file data
-reaches the optical source. A disc image is used only after an explicit user
-selection, is never persisted as the startup source, and cannot replace a
-failed physical session automatically. Image-backed sessions use the same
-bounded sector and compact-view contracts while reading from the selected
-file. The Android QEMU adapter coalesces nearby requests through one forward-only
-256 KiB memory window because mobile QEMU commonly requests optical data in
-small pieces. That window is destroyed with the session and cannot sustain a
-game after USB detach. Only it and filesystem metadata created by the
-compatibility view remain in memory. Successful hardware READ(12) commands,
+Original Xbox play does not expose the physical mastering layout directly. The
+runtime validates XDVDFS, locates the game partition, and exports that partition
+without rebuilding its directory tree or relocating file extents. It prepares
+only the bounded `/default.xbe` boot extent in a session-local memory cache
+before xemu starts, applying its compatibility transform once. For reads inside
+another validated XBE extent, the compatibility adapter examines only the
+returned sectors and at most seven preceding bytes. It validates each XBE
+header once and changes a media-check byte only when the complete signature
+ends inside the current request. Request size and alignment therefore cannot
+change the compatibility view or trigger a whole-file scan of secondary
+executables. Compact-XISO construction remains a separate preservation service.
+
+Physical playback has no persistent game-sector cache or image fallback. The
+prepared default-XBE cache is bounded to 64 MiB, owned by one media session,
+and destroyed during normal source teardown. It lets the guest's first boot
+reads complete without waiting on cold optical I/O. The MT1887 source also
+uses larger contiguous READ(12) commands where the platform transport permits
+them. A separate live-disc adapter keeps one transport-sized read-ahead window
+only after it observes a contiguous request inside a validated file extent.
+The fill is capped at that file's final sector; directory sectors, mastering
+gaps, random reads, and the first read of a sequence remain exact. Media change,
+cancellation, or session teardown invalidates the window. A disc image is used
+only after an explicit user selection, is never persisted as the startup
+source, and cannot replace a failed physical session automatically.
+Image-backed sessions use the same bounded game-partition contract while
+reading from the selected file. The Android live-disc path uses the same
+file-bounded 256 KiB window. No memory window can sustain a game after USB
+detach. The prepared XBE, file read-ahead window, copied extent index, and XBE
+header states all remain memory-only.
+Successful hardware READ(12) commands,
 sectors, bytes, and the last physical LBA are counted by the active drive
 adapter and propagated through source adapters to the Details page. Virtual
 metadata cannot increment those counters.
 
-The managed Xbox HDD retains dashboard data and saves, but its X, Y, and Z FATX
-cache metadata is restored to an empty state before every xemu launch. The
-reset edits only existing QCOW2 data clusters and fails closed on an unexpected
-image layout, on internal snapshots, and on an image locked by another
-process. A game can repopulate those partitions during the session, which
-matches original-Xbox behavior. Explicit user-selected HDD images are never
-modified by this policy.
+The Windows GP63 transport batches contiguous live reads up to 1 MiB so the
+drive pays its command latency once per file-bounded cache fill. After one
+exact read, contiguous small requests may fill a 1 MiB window on Windows GP63,
+a 64 KiB window on Windows GP65, GP08, and ASUS, or a 256 KiB window on MT1887
+libusb platforms. The default-XBE cache fills in 1 MiB source calls; each call
+receives an independent bounded recovery deadline even when the platform
+adapter splits it into smaller hardware transfers.
 
-Media-status commands are suspended while xemu owns the session so they cannot
-interrupt the drive's sequential read stream. A separate presence-only guard
-enumerates the USB/IOKit device without sending commands. If the physical
-mechanism disappears, GDOX stops xemu and closes the NBD export immediately.
-Explicit media polling resumes only after xemu exits.
+Xbox 360 sessions validate one of the bounded Xenia-recognized GDFX layouts,
+the launch XEX, its complete execution identity, and any reviewed alternate
+launch module. The compatibility policy is compiled from a normalized
+manifest keyed by title, media, disc number, and disc count. Windows and Linux
+retain the validated image handle while Xenia opens the same path. Runtime
+descriptors own platform payload identity, graphics backend, and Proton use;
+title policies contain only guest compatibility settings. A separate host
+profile owns Xenia-wide performance policy. Handheld sessions send a
+720-by-480 guest display signal where the selected title permits it. This is
+not treated as a sub-native render scale: Xenia still renders the guest at 1x.
+The launch planner composes the host profile with the title policy only after
+the exact runtime advertises the managed display and performance controls.
+Cross-backend scheduling, asynchronous shader work, adaptive pipeline workers,
+frame limiting, and low-overhead handheld logging are pinned independently of
+title compatibility. Vulkan additionally
+rejects relaxed FIFO fallback so a missed refresh cannot select a tearing
+present mode. For physical media,
+Linux retains the validated whole-source size and selected XGD profile offset
+as session metadata, then moves ownership through a partition source whose byte
+zero is the selected game partition. Only that partition and its exact
+remaining length enter the local NBD export and temporary read-only `nbdfuse`
+view. The path cannot be replaced between validation and launch, and no full
+image copy or persistent sector cache is created.
+
+The GDOX xemu integration places the guest HDD behind a memory-backed copy-on-
+write layer. Guest writes never reach the backing image. A path-aware FATX
+projector is the only durable exit from that layer. Before the guest starts it
+imports the fixed HDD configuration area, the logical E:\UDATA tree, and only
+positively reviewed E:\TDATA save paths. It atomically checkpoints those same
+paths after a guest disk flush and during orderly emulator shutdown. The vault
+contains logical files, directories, FATX attributes, timestamps, and the
+fixed configuration bytes needed for user profiles and console settings. It
+never contains raw partitions, allocation tables, directory slack, installed
+games, title updates, DLC, unreviewed title data, or X, Y, and Z scratch data.
+A failed or interrupted replacement leaves the previous complete vault intact.
+GDOX rejects an xemu runtime unless its exact capability response attests both
+complete-HDD isolation and this schema-3 save-vault contract. Public packaging
+also binds each target to a separately reviewed artifact digest outside the
+runtime and integration manifests, so capability metadata cannot authorize
+another binary.
+
+The desktop migration path recognizes only the historical GDOX-owned
+`xemu/xbox_hdd.qcow2` path. GDOX records the ordinary file's exact identity and
+asks the reviewed xemu helper to read it once without booting, project the
+durable configuration and save paths, and round-trip the resulting vault. A
+receipt permits later launches to reuse that proof without rescanning the
+multi-gigabyte source. The old container is removed only after a fresh proof
+shows complete source projection, finds no unclassified TDATA, and an
+exact-delete check proves that the same unchanged file is still held. A
+differing same-path save or configuration entry remains authoritative in the
+current vault; nonconflicting source saves are merged, playback continues, and
+the old container is preserved. Unclassified TDATA has the same nonblocking
+preservation result. An HDD outside the historical managed path is never
+inspected or modified. POSIX removal holds an exclusive source lock, requires a
+private stable parent, revalidates the complete file identity after hashing,
+and uses a durable quarantine rename. After an interrupted removal, exactly one
+private, size-bounded quarantine inode can be restored to the fixed canonical
+path; fresh migration proof is still required before deletion.
+
+Every physical source serializes media observation and sector reads on the same
+transport mutex. During a live session the runtime polls that owned source at a
+bounded cadence, preserving `UNKNOWN`, `ABSENT`, and `PRESENT` readiness instead
+of collapsing transport errors into removal. No-medium and medium-change sense
+data advance a latched generation, including when a game read observes the
+change before the monitor. A generation change stops the typed playback owner,
+closes the NBD export, releases the drive, and requires a complete new profile
+and platform identification before auto-start. A separate presence-only guard
+detects a disconnected mechanism without issuing an independent SCSI command.
+Playback process polling runs before either drive probe.
 
 ## Platform
 
@@ -128,6 +232,9 @@ Explicit media polling resumes only after xemu exits.
 - POSIX and Windows process, file, storage, and preservation I/O;
 - native hashing backends;
 - loopback NBD socket transport;
+- separate Xenia runtime discovery and process-lifecycle adapters on Linux and
+  Windows, an isolated Linux read-only file bridge, and an explicit unsupported
+  adapter for hosts without a compatible Xenia runtime;
 - libusb Bulk-Only Transport on Linux;
 - native SCSI pass-through over the Windows optical class driver;
 - IOKit/Disk Arbitration/SCSI transport on macOS;
@@ -157,10 +264,13 @@ state transaction, error recovery, and physical tests.
 
 The public optical API exposes drive-independent operations only. A private
 descriptor registry maps each supported identity to its name, open operation,
-and optional eject operation. Standard MMC command construction and response
-validation live in `mmc_commands.c`; identity checks, vendor memory commands,
-recovery ladders, and restoration order remain in the individual drive
-adapters.
+optional software-eject operation, and physical-request completion policy. The
+GP63, GP65, and GP08 complete a physical request with their validated eject
+command. The ASUS policy reports only that the source was released for manual
+eject and never exposes software eject. Standard MMC command construction and
+response validation live in `mmc_commands.c`; identity checks, vendor memory
+commands, recovery ladders, and restoration order remain in the individual
+drive adapters.
 
 Drive discovery is non-owning. Linux uses libusb enumeration plus the kernel
 optical media-status interface; Windows enumerates optical class devices and
@@ -175,7 +285,7 @@ SteamOS resets USB storage interfaces during system resume. If Linux reports
 that a claimed supported-drive interface was lost, the transport closes the
 stale handle, reopens only the same allowlisted USB identity, reclaims its
 bulk interface, resets the Bulk-Only session, and retries the blocked optical
-read. The NBD export and xemu process remain alive while that bounded recovery
+read. The NBD export and active emulator process remain alive while that bounded recovery
 runs. If the drive does not return, the read fails and teardown remains safe
 with no disc-image fallback.
 
@@ -187,7 +297,7 @@ translation units. The UI reads snapshots and calls the application façade;
 it contains no preservation or transport algorithms.
 
 Dear ImGui keyboard and gamepad navigation are enabled so the same interface
-works in Steam Deck Gaming Mode. While xemu owns a Deck session, the
+works in Steam Deck Gaming Mode. While an emulator owns a Deck session, the
 presentation loop stops polling or rendering UI input. Navigation is re-armed
 only after GDOX regains focus and all controller buttons are released.
 
@@ -212,8 +322,8 @@ changing sector semantics.
 
 `android/emulator` registers the read-only `gdox://physical-disc` QEMU block
 protocol inside the emulator process. It accepts only a prepared physical
-session, has no image-file fallback, and forwards requested game-file sectors
-to the optical source. The compact XDVDFS directory layout remains memory-only.
+session, has no image-file fallback, and forwards game-partition sectors to the
+optical source through the shared live-disc pipeline.
 USB detach requests emulator shutdown; native I/O drains before the Java-owned
 connection closes. Media removal reported by the block driver also requests an
 orderly shutdown, so a replacement disc always starts in a newly identified
@@ -226,13 +336,11 @@ suppressed and the interface recommends external drive power. A file marker is
 used because Android does not provide coherent cross-process
 `SharedPreferences` caching.
 
-Android preserves the emulated Xbox HDD's native X/Y/Z scratch partitions
-after a clean exit. This is guest-owned temporary data, not a host disc cache:
-the QEMU DVD device still has no image fallback, and removing the physical
-drive ends the session. A session marker is created before the emulation thread
-starts and removed only after that thread returns. If termination interrupts
-the emulator, the marker survives and the next launch rebuilds the FATX scratch
-metadata before allowing the Xbox to boot.
+Android uses the same volatile guest-HDD boundary as desktop xemu. Guest title
+data and scratch remain process memory and disappear when emulation ends. The
+QEMU DVD device has no image fallback, and removing the physical drive ends the
+session. A small session marker still records an interrupted USB/emulator
+lifecycle; it contains no disc sectors or guest filesystem data.
 
 The emulator is built from a pinned official xemu revision and a maintained,
 ordered Android patch series. HakuX is retained only as provenance for the
@@ -251,9 +359,9 @@ Vulkan texture-cache recovery path.
 Title identity is parsed once by the shared XDVDFS layer and carried through
 the live-disc, Android media, and QEMU boundaries. The Kotlin policy resolves
 the title ID to a graphics profile before emulator configuration is read.
-Profiles override only the settings they own. Cache signatures include the
-effective graphics profile and application build; a mismatch clears only
-rebuildable emulator caches.
+Profiles override only the settings they own. Emulator shader caches are
+disabled; activation also removes narrowly identified cache directories left
+by an older GDOX build.
 
 The Android presentation uses edge-to-edge windows but lays out content inside
 the union of system-bar and display-cutout insets. The same insets define the
@@ -269,9 +377,45 @@ GDOX discovers xemu in this order:
 3. the managed per-user runtime location;
 4. a compatible external xemu installation.
 
-The bundled blank HDD is copied once into private user data before use. The
-release folder remains replaceable, while saves, firmware, and preferences
-survive upgrades.
+The bundled blank HDD is the immutable backing for GDOX's volatile xemu layer.
+No per-user HDD copy is created. The release folder remains replaceable, while
+firmware, EEPROM, configuration, and the separately projected logical UDATA
+save pack survive upgrades.
+
+Closing or replacing an Original Xbox session gives xemu 15 seconds to finish
+its orderly save checkpoint. A nonzero exit is reported as a checkpoint
+failure. If process stop itself fails, the runtime retains ownership of the
+process instead of pretending that the session has closed.
+
+The managed xemu configuration is rebuilt from GDOX-owned paths instead of
+copying an external xemu configuration. External configuration is an adoption
+source only: firmware remains subject to its existing validation, and an exact
+256-byte EEPROM may be copied once when managed EEPROM data does not yet exist.
+The managed EEPROM, firmware, configuration, and save data are never replaced
+by later external configuration changes. GDOX neither deletes standalone xemu
+caches nor adopts an external HDD as runtime backing.
+
+Xenia selection is independent of xemu discovery. A reviewed title policy
+chooses one exact bundled Xenia revision. Archive and executable sizes and
+SHA-256 digests are fixed in the runtime manifest and rechecked during package
+creation, runtime resolution, and Linux launcher preflight. Linux assets retain
+their exact upstream release provenance. Windows assets separately record the
+upstream commit, GDOX integration patches, native build recipe and toolchain,
+downstream archive, and executable identity. A candidate-only asset cannot enter
+a release package. Each Linux launch receives storage, cache, log, non-save
+content, and Proton-prefix paths below a verified memory-backed session root.
+Windows uses an owned temporary-session root and removes it on normal exit or
+the next recovery pass. Shader, instruction, guest-cache, and scratch
+persistence are disabled. Only saved-game, profile, and Xbox-saved-game content
+types use the persistent content root. The exact runtime must advertise this
+GDOX storage capability. Linux physical-media preflight also requires
+executable `nbdfuse` and `fusermount3` helpers before an Xbox 360 session is
+committed.
+
+Recovery removes the exact legacy GDOX-owned `xenia/storage`, `xenia/proton`,
+and `xenia/logs` roots, including revisions no longer present in the catalog.
+It does not broaden that deletion into `xenia/content`, which is filtered
+separately to the saved-game and profile content types.
 
 ## Preservation
 

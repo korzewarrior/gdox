@@ -1,9 +1,9 @@
 diff --git a/android/app/build.gradle.kts b/android/app/build.gradle.kts
 new file mode 100644
-index 0000000000000000000000000000000000000000..95d88ef60de05b5f069b031abb6dad2f59ce0c17
+index 0000000000000000000000000000000000000000..ef033d43baca70de941fe6f209ec724308c8f70f
 --- /dev/null
 +++ b/android/app/build.gradle.kts
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,181 @@
 +import java.util.Properties
 +import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 +
@@ -23,13 +23,26 @@ index 0000000000000000000000000000000000000000..95d88ef60de05b5f069b031abb6dad2f
 +  keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
 +}
 +
-+val hasReleaseKeystore = hasKeystoreProperties &&
-+  listOf("storeFile", "storePassword", "keyAlias", "keyPassword").all {
-+    !keystoreProperties.getProperty(it).isNullOrBlank()
-+  }
++val releaseStoreFile = System.getenv("GDOX_ANDROID_KEYSTORE_FILE")
++  ?: keystoreProperties.getProperty("storeFile")
++val releaseStorePassword = System.getenv("GDOX_ANDROID_KEYSTORE_PASSWORD")
++  ?: keystoreProperties.getProperty("storePassword")
++val releaseKeyAlias = System.getenv("GDOX_ANDROID_KEY_ALIAS")
++  ?: keystoreProperties.getProperty("keyAlias")
++val releaseKeyPassword = System.getenv("GDOX_ANDROID_KEY_PASSWORD")
++  ?: keystoreProperties.getProperty("keyPassword")
++val hasReleaseKeystore = listOf(
++  releaseStoreFile,
++  releaseStorePassword,
++  releaseKeyAlias,
++  releaseKeyPassword
++).all { !it.isNullOrBlank() }
 +
 +val gdoxSourceDir = providers.gradleProperty("gdoxSourceDir")
 +  .orElse(providers.environmentVariable("GDOX_SOURCE_DIR"))
++  .get()
++val gdoxAssetsDir = providers.gradleProperty("gdoxAssetsDir")
++  .orElse(providers.environmentVariable("GDOX_ASSETS_DIR"))
 +  .get()
 +val gdoxLibusbSourceDir = providers.gradleProperty("gdoxLibusbSourceDir")
 +  .orElse(providers.environmentVariable("GDOX_LIBUSB_SOURCE_DIR"))
@@ -88,10 +101,10 @@ index 0000000000000000000000000000000000000000..95d88ef60de05b5f069b031abb6dad2f
 +  signingConfigs {
 +    if (hasReleaseKeystore) {
 +      create("release") {
-+        storeFile = file(keystoreProperties.getProperty("storeFile"))
-+        storePassword = keystoreProperties.getProperty("storePassword")
-+        keyAlias = keystoreProperties.getProperty("keyAlias")
-+        keyPassword = keystoreProperties.getProperty("keyPassword")
++        storeFile = file(requireNotNull(releaseStoreFile))
++        storePassword = requireNotNull(releaseStorePassword)
++        keyAlias = requireNotNull(releaseKeyAlias)
++        keyPassword = requireNotNull(releaseKeyPassword)
 +      }
 +    }
 +  }
@@ -127,6 +140,7 @@ index 0000000000000000000000000000000000000000..95d88ef60de05b5f069b031abb6dad2f
 +  sourceSets {
 +    getByName("main") {
 +      manifest.srcFile("$gdoxSourceDir/android/emulator/app/AndroidManifest.xml")
++      assets.setSrcDirs(listOf(gdoxAssetsDir))
 +      java.setSrcDirs(listOf(
 +        "$gdoxSourceDir/android/app/src/main/java",
 +        "$gdoxSourceDir/android/emulator/app/java",
@@ -3115,10 +3129,10 @@ index 0000000000000000000000000000000000000000..1e14a8ff2cf3d2e3362d835d6608e498
 +}
 diff --git a/android/app/src/main/cpp/xemu_android.cpp b/android/app/src/main/cpp/xemu_android.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..895a93f71e3f06b3ff72cde296bc0b41fba96e18
+index 0000000000000000000000000000000000000000..61d1ce47b39e8715414eedfcf11b1659cd578c54
 --- /dev/null
 +++ b/android/app/src/main/cpp/xemu_android.cpp
-@@ -0,0 +1,882 @@
+@@ -0,0 +1,843 @@
 +#include <SDL.h>
 +#include <SDL_main.h>
 +#include <SDL_system.h>
@@ -3604,10 +3618,8 @@ index 0000000000000000000000000000000000000000..895a93f71e3f06b3ff72cde296bc0b41
 +
 +  const std::string mcpxPath = GetPrefString(env, activity, "mcpxPath");
 +  const std::string flashPath = GetPrefString(env, activity, "flashPath");
-+  const std::string hddPath = GetPrefString(env, activity, "hddPath");
 +  const std::string mcpxUri = GetPrefString(env, activity, "mcpxUri");
 +  const std::string flashUri = GetPrefString(env, activity, "flashUri");
-+  const std::string hddUri = GetPrefString(env, activity, "hddUri");
 +
 +  if (!mcpxPath.empty() && FileExists(mcpxPath)) {
 +    out.mcpx = mcpxPath;
@@ -3631,16 +3643,10 @@ index 0000000000000000000000000000000000000000..895a93f71e3f06b3ff72cde296bc0b41
 +      LogError("Failed to sync flash ROM");
 +    }
 +  }
-+  if (!hddPath.empty() && FileExists(hddPath)) {
-+    out.hdd = hddPath;
-+  }
-+  if (out.hdd.empty() && !hddUri.empty()) {
-+    out.hdd = base + "/hdd.img";
-+    if (CopyUriToPath(env, activity, hddUri, out.hdd)) {
-+      LogInfo("HDD image synced to app storage");
-+    } else {
-+      LogError("Failed to sync HDD image");
-+    }
++  out.hdd = base + "/xbox_hdd.qcow2";
++  if (!FileExists(out.hdd)) {
++    LogError("Managed Xbox HDD is unavailable");
++    out.hdd.clear();
 +  }
 +
 +  if (g_physical_disc_prepared) {
@@ -3777,37 +3783,6 @@ index 0000000000000000000000000000000000000000..895a93f71e3f06b3ff72cde296bc0b41
 +
 +  SetupFiles setup = SyncSetupFiles();
 +
-+  /*
-+   * X/Y/Z are real Xbox scratch partitions and normally persist between
-+   * clean boots. If the previous emulator process did not finish, its marker
-+   * remains and those partitions may contain interrupted FATX writes.
-+   */
-+  if (!setup.hdd.empty() &&
-+      FileExists(setup.active_session_flag_path)) {
-+    bool cacheChanged = false;
-+    gdox_error cacheError;
-+    if (!gdox_android_hdd_reset_cache(
-+            setup.hdd.c_str(),
-+            &cacheChanged,
-+            &cacheError)) {
-+      LogErrorFmt(
-+          "GDOX could not recover the Xbox HDD cache: %s",
-+          cacheError.message);
-+      SDL_ShowSimpleMessageBox(
-+          SDL_MESSAGEBOX_ERROR,
-+          "GDOX could not recover the previous session",
-+          cacheError.message,
-+          nullptr);
-+      ShutdownPhysicalDrive();
-+      SDL_Quit();
-+      return 1;
-+    }
-+    LogInfo(
-+        cacheChanged
-+            ? "GDOX recovered Xbox HDD scratch partitions after an interrupted session"
-+            : "GDOX Xbox HDD scratch partitions were already clean");
-+  }
-+
 +  if (!setup.config_path.empty()) {
 +    LogInfo("SDL_main: loading config");
 +    xemu_settings_set_path(setup.config_path.c_str());
@@ -3856,7 +3831,7 @@ index 0000000000000000000000000000000000000000..895a93f71e3f06b3ff72cde296bc0b41
 +    setenv("XEMU_ANDROID_FORCE_CPU_BLIT", "0", 1);
 +    ApplyDisplayPreferences(env, activity);
 +    g_config.general.show_welcome = false;
-+    g_config.perf.cache_shaders = true;
++    g_config.perf.cache_shaders = false;
 +    LogInfoInt("Config final show_welcome=%d", g_config.general.show_welcome ? 1 : 0);
 +    LogInfoInt("Config final cache_shaders=%d", g_config.perf.cache_shaders ? 1 : 0);
 +    LogInfoInt("Config final renderer=%d", (int)g_config.display.renderer);
@@ -4104,7 +4079,7 @@ index 0000000000000000000000000000000000000000..e5f4e4769664576d7719939c25583dc7
 +}
 diff --git a/android/app/src/main/cpp/xemu_settings_android.cc b/android/app/src/main/cpp/xemu_settings_android.cc
 new file mode 100644
-index 0000000000000000000000000000000000000000..170e3ee7b198f0db3ec193304a947921e792edb9
+index 0000000000000000000000000000000000000000..e465b9bada13534d8af08445ca970042c40f0604
 --- /dev/null
 +++ b/android/app/src/main/cpp/xemu_settings_android.cc
 @@ -0,0 +1,530 @@
@@ -4210,7 +4185,7 @@ index 0000000000000000000000000000000000000000..170e3ee7b198f0db3ec193304a947921
 +    g_config.sys.avpack = CONFIG_SYS_AVPACK_HDTV;
 +
 +    g_config.perf.hard_fpu = true;
-+    g_config.perf.cache_shaders = true;
++    g_config.perf.cache_shaders = false;
 +}
 +
 +// Optimized parsers - avoid string allocations

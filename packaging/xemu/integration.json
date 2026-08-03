@@ -1,0 +1,228 @@
+{
+  "schema": 4,
+  "base": {
+    "version": "0.8.136",
+    "source_sha256": "92a09305a87d7dabaecc335fa54ca888117aab10fe22af6ad73fc0d3cdd20c1f",
+    "source_size": 176511992
+  },
+  "patches": [
+    {
+      "path": "packaging/xemu/patches/0001-volatile-hdd-core.patch",
+      "sha256": "e4b85ca5dca57d25905a68f57d39c8b87274789903dab4726661f6b3d92fc397",
+      "size": 29178
+    },
+    {
+      "path": "packaging/xemu/patches/0002-save-policy-security.patch",
+      "sha256": "0b46ca587d2edaa8dec1a79f3bac0557948e68a0dbd2c46ee03c455ed517a03b",
+      "size": 16894
+    },
+    {
+      "path": "packaging/xemu/patches/0003-save-vault-migration.patch",
+      "sha256": "0ef6ed78012e1612cb592b293edb415d05b91cc23b48467fae9daec05353bbf1",
+      "size": 186496
+    },
+    {
+      "path": "packaging/xemu/patches/0004-managed-runtime.patch",
+      "sha256": "86371d71d67d9821587dc9757eab6cc7622c624e1c052e3c9b234262b1845e9b",
+      "size": 11837
+    },
+    {
+      "path": "packaging/xemu/patches/0005-performance-build-identity.patch",
+      "sha256": "baf8cd405536d50eaf98be917bb1bccd47158d0773e0d8cca190531d950fa480",
+      "size": 2143
+    },
+    {
+      "path": "packaging/xemu/patches/0006-tests-build-wiring.patch",
+      "sha256": "c2731fae339d2a82c0f833aa5e7d91bada472ebca43e366d0657a62a1e072b73",
+      "size": 95085
+    }
+  ],
+  "build_recipe": {
+    "source_date_epoch": 315532800,
+    "canonical_source_root": "/usr/src/xemu-0.8.136",
+    "configure_arguments": [
+      "--target-list=i386-softmmu",
+      "--disable-werror",
+      "-Db_lto=true",
+      "-Dx86_version=3"
+    ],
+    "extra_cflags": [
+      "-DXBOX=1",
+      "-Wno-error=redundant-decls",
+      "-ffile-prefix-map=${SOURCE_ROOT}=/usr/src/xemu-0.8.136",
+      "-fdebug-prefix-map=${SOURCE_ROOT}=/usr/src/xemu-0.8.136"
+    ],
+    "macos_universal": {
+      "recipe": {
+        "path": "packaging/xemu/build_macos.py",
+        "sha256": "0a11d2b06b73aaf452239cc8b487f18635a991ab36caddc2258f0822695fcb25",
+        "size": 25476
+      },
+      "packager": {
+        "path": "scripts/package_xemu_macos_runtime.py",
+        "sha256": "fac33a9232e092307385c219b7f1710cff174c3b18272099f1764e714c36586d",
+        "size": 24521
+      },
+      "source_archive": {
+        "root": "xemu-0.8.136",
+        "sha256": "92a09305a87d7dabaecc335fa54ca888117aab10fe22af6ad73fc0d3cdd20c1f",
+        "size": 176511992
+      },
+      "dylibbundler": {
+        "source": {
+          "root": "macdylibbundler-1.0.5",
+          "sha256": "13384ebe7ca841ec392ac49dc5e50b1470190466623fa0e5cd30f1c634858530",
+          "size": 13101
+        },
+        "executable": {
+          "sha256": "ac1172726dbaaad1809d36e6f86f7123398f8b6186685b4e6341d1e83da40a0d",
+          "size": 203376
+        },
+        "version_output": "dylibbundler 1.0.5"
+      },
+      "toolchain": {
+        "macos": "26.5.2",
+        "xcode": "Xcode 26.6\nBuild version 17F113",
+        "macos_sdk": "26.5",
+        "clang": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+        "git": "git version 2.55.0",
+        "cmake": "cmake version 4.4.0",
+        "ninja": "1.13.0.git.kitware.jobserver-pipe-1",
+        "zip": "This is Zip 3.0 (July 5th 2008), by Info-ZIP, with modifications by Apple Inc.",
+        "python": "3.14.6",
+        "python_packages": {
+          "PyYAML": "6.0.3",
+          "requests": "2.32.5",
+          "ninja": "1.13.0"
+        }
+      },
+      "xemu_version": "0.8.136",
+      "architectures": {
+        "arm64": {
+          "minimum_macos": "14.0",
+          "uuid": "4a183fcc-19de-54e5-a2db-8642ff10d4c0",
+          "link_arguments": [
+            "-arch",
+            "arm64",
+            "-target",
+            "arm64-apple-macos14.0",
+            "-isysroot",
+            "/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk",
+            "-mmacosx-version-min=14.0"
+          ],
+          "rpath": "@executable_path/../Libraries/arm64/",
+          "pre_normalization_count": 2
+        },
+        "x86_64": {
+          "minimum_macos": "12.7.5",
+          "uuid": "816e9cee-8885-5192-b445-993d50a568ae",
+          "link_arguments": [
+            "-arch",
+            "x86_64",
+            "-target",
+            "x86_64-apple-macos12.7.5",
+            "-isysroot",
+            "/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk",
+            "-mmacosx-version-min=12.7.5"
+          ],
+          "rpath": "@executable_path/../Libraries/x86_64/",
+          "pre_normalization_count": 2
+        }
+      },
+      "archive_name": "xemu-0.8.136-gdox-storage-macos-universal-adhoc.zip",
+      "audited_reference": {
+        "archive_name": "xemu-0.8.136-gdox-storage-macos-universal-adhoc.zip",
+        "executable_sha256": "fcc99a569bd80bdc62de65f4a034ab808015fc11732ba59595f9a2921b5e26bd",
+        "executable_size": 24044560,
+        "sha256": "c1cc24b11db0aea46b59ebbe4e5330213a5cf57b8bc2f171e6dbef4589d0a32b",
+        "size": 17679098
+      },
+      "deterministic_output": {
+        "archive_name": "xemu-0.8.136-gdox-storage-macos-universal-adhoc.zip",
+        "executable_sha256": "ed5008de0dfaa553d87043521a838164b6511050b5c06bf90e29dc7ead559801",
+        "executable_size": 19104576,
+        "sha256": "0f2c80aa50fd67f8ad2ab3348c64445de93f63f5edcc28666259a1e5f1d6b097",
+        "size": 16605427
+      }
+    }
+  },
+  "required_configuration": {
+    "sys.volatile_hard_disk": true,
+    "perf.cache_shaders": false
+  },
+  "capability_query": {
+    "argument": "--gdox-capabilities",
+    "response": {
+      "schema": 3,
+      "runtime": "xemu",
+      "storage": {
+        "full_hdd_ram_cow": true,
+        "backing_writes": false,
+        "persistent_save_export": true,
+        "persistent_save_scope": "hdd-config-v1+E:\\UDATA+reviewed-E:\\TDATA",
+        "persistent_save_format": "logical-files-v2",
+        "persistent_hdd_config_format": "hdd-config-v1",
+        "persistent_hdd_config_bytes": 524288,
+        "tdata_policy": "positive-reviewed-paths-v1",
+        "tdata_policy_revision": 1,
+        "unknown_tdata": "preserve-legacy-source",
+        "persistent_save_atomic": true,
+        "persistent_save_import_before_boot": true,
+        "persistent_save_checkpoint": "guest-flush-and-orderly-shutdown",
+        "legacy_hdd_migration": true,
+        "migration_receipt": true,
+        "migration_interruption_safe": true,
+        "max_dirty_bytes": 4294967296
+      }
+    }
+  },
+  "runtime_mode": {
+    "argument": "--gdox-runtime",
+    "windows_detached_output": "NUL",
+    "xemu_shader_cache": "disabled",
+    "nvidia_profile_write": false,
+    "driver_cache_environment": {
+      "MESA_SHADER_CACHE_DISABLE": "1",
+      "__GL_SHADER_DISK_CACHE": "0"
+    }
+  },
+  "storage_boundary": {
+    "mode": "full-hdd-ram-cow-v1",
+    "base_image": "clean-immutable-template",
+    "durable_game_content": false,
+    "persistent_save_export": {
+      "scope": "hdd-config-v1+E:\\UDATA+reviewed-E:\\TDATA",
+      "format": "logical-files-v2",
+      "hdd_config_format": "hdd-config-v1",
+      "hdd_config_bytes": 524288,
+      "tdata_policy": "positive-reviewed-paths-v1",
+      "tdata_policy_revision": 1,
+      "unknown_tdata": "preserve-legacy-source",
+      "atomic": true,
+      "import_before_boot": true,
+      "checkpoint": "guest-flush-and-orderly-shutdown"
+    },
+    "legacy_hdd_migration": true,
+    "migration_receipt": true,
+    "migration_interruption_safe": true,
+    "memory": {
+      "page_size": 65536,
+      "maximum_dirty_bytes": 4294967296,
+      "host_fraction_divisor": 4,
+      "unknown_host_dirty_bytes": 1073741824,
+      "lossy_eviction": false,
+      "exhaustion_error": "ENOSPC"
+    },
+    "save_projector": {
+      "durable_allowlist": [
+        "HDD:0x00000000-0x0007ffff",
+        "E:\\UDATA",
+        "reviewed-E:\\TDATA"
+      ],
+      "unclassified_tdata": "inventoried-and-preserve-legacy-source",
+      "always_transient": ["F:\\", "G:\\", "X:\\", "Y:\\", "Z:\\"]
+    }
+  },
+  "runtime_artifacts_contain_patch": true,
+  "runtime_capability_available": true
+}

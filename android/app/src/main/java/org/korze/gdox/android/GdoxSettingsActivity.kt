@@ -10,7 +10,6 @@ import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
-import android.widget.Toast
 
 class GdoxSettingsActivity : Activity() {
   private val preferences by lazy { GdoxCoreFiles.preferences(this) }
@@ -93,26 +92,13 @@ class GdoxSettingsActivity : Activity() {
     )
 
     content.addView(Button(this).apply {
-      text = "Clear emulator caches"
-      GdoxUi.secondary(this)
-      setOnClickListener {
-        val removed = GdoxEmulatorPolicy.clearCaches(this@GdoxSettingsActivity)
-        Toast.makeText(
-          this@GdoxSettingsActivity,
-          if (removed == 0) "Caches are already clean" else "Emulator caches cleared",
-          Toast.LENGTH_SHORT
-        ).show()
-      }
-    }, buttonParams(top = 24))
-
-    content.addView(Button(this).apply {
       text = "Restore graphics defaults"
       GdoxUi.secondary(this)
       setOnClickListener {
         GdoxEmulatorPolicy.resetGraphics(preferences)
         bindPreferences()
       }
-    }, buttonParams(top = 10))
+    }, buttonParams(top = 24))
 
     content.addView(Button(this).apply {
       text = "Done"

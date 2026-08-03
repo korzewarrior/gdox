@@ -20,4 +20,5 @@ RUN apt-get update \
         ninja-build \
         pkg-config \
         python3 \
+        zstd \
     && rm -rf /var/lib/apt/lists/*

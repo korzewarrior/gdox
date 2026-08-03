@@ -1,0 +1,5101 @@
+diff --git a/block/xbox-save-migration.c b/block/xbox-save-migration.c
+new file mode 100644
+index 0000000..9d15c9b
+--- /dev/null
++++ b/block/xbox-save-migration.c
+@@ -0,0 +1,1385 @@
++/*
++ * Original Xbox legacy HDD save migration
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "block/block-global-state.h"
++#include "block/block_int.h"
++#include "block/xbox-save-migration.h"
++#include "block/xbox-save-receipt.h"
++#include "block/xbox-save-policy.h"
++#include "block/xbox-save-security.h"
++#include "block/xbox-volatile-hdd.h"
++#include "qapi/error.h"
++#include "qemu/cutils.h"
++#include "qobject/qdict.h"
++#include "system/block-backend.h"
++#include "system/block-backend-io.h"
++
++#include <glib/gstdio.h>
++
++#ifdef _WIN32
++#include <windows.h>
++#include <io.h>
++#endif
++
++#define MIGRATION_HASH_BUFFER_BYTES MiB
++
++typedef struct XboxMigrationSource {
++    const char *path;
++    int fd;
++    GStatBuf identity;
++    uint8_t identity_digest[32];
++    uint8_t digest[32];
++} XboxMigrationSource;
++
++#ifndef _WIN32
++static bool migration_parent_open_private(const char *path, int *parent_fd,
++                                          char **basename, Error **errp);
++static bool migration_cleanup_empty_quarantines(int parent_fd,
++                                                Error **errp);
++#endif
++
++static bool migration_source_identity_digest(XboxMigrationSource *source,
++                                              Error **errp)
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    g_autofree char *canonical = g_canonicalize_filename(source->path, NULL);
++    uint8_t number[8];
++    const uint8_t separator = 0U;
++    gsize digest_bytes = sizeof(source->identity_digest);
++
++#ifdef _WIN32
++    g_autofree char *folded = g_utf8_casefold(canonical, -1);
++    BY_HANDLE_FILE_INFORMATION info;
++    FILE_BASIC_INFO basic;
++    HANDLE handle = (HANDLE)_get_osfhandle(source->fd);
++
++    if (handle == INVALID_HANDLE_VALUE ||
++        !GetFileInformationByHandle(handle, &info) ||
++        !GetFileInformationByHandleEx(handle, FileBasicInfo,
++                                      &basic, sizeof(basic))) {
++        error_setg_win32(errp, GetLastError(),
++                         "Could not identify Xbox HDD image");
++        return false;
++    }
++
++    g_checksum_update(checksum, (const uint8_t *)"windows-file-v1", 15U);
++    g_checksum_update(checksum, &separator, 1U);
++    g_checksum_update(checksum, (const uint8_t *)folded, strlen(folded));
++    g_checksum_update(checksum, &separator, 1U);
++    stq_le_p(number, info.dwVolumeSerialNumber);
++    g_checksum_update(checksum, number, sizeof(number));
++    stq_le_p(number, ((uint64_t)info.nFileIndexHigh << 32U) |
++                     info.nFileIndexLow);
++    g_checksum_update(checksum, number, sizeof(number));
++    stq_le_p(number, ((uint64_t)info.nFileSizeHigh << 32U) |
++                     info.nFileSizeLow);
++    g_checksum_update(checksum, number, sizeof(number));
++    stq_le_p(number, basic.LastWriteTime.QuadPart);
++    g_checksum_update(checksum, number, sizeof(number));
++    stq_le_p(number, basic.ChangeTime.QuadPart);
++    g_checksum_update(checksum, number, sizeof(number));
++#else
++    g_checksum_update(checksum, (const uint8_t *)"posix-file-v1", 13U);
++    g_checksum_update(checksum, &separator, 1U);
++    g_checksum_update(checksum, (const uint8_t *)canonical,
++                      strlen(canonical));
++    g_checksum_update(checksum, &separator, 1U);
++    stq_le_p(number, source->identity.st_dev);
++    g_checksum_update(checksum, number, sizeof(number));
++    stq_le_p(number, source->identity.st_ino);
++    g_checksum_update(checksum, number, sizeof(number));
++    stq_le_p(number, source->identity.st_size);
++    g_checksum_update(checksum, number, sizeof(number));
++    stq_le_p(number, source->identity.st_mtime);
++    g_checksum_update(checksum, number, sizeof(number));
++    stq_le_p(number, source->identity.st_ctime);
++    g_checksum_update(checksum, number, sizeof(number));
++#if defined(__APPLE__)
++    stq_le_p(number, source->identity.st_mtimespec.tv_nsec);
++    g_checksum_update(checksum, number, sizeof(number));
++    stq_le_p(number, source->identity.st_ctimespec.tv_nsec);
++    g_checksum_update(checksum, number, sizeof(number));
++#elif defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) || \
++      defined(__OpenBSD__)
++    stq_le_p(number, source->identity.st_mtim.tv_nsec);
++    g_checksum_update(checksum, number, sizeof(number));
++    stq_le_p(number, source->identity.st_ctim.tv_nsec);
++    g_checksum_update(checksum, number, sizeof(number));
++#endif
++#endif
++    g_checksum_get_digest(checksum, source->identity_digest, &digest_bytes);
++    g_assert_cmpuint(digest_bytes, ==, sizeof(source->identity_digest));
++    return true;
++}
++
++static bool migration_hash_fd(int fd, uint64_t bytes, uint8_t digest[32],
++                              Error **errp)
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    g_autofree uint8_t *buffer = g_try_malloc(MIGRATION_HASH_BUFFER_BYTES);
++    uint64_t remaining = bytes;
++    gsize digest_bytes = 32U;
++
++    if (!buffer) {
++        error_setg(errp, "Could not allocate Xbox HDD hash buffer");
++        return false;
++    }
++    if (lseek(fd, 0, SEEK_SET) < 0) {
++        error_setg_errno(errp, errno, "Could not seek Xbox HDD image");
++        return false;
++    }
++    while (remaining > 0U) {
++        size_t wanted = MIN(remaining, (uint64_t)MIGRATION_HASH_BUFFER_BYTES);
++        ssize_t received = RETRY_ON_EINTR(read(fd, buffer, wanted));
++
++        if (received < 0) {
++            error_setg_errno(errp, errno, "Could not hash Xbox HDD image");
++            return false;
++        }
++        if (received == 0) {
++            error_setg(errp, "Xbox HDD image changed while hashing");
++            return false;
++        }
++        g_checksum_update(checksum, buffer, received);
++        remaining -= received;
++    }
++    if (RETRY_ON_EINTR(read(fd, buffer, 1U)) != 0) {
++        error_setg(errp, "Xbox HDD image size changed while hashing");
++        return false;
++    }
++    g_checksum_get_digest(checksum, digest, &digest_bytes);
++    if (digest_bytes != 32U) {
++        error_setg(errp, "Could not finalize Xbox HDD image hash");
++        return false;
++    }
++    return true;
++}
++
++static bool migration_source_path_matches(XboxMigrationSource *source,
++                                           Error **errp)
++{
++#ifdef _WIN32
++    g_autofree gunichar2 *wide =
++        g_utf8_to_utf16(source->path, -1, NULL, NULL, NULL);
++    HANDLE source_handle = (HANDLE)_get_osfhandle(source->fd);
++    HANDLE path_handle = INVALID_HANDLE_VALUE;
++    BY_HANDLE_FILE_INFORMATION source_info;
++    BY_HANDLE_FILE_INFORMATION path_info;
++    FILE_ATTRIBUTE_TAG_INFO path_attributes;
++    bool matches;
++
++    if (!wide || source_handle == INVALID_HANDLE_VALUE) {
++        error_setg(errp, "Xbox HDD image path is not valid");
++        return false;
++    }
++    path_handle = CreateFileW(
++        (LPCWSTR)wide,
++        FILE_READ_ATTRIBUTES,
++        FILE_SHARE_READ | FILE_SHARE_DELETE,
++        NULL,
++        OPEN_EXISTING,
++        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
++        NULL
++    );
++    if (path_handle == INVALID_HANDLE_VALUE ||
++        !GetFileInformationByHandle(source_handle, &source_info) ||
++        !GetFileInformationByHandle(path_handle, &path_info) ||
++        !GetFileInformationByHandleEx(path_handle, FileAttributeTagInfo,
++                                      &path_attributes,
++                                      sizeof(path_attributes))) {
++        DWORD code = GetLastError();
++
++        if (path_handle != INVALID_HANDLE_VALUE) {
++            CloseHandle(path_handle);
++        }
++        error_setg_win32(errp, code, "Could not verify Xbox HDD image path");
++        return false;
++    }
++    matches =
++        (path_attributes.FileAttributes &
++         (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0 &&
++        source_info.nNumberOfLinks == 1 &&
++        path_info.nNumberOfLinks == 1 &&
++        source_info.dwVolumeSerialNumber == path_info.dwVolumeSerialNumber &&
++        source_info.nFileIndexHigh == path_info.nFileIndexHigh &&
++        source_info.nFileIndexLow == path_info.nFileIndexLow;
++    CloseHandle(path_handle);
++    if (!matches) {
++        error_setg(errp, "Xbox HDD image identity changed");
++        return false;
++    }
++    return true;
++#else
++    GStatBuf status;
++
++    if (g_lstat(source->path, &status) != 0 ||
++        !S_ISREG(status.st_mode) ||
++        xbox_save_path_is_link(source->path, &status)) {
++        error_setg(errp, "Xbox HDD image path is no longer a regular file");
++        return false;
++    }
++    if (status.st_uid != geteuid() || status.st_nlink != 1 ||
++        status.st_dev != source->identity.st_dev ||
++        status.st_ino != source->identity.st_ino) {
++        error_setg(errp, "Xbox HDD image identity changed");
++        return false;
++    }
++#endif
++    return true;
++}
++
++static bool migration_source_identity_unchanged(XboxMigrationSource *source,
++                                                bool match_path,
++                                                bool match_stat_identity,
++                                                Error **errp)
++{
++    XboxMigrationSource observed = *source;
++    GStatBuf status;
++
++    if (xbox_save_fstat(source->fd, &status) != 0 ||
++        !S_ISREG(status.st_mode) ||
++        status.st_dev != source->identity.st_dev ||
++        status.st_ino != source->identity.st_ino ||
++        status.st_size != source->identity.st_size ||
++        status.st_mode != source->identity.st_mode ||
++        (match_path && !migration_source_path_matches(source, errp))) {
++        if (!*errp) {
++            error_setg(errp, "Xbox HDD image identity changed");
++        }
++        return false;
++    }
++#ifndef _WIN32
++    if (status.st_uid != source->identity.st_uid ||
++        status.st_gid != source->identity.st_gid ||
++        status.st_nlink != source->identity.st_nlink ||
++        status.st_rdev != source->identity.st_rdev) {
++        error_setg(errp, "Xbox HDD image identity changed");
++        return false;
++    }
++#endif
++    observed.identity = status;
++    if (match_stat_identity &&
++        (!migration_source_identity_digest(&observed, errp) ||
++         memcmp(observed.identity_digest, source->identity_digest,
++                sizeof(observed.identity_digest)) != 0)) {
++        if (!*errp) {
++            error_setg(errp, "Xbox HDD image identity changed");
++        }
++        return false;
++    }
++    return true;
++}
++
++static bool migration_source_verify(void *opaque, Error **errp)
++{
++    XboxMigrationSource *source = opaque;
++    GStatBuf status;
++    uint8_t digest[32];
++
++    if (xbox_save_fstat(source->fd, &status) != 0 ||
++        !S_ISREG(status.st_mode) ||
++        status.st_size != source->identity.st_size ||
++        !migration_source_path_matches(source, errp) ||
++        !migration_hash_fd(source->fd, status.st_size, digest, errp) ||
++        !migration_source_identity_unchanged(source, true, true, errp)) {
++        if (!*errp) {
++            error_setg(errp, "Xbox HDD image identity changed");
++        }
++        return false;
++    }
++    if (memcmp(digest, source->digest, sizeof(digest)) != 0) {
++        error_setg(errp, "Xbox HDD image contents changed");
++        return false;
++    }
++    return true;
++}
++
++static bool migration_source_open_path(const char *path,
++                                       XboxMigrationSource *source,
++                                       Error **errp)
++{
++    int flags = O_RDONLY | O_BINARY;
++
++    memset(source, 0, sizeof(*source));
++    source->fd = -1;
++    source->path = path;
++    if (!source->path || !g_path_is_absolute(source->path)) {
++        error_setg(errp, "Xbox HDD image path must be absolute");
++        return false;
++    }
++#ifdef O_NOFOLLOW
++    flags |= O_NOFOLLOW;
++#endif
++#ifdef _WIN32
++    {
++        g_autofree gunichar2 *wide =
++            g_utf8_to_utf16(source->path, -1, NULL, NULL, NULL);
++        HANDLE handle;
++        FILE_ATTRIBUTE_TAG_INFO attributes;
++
++        if (!wide) {
++            error_setg(errp, "Xbox HDD image path is not valid UTF-8");
++            return false;
++        }
++        /*
++         * FILE_SHARE_READ deliberately denies writes, deletion, and rename
++         * replacement until projection and final verification are complete.
++         * The block backend's subsequent read-only path open is therefore
++         * bound to this same file identity.
++         */
++        handle = CreateFileW((LPCWSTR)wide, GENERIC_READ, FILE_SHARE_READ,
++                             NULL, OPEN_EXISTING,
++                             FILE_ATTRIBUTE_NORMAL |
++                             FILE_FLAG_OPEN_REPARSE_POINT, NULL);
++        if (handle == INVALID_HANDLE_VALUE ||
++            !GetFileInformationByHandleEx(handle, FileAttributeTagInfo,
++                                          &attributes, sizeof(attributes)) ||
++            (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
++            if (handle != INVALID_HANDLE_VALUE) {
++                CloseHandle(handle);
++            }
++            error_setg_win32(errp, GetLastError(),
++                             "Could not securely open Xbox HDD image");
++            return false;
++        }
++        source->fd = _open_osfhandle((intptr_t)handle, flags);
++        if (source->fd < 0) {
++            CloseHandle(handle);
++            error_setg_errno(errp, errno,
++                             "Could not bind Xbox HDD image handle");
++            return false;
++        }
++    }
++#else
++    source->fd = qemu_open(source->path, flags, errp);
++    if (source->fd < 0) {
++        return false;
++    }
++#endif
++    if (xbox_save_fstat(source->fd, &source->identity) != 0 ||
++        !S_ISREG(source->identity.st_mode) ||
++        source->identity.st_size < 0 ||
++        !migration_source_path_matches(source, errp)) {
++        if (!*errp) {
++            error_setg(errp, "Xbox HDD image is not a safe regular file");
++        }
++        return false;
++    }
++    return migration_source_identity_digest(source, errp);
++}
++
++bool xbox_save_migration_source_snapshot_open(
++    const char *path, XboxSaveMigrationSourceSnapshot *snapshot,
++    Error **errp)
++{
++    XboxMigrationSource *source;
++
++    if (!snapshot || snapshot->opaque) {
++        error_setg(errp, "Legacy Xbox HDD snapshot state is invalid");
++        return false;
++    }
++    source = g_new0(XboxMigrationSource, 1);
++    source->fd = -1;
++    if (!migration_source_open_path(path, source, errp)) {
++        if (source->fd >= 0) {
++            qemu_close(source->fd);
++        }
++        g_free(source);
++        return false;
++    }
++    if (!migration_hash_fd(source->fd, source->identity.st_size,
++                           source->digest, errp)) {
++        qemu_close(source->fd);
++        g_free(source);
++        return false;
++    }
++    snapshot->opaque = source;
++    snapshot->bytes = source->identity.st_size;
++    memcpy(snapshot->identity_sha256, source->identity_digest,
++           sizeof(snapshot->identity_sha256));
++    memcpy(snapshot->sha256, source->digest, sizeof(snapshot->sha256));
++    return true;
++}
++
++bool xbox_save_migration_source_snapshot_verify(
++    XboxSaveMigrationSourceSnapshot *snapshot, Error **errp)
++{
++    if (!snapshot || !snapshot->opaque) {
++        error_setg(errp, "Legacy Xbox HDD snapshot is not open");
++        return false;
++    }
++    return migration_source_verify(snapshot->opaque, errp);
++}
++
++void xbox_save_migration_source_snapshot_close(
++    XboxSaveMigrationSourceSnapshot *snapshot)
++{
++    XboxMigrationSource *source;
++
++    if (!snapshot || !snapshot->opaque) {
++        return;
++    }
++    source = snapshot->opaque;
++    if (source->fd >= 0) {
++        qemu_close(source->fd);
++    }
++    g_free(source);
++    memset(snapshot, 0, sizeof(*snapshot));
++}
++
++static BlockBackend *migration_open_image(const char *path, bool force_qcow2,
++                                          bool bound_source,
++                                          Error **errp)
++{
++    GStatBuf status;
++    QDict *options = qdict_new();
++    BlockDriverState *bs;
++    BlockBackend *blk;
++
++    if (!path || !g_path_is_absolute(path) ||
++        (!bound_source &&
++         (g_lstat(path, &status) != 0 || !S_ISREG(status.st_mode) ||
++          xbox_save_path_is_link(path, &status)))) {
++        error_setg(errp, "Xbox HDD backing must be an absolute regular file");
++        qobject_unref(options);
++        return NULL;
++    }
++#ifndef _WIN32
++    if (!bound_source && status.st_uid != geteuid()) {
++        error_setg(errp, "Xbox HDD backing has an unexpected owner");
++        qobject_unref(options);
++        return NULL;
++    }
++#endif
++    if (force_qcow2) {
++        qdict_put_str(options, "driver", "qcow2");
++    }
++    qdict_put_str(options, "file.driver", "file");
++    qdict_put_str(options, "file.filename", path);
++    bs = bdrv_open(NULL, NULL, options, 0, errp);
++    if (!bs) {
++        return NULL;
++    }
++    if (bs->backing || !bs->file) {
++        error_setg(errp,
++                   "Xbox HDD image must not depend on a backing image");
++        bdrv_unref(bs);
++        return NULL;
++    }
++    {
++        BdrvChild *child;
++
++        QLIST_FOREACH(child, &bs->children, next) {
++            if (child != bs->file) {
++                error_setg(errp,
++                           "Xbox HDD image must not use external data files");
++                bdrv_unref(bs);
++                return NULL;
++            }
++        }
++        if (bs->file->bs->backing ||
++            !QLIST_EMPTY(&bs->file->bs->children)) {
++            error_setg(errp,
++                       "Xbox HDD image storage must be a standalone file");
++            bdrv_unref(bs);
++            return NULL;
++        }
++    }
++    if (!bdrv_is_read_only(bs)) {
++        error_setg(errp, "Xbox HDD backing was not opened read-only");
++        bdrv_unref(bs);
++        return NULL;
++    }
++    blk = blk_new(qemu_get_aio_context(), BLK_PERM_CONSISTENT_READ,
++                  BLK_PERM_ALL);
++    if (blk_insert_bs(blk, bs, errp) < 0) {
++        blk_unref(blk);
++        bdrv_unref(bs);
++        return NULL;
++    }
++    bdrv_unref(bs);
++    return blk;
++}
++
++static int migration_blk_read(void *opaque, uint64_t offset,
++                              void *buffer, size_t bytes)
++{
++    return blk_pread(opaque, offset, bytes, buffer, 0);
++}
++
++static int migration_blk_write(void *opaque, uint64_t offset,
++                               const void *buffer, size_t bytes)
++{
++    return blk_pwrite(opaque, offset, bytes, buffer, 0);
++}
++
++typedef struct XboxMigrationVerifyContext {
++    XboxMigrationSource *source;
++    XboxMigrationSource *clean;
++} XboxMigrationVerifyContext;
++
++static bool migration_verify_images(void *opaque, Error **errp)
++{
++    XboxMigrationVerifyContext *context = opaque;
++
++    return migration_source_verify(context->source, errp) &&
++           migration_source_verify(context->clean, errp);
++}
++
++static char *migration_bound_block_path(const XboxMigrationSource *source)
++{
++#if defined(__linux__)
++    return g_strdup_printf("/proc/self/fd/%d", source->fd);
++#elif !defined(_WIN32)
++    return g_strdup_printf("/dev/fd/%d", source->fd);
++#else
++    return g_strdup(source->path);
++#endif
++}
++
++static bool migration_receipt_bindings_match(
++    const XboxSaveMigrationRequest *request,
++    const XboxMigrationSource *source,
++    const XboxMigrationSource *clean,
++    const XboxSaveVaultProof *vault,
++    const XboxSaveReceipt *receipt)
++{
++    const XboxSavePolicy *policy = xbox_save_policy_default();
++    uint8_t policy_digest[XBOX_SAVE_POLICY_DIGEST_BYTES];
++
++    xbox_save_policy_digest(policy, policy_digest);
++    return receipt->source_bytes == (uint64_t)source->identity.st_size &&
++           receipt->source_bytes == request->expected_source_bytes &&
++           memcmp(receipt->source_identity_sha256,
++                  source->identity_digest, 32U) == 0 &&
++           (!request->expected_source_sha256_valid ||
++            memcmp(receipt->source_sha256,
++                   request->expected_source_sha256, 32U) == 0) &&
++           receipt->clean_bytes == (uint64_t)clean->identity.st_size &&
++           memcmp(receipt->clean_sha256, clean->digest, 32U) == 0 &&
++           receipt->capability_schema == XBOX_SAVE_VAULT_CAPABILITY_SCHEMA &&
++           receipt->vault_format_version == vault->vault_version &&
++           receipt->vault_generation == vault->generation &&
++           memcmp(receipt->vault_tree_sha256,
++                  vault->tree_sha256, 32U) == 0 &&
++           receipt->vault_entries == vault->entries &&
++           receipt->vault_logical_bytes == vault->logical_bytes &&
++           receipt->policy_revision == policy->revision &&
++           receipt->policy_revision == vault->policy_revision &&
++           memcmp(receipt->policy_sha256, policy_digest, 32U) == 0 &&
++           memcmp(receipt->policy_sha256,
++                  vault->policy_sha256, 32U) == 0;
++}
++
++static bool migration_receipt_matches(
++    const XboxSaveMigrationRequest *request,
++    const XboxMigrationSource *source,
++    const XboxMigrationSource *clean,
++    const XboxSaveVaultProof *vault,
++    const XboxSaveReceipt *receipt)
++{
++    return receipt->unclassified_tdata_entries > 0U &&
++           migration_receipt_bindings_match(request, source, clean, vault,
++                                             receipt);
++}
++
++static void migration_proof_from_receipt(
++    const XboxMigrationSource *source,
++    const XboxMigrationSource *clean,
++    const XboxSaveReceipt *receipt,
++    XboxSaveMigrationProof *proof)
++{
++    proof->source_bytes = source->identity.st_size;
++    memcpy(proof->source_identity_sha256, source->identity_digest, 32U);
++    memcpy(proof->source_sha256, receipt->source_sha256, 32U);
++    proof->clean_bytes = clean->identity.st_size;
++    memcpy(proof->clean_sha256, clean->digest, 32U);
++    proof->vault.unclassified_tdata_entries =
++        receipt->unclassified_tdata_entries;
++    proof->vault.unclassified_tdata_bytes =
++        receipt->unclassified_tdata_bytes;
++    memcpy(proof->vault.unclassified_tdata_sha256,
++           receipt->unclassified_tdata_sha256, 32U);
++    proof->vault.vault_reopened = true;
++    proof->vault.reprojected = true;
++    proof->vault.roundtrip_verified = true;
++    proof->source_writes = false;
++    proof->source_hashed = false;
++    proof->anonymous_cow = true;
++    proof->clean_backing = true;
++    proof->receipt_reused = true;
++    proof->source_projection_complete = false;
++    proof->source_removal_safe = false;
++    proof->source_removed = false;
++}
++
++static void migration_receipt_from_proof(
++    const XboxMigrationSource *source,
++    const XboxMigrationSource *clean,
++    const XboxSaveMigrationProof *proof,
++    XboxSaveReceipt *receipt)
++{
++    memset(receipt, 0, sizeof(*receipt));
++    memcpy(receipt->source_identity_sha256, source->identity_digest, 32U);
++    receipt->source_bytes = proof->source_bytes;
++    memcpy(receipt->source_sha256, proof->source_sha256, 32U);
++    receipt->clean_bytes = proof->clean_bytes;
++    memcpy(receipt->clean_sha256, proof->clean_sha256, 32U);
++    receipt->capability_schema = XBOX_SAVE_VAULT_CAPABILITY_SCHEMA;
++    receipt->vault_format_version = proof->vault.vault_version;
++    receipt->policy_revision = proof->vault.policy_revision;
++    memcpy(receipt->policy_sha256, proof->vault.policy_sha256, 32U);
++    receipt->vault_generation = proof->vault.generation;
++    memcpy(receipt->vault_tree_sha256, proof->vault.tree_sha256, 32U);
++    receipt->vault_entries = proof->vault.entries;
++    receipt->vault_logical_bytes = proof->vault.logical_bytes;
++    receipt->unclassified_tdata_entries =
++        proof->vault.unclassified_tdata_entries;
++    receipt->unclassified_tdata_bytes =
++        proof->vault.unclassified_tdata_bytes;
++    memcpy(receipt->unclassified_tdata_sha256,
++           proof->vault.unclassified_tdata_sha256, 32U);
++}
++
++#ifndef _WIN32
++static bool migration_quarantine_name_valid(const char *name)
++{
++    static const char prefix[] = ".gdox-xbox-hdd-removal.";
++    const size_t prefix_bytes = sizeof(prefix) - 1U;
++
++    if (!g_str_has_prefix(name, prefix) ||
++        strlen(name) != prefix_bytes + 8U + 1U + 8U ||
++        name[prefix_bytes + 8U] != '.') {
++        return false;
++    }
++    for (size_t i = prefix_bytes; i < prefix_bytes + 8U; i++) {
++        if (!g_ascii_isxdigit(name[i])) {
++            return false;
++        }
++    }
++    for (size_t i = prefix_bytes + 9U; i < prefix_bytes + 17U; i++) {
++        if (!g_ascii_isxdigit(name[i])) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool migration_recover_quarantine(
++    const XboxSaveMigrationRequest *request, bool *recovered, Error **errp)
++{
++    XboxMigrationSource candidate = { .fd = -1 };
++    g_autofree char *basename = NULL;
++    g_autofree char *candidate_name = NULL;
++    DIR *listing = NULL;
++    int parent_fd = -1;
++    int listing_fd = -1;
++    int listing_flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
++    bool success = false;
++
++    *recovered = false;
++    if (!migration_parent_open_private(request->legacy_hdd, &parent_fd,
++                                       &basename, errp) ||
++        !migration_cleanup_empty_quarantines(parent_fd, errp)) {
++        goto done;
++    }
++#ifdef O_NOFOLLOW
++    listing_flags |= O_NOFOLLOW;
++#endif
++    listing_fd = openat(parent_fd, ".", listing_flags);
++    if (listing_fd < 0 || !(listing = fdopendir(listing_fd))) {
++        error_setg_errno(errp, errno,
++                         "Could not inspect Xbox HDD removal quarantine");
++        goto done;
++    }
++    listing_fd = -1;
++    for (;;) {
++        XboxMigrationSource observed = { .fd = -1 };
++        Error *candidate_error = NULL;
++        GStatBuf status;
++        struct dirent *entry;
++        int flags = O_RDWR | O_BINARY;
++        int lock_result;
++
++        errno = 0;
++        entry = readdir(listing);
++        if (!entry) {
++            break;
++        }
++        if (!migration_quarantine_name_valid(entry->d_name)) {
++            continue;
++        }
++#ifdef O_NOFOLLOW
++        flags |= O_NOFOLLOW;
++#endif
++        observed.fd = openat(parent_fd, entry->d_name, flags);
++        observed.path = request->legacy_hdd;
++        if (observed.fd < 0 ||
++            xbox_save_fstat(observed.fd, &status) != 0 ||
++            !S_ISREG(status.st_mode) || status.st_uid != geteuid() ||
++            status.st_nlink != 1 ||
++            (status.st_mode & (S_IRWXG | S_IRWXO)) != 0 ||
++            status.st_size < 0 ||
++            (uint64_t)status.st_size != request->expected_source_bytes) {
++            if (observed.fd >= 0) {
++                qemu_close(observed.fd);
++            }
++            continue;
++        }
++        observed.identity = status;
++        lock_result = qemu_lock_fd(observed.fd, 0, 0, true);
++        if (lock_result != 0) {
++            qemu_close(observed.fd);
++            error_setg_errno(errp, -lock_result,
++                             "Could not lock quarantined Xbox HDD");
++            goto done;
++        }
++        if (!migration_source_identity_digest(&observed,
++                                               &candidate_error) ||
++            !migration_source_identity_unchanged(&observed, false, true,
++                                                 &candidate_error)) {
++            qemu_close(observed.fd);
++            error_propagate(errp, candidate_error);
++            goto done;
++        }
++        if (candidate.fd >= 0) {
++            qemu_close(observed.fd);
++            error_setg(errp,
++                       "Multiple Xbox HDD removal quarantines are valid");
++            goto done;
++        }
++        candidate = observed;
++        candidate_name = g_strdup(entry->d_name);
++    }
++    if (errno != 0) {
++        error_setg_errno(errp, errno,
++                         "Could not inspect Xbox HDD removal quarantine");
++        goto done;
++    }
++    if (candidate.fd < 0) {
++        success = true;
++        goto done;
++    }
++    {
++        GStatBuf status;
++
++        if (fstatat(parent_fd, basename, &status,
++                    AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT) {
++            error_setg(errp,
++                       "Legacy Xbox HDD path reappeared during recovery");
++            goto done;
++        }
++        if (!migration_source_identity_unchanged(&candidate, false, true,
++                                                 errp) ||
++            renameat(parent_fd, candidate_name, parent_fd, basename) != 0 ||
++            !migration_source_identity_unchanged(&candidate, false, false,
++                                                 errp) ||
++            qemu_fdatasync(parent_fd) != 0) {
++            if (!*errp) {
++                error_setg_errno(errp, errno,
++                                 "Could not restore quarantined Xbox HDD");
++            }
++            goto done;
++        }
++    }
++    *recovered = true;
++    success = true;
++done:
++    if (listing) {
++        closedir(listing);
++    } else if (listing_fd >= 0) {
++        qemu_close(listing_fd);
++    }
++    if (candidate.fd >= 0) {
++        qemu_close(candidate.fd);
++    }
++    if (parent_fd >= 0) {
++        qemu_close(parent_fd);
++    }
++    return success;
++}
++#endif
++
++static bool migration_execute_internal(const XboxSaveMigrationRequest *request,
++                                       XboxSaveMigrationProof *proof,
++                                       bool allow_receipt, Error **errp)
++{
++    XboxMigrationSource source = { .fd = -1 };
++    XboxMigrationSource clean = { .fd = -1 };
++    XboxMigrationVerifyContext verify = { &source, &clean };
++    XboxSaveReceipt receipt;
++    g_autofree char *source_block_path = NULL;
++    g_autofree char *clean_block_path = NULL;
++    BlockBackend *source_blk = NULL;
++    BlockBackend *clean_blk = NULL;
++    XboxSaveVaultIo source_io;
++    XboxSaveVaultIo clean_io;
++    int64_t source_bytes;
++    int64_t clean_bytes;
++    bool receipt_exists;
++    bool receipt_valid;
++    bool vault_found;
++    bool source_projection_complete = false;
++#ifndef _WIN32
++    bool quarantine_recovered = false;
++    GStatBuf legacy_status;
++#endif
++    bool success = false;
++
++    if (!request || !proof || !request->legacy_hdd || !request->clean_hdd ||
++        !request->save_vault ||
++        request->expected_source_bytes == 0U ||
++        !g_path_is_absolute(request->legacy_hdd) ||
++        !g_path_is_absolute(request->clean_hdd) ||
++        !g_path_is_absolute(request->save_vault)) {
++        error_setg(errp, "Xbox save migration request is invalid");
++        return false;
++    }
++    memset(proof, 0, sizeof(*proof));
++#ifndef _WIN32
++    if (g_lstat(request->legacy_hdd, &legacy_status) != 0 &&
++        errno == ENOENT &&
++        !migration_recover_quarantine(request, &quarantine_recovered,
++                                      errp)) {
++        goto done;
++    }
++    if (quarantine_recovered &&
++        g_lstat(request->legacy_hdd, &legacy_status) != 0) {
++        error_setg_errno(errp, errno,
++                         "Recovered Xbox HDD path did not remain available");
++        goto done;
++    }
++#endif
++    if (!migration_source_open_path(request->legacy_hdd, &source, errp)) {
++        goto done;
++    }
++    if ((uint64_t)source.identity.st_size !=
++        request->expected_source_bytes) {
++        error_setg(errp, "Legacy Xbox HDD size does not match expectation");
++        goto done;
++    }
++    if (!migration_source_open_path(request->clean_hdd, &clean, errp) ||
++        !migration_hash_fd(clean.fd, clean.identity.st_size,
++                           clean.digest, errp)) {
++        goto done;
++    }
++    if (!xbox_save_receipt_load(request->save_vault, &receipt,
++                                &receipt_exists, &receipt_valid, errp) ||
++        !xbox_save_vault_try_describe(request->save_vault, &proof->vault,
++                                      &vault_found, errp)) {
++        goto done;
++    }
++    if (allow_receipt && receipt_exists && receipt_valid && vault_found &&
++        migration_receipt_matches(request, &source, &clean,
++                                  &proof->vault, &receipt)) {
++        migration_proof_from_receipt(&source, &clean, &receipt, proof);
++        success = true;
++        goto done;
++    }
++    if (!migration_hash_fd(source.fd, source.identity.st_size,
++                           source.digest, errp)) {
++        goto done;
++    }
++    if (request->expected_source_sha256_valid &&
++        memcmp(source.digest, request->expected_source_sha256,
++               sizeof(source.digest)) != 0) {
++        error_setg(errp, "Legacy Xbox HDD hash does not match expectation");
++        goto done;
++    }
++    source_block_path = migration_bound_block_path(&source);
++    clean_block_path = migration_bound_block_path(&clean);
++    source_blk = migration_open_image(source_block_path, false, true, errp);
++    clean_blk = migration_open_image(clean_block_path, true, true, errp);
++    if (!source_blk || !clean_blk) {
++        goto done;
++    }
++    source_bytes = blk_getlength(source_blk);
++    clean_bytes = blk_getlength(clean_blk);
++    if (source_bytes < 0 || clean_bytes < 0) {
++        error_setg(errp, "Could not read Xbox HDD virtual size");
++        goto done;
++    }
++    if (!xbox_volatile_hdd_attach_clean(clean_blk, errp) ||
++        blk_set_perm(clean_blk,
++                     BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
++                     BLK_PERM_ALL, errp) < 0) {
++        goto done;
++    }
++    source_io = (XboxSaveVaultIo) {
++        .opaque = source_blk,
++        .read = migration_blk_read,
++        .disk_bytes = source_bytes,
++    };
++    clean_io = (XboxSaveVaultIo) {
++        .opaque = clean_blk,
++        .read = migration_blk_read,
++        .write = migration_blk_write,
++        .disk_bytes = clean_bytes,
++    };
++    if (!xbox_save_vault_migrate(
++            request->save_vault, &source_io, &clean_io,
++            migration_verify_images, &verify, &proof->vault,
++            &source_projection_complete, errp)) {
++        goto done;
++    }
++    proof->source_bytes = source.identity.st_size;
++    memcpy(proof->source_identity_sha256, source.identity_digest,
++           sizeof(proof->source_identity_sha256));
++    memcpy(proof->source_sha256, source.digest,
++           sizeof(proof->source_sha256));
++    proof->clean_bytes = clean.identity.st_size;
++    memcpy(proof->clean_sha256, clean.digest,
++           sizeof(proof->clean_sha256));
++    proof->source_writes = false;
++    proof->source_hashed = true;
++    proof->anonymous_cow = true;
++    proof->clean_backing = true;
++    proof->receipt_reused = false;
++    proof->source_projection_complete = source_projection_complete;
++    proof->source_removal_safe = source_projection_complete &&
++        proof->vault.unclassified_tdata_entries == 0U;
++    proof->source_removed = false;
++    migration_receipt_from_proof(&source, &clean, proof, &receipt);
++    if (!xbox_save_receipt_store(request->save_vault, &receipt, errp)) {
++        goto done;
++    }
++    success = true;
++done:
++    if (clean_blk) {
++        blk_unref(clean_blk);
++    }
++    if (source_blk) {
++        blk_unref(source_blk);
++    }
++    if (source.fd >= 0) {
++        qemu_close(source.fd);
++    }
++    if (clean.fd >= 0) {
++        qemu_close(clean.fd);
++    }
++    return success;
++}
++
++static bool migration_source_open_for_removal(
++    const char *path, XboxMigrationSource *source, Error **errp)
++{
++#ifdef _WIN32
++    int flags = O_RDONLY | O_BINARY;
++    g_autofree gunichar2 *wide = NULL;
++    HANDLE handle;
++    FILE_ATTRIBUTE_TAG_INFO attributes;
++
++    memset(source, 0, sizeof(*source));
++    source->fd = -1;
++    source->path = path;
++    if (!path || !g_path_is_absolute(path) ||
++        !(wide = g_utf8_to_utf16(path, -1, NULL, NULL, NULL))) {
++        error_setg(errp, "Xbox HDD removal path is invalid");
++        return false;
++    }
++    handle = CreateFileW((LPCWSTR)wide, GENERIC_READ | DELETE,
++                         FILE_SHARE_READ, NULL, OPEN_EXISTING,
++                         FILE_ATTRIBUTE_NORMAL |
++                         FILE_FLAG_OPEN_REPARSE_POINT, NULL);
++    if (handle == INVALID_HANDLE_VALUE ||
++        !GetFileInformationByHandleEx(handle, FileAttributeTagInfo,
++                                      &attributes, sizeof(attributes)) ||
++        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
++        if (handle != INVALID_HANDLE_VALUE) {
++            CloseHandle(handle);
++        }
++        error_setg_win32(errp, GetLastError(),
++                         "Could not securely open Xbox HDD for removal");
++        return false;
++    }
++    source->fd = _open_osfhandle((intptr_t)handle, flags);
++    if (source->fd < 0) {
++        CloseHandle(handle);
++        error_setg_errno(errp, errno,
++                         "Could not bind Xbox HDD removal handle");
++        return false;
++    }
++    if (xbox_save_fstat(source->fd, &source->identity) != 0 ||
++        !S_ISREG(source->identity.st_mode) ||
++        source->identity.st_size < 0 ||
++        !migration_source_path_matches(source, errp)) {
++        if (!*errp) {
++            error_setg(errp, "Xbox HDD removal source is unsafe");
++        }
++        return false;
++    }
++    return migration_source_identity_digest(source, errp);
++#else
++    int flags = O_RDWR | O_BINARY;
++    int lock_result;
++
++    memset(source, 0, sizeof(*source));
++    source->fd = -1;
++    source->path = path;
++    if (!path || !g_path_is_absolute(path)) {
++        error_setg(errp, "Xbox HDD removal path is invalid");
++        return false;
++    }
++#ifdef O_NOFOLLOW
++    flags |= O_NOFOLLOW;
++#endif
++    source->fd = qemu_open(path, flags, errp);
++    if (source->fd < 0) {
++        return false;
++    }
++    if (xbox_save_fstat(source->fd, &source->identity) != 0 ||
++        !S_ISREG(source->identity.st_mode) ||
++        (source->identity.st_mode & (S_IRWXG | S_IRWXO)) != 0 ||
++        source->identity.st_size < 0 ||
++        !migration_source_path_matches(source, errp)) {
++        if (!*errp) {
++            error_setg(errp, "Xbox HDD removal source is unsafe");
++        }
++        return false;
++    }
++    lock_result = qemu_lock_fd(source->fd, 0, 0, true);
++    if (lock_result != 0) {
++        error_setg_errno(errp, -lock_result,
++                         "Could not exclusively lock Xbox HDD for removal");
++        return false;
++    }
++    return migration_source_identity_digest(source, errp);
++#endif
++}
++
++#ifndef _WIN32
++static bool migration_parent_open_private(const char *path, int *parent_fd,
++                                          char **basename, Error **errp)
++{
++    g_autofree char *parent = g_path_get_dirname(path);
++    GStatBuf opened;
++    GStatBuf linked;
++    int flags = O_RDONLY | O_DIRECTORY;
++
++    *parent_fd = -1;
++    *basename = g_path_get_basename(path);
++#ifdef O_NOFOLLOW
++    flags |= O_NOFOLLOW;
++#endif
++    *parent_fd = qemu_open(parent, flags, errp);
++    if (*parent_fd < 0) {
++        return false;
++    }
++    if (xbox_save_fstat(*parent_fd, &opened) != 0 ||
++        !S_ISDIR(opened.st_mode) ||
++        opened.st_uid != geteuid() ||
++        (opened.st_mode & (S_IRWXG | S_IRWXO)) != 0 ||
++        g_lstat(parent, &linked) != 0 || !S_ISDIR(linked.st_mode) ||
++        xbox_save_path_is_link(parent, &linked) ||
++        linked.st_dev != opened.st_dev ||
++        linked.st_ino != opened.st_ino) {
++        error_setg(errp,
++                   "Xbox HDD removal directory is not private or stable");
++        qemu_close(*parent_fd);
++        *parent_fd = -1;
++        return false;
++    }
++    return true;
++}
++
++static bool migration_cleanup_empty_quarantines(int parent_fd, Error **errp)
++{
++    DIR *listing = NULL;
++    int listing_flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
++    int listing_fd;
++    bool removed = false;
++    bool success = false;
++
++#ifdef O_NOFOLLOW
++    listing_flags |= O_NOFOLLOW;
++#endif
++    listing_fd = openat(parent_fd, ".", listing_flags);
++    if (listing_fd < 0 || !(listing = fdopendir(listing_fd))) {
++        error_setg_errno(errp, errno,
++                         "Could not inspect Xbox HDD removal quarantine");
++        goto done;
++    }
++    listing_fd = -1;
++    for (;;) {
++        struct dirent *entry;
++        GStatBuf opened;
++        GStatBuf linked;
++        int flags = O_RDWR | O_BINARY;
++        int fd;
++        int lock_result;
++
++        errno = 0;
++        entry = readdir(listing);
++        if (!entry) {
++            break;
++        }
++        if (!migration_quarantine_name_valid(entry->d_name)) {
++            continue;
++        }
++#ifdef O_NOFOLLOW
++        flags |= O_NOFOLLOW;
++#endif
++        fd = openat(parent_fd, entry->d_name, flags);
++        if (fd < 0 || xbox_save_fstat(fd, &opened) != 0 ||
++            !S_ISREG(opened.st_mode) || opened.st_uid != geteuid() ||
++            opened.st_nlink != 1 || opened.st_size != 0 ||
++            (opened.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
++            if (fd >= 0) {
++                qemu_close(fd);
++            }
++            continue;
++        }
++        lock_result = qemu_lock_fd(fd, 0, 0, true);
++        if (lock_result != 0 ||
++            fstatat(parent_fd, entry->d_name, &linked,
++                    AT_SYMLINK_NOFOLLOW) != 0 ||
++            linked.st_dev != opened.st_dev ||
++            linked.st_ino != opened.st_ino || linked.st_size != 0) {
++            qemu_close(fd);
++            continue;
++        }
++        if (unlinkat(parent_fd, entry->d_name, 0) != 0) {
++            int saved_errno = errno;
++
++            qemu_close(fd);
++            error_setg_errno(errp, saved_errno,
++                             "Could not clean Xbox HDD removal marker");
++            goto done;
++        }
++        qemu_close(fd);
++        removed = true;
++    }
++    if (errno != 0 || (removed && qemu_fdatasync(parent_fd) != 0)) {
++        error_setg_errno(errp, errno,
++                         "Could not synchronize Xbox HDD removal markers");
++        goto done;
++    }
++    success = true;
++done:
++    if (listing) {
++        closedir(listing);
++    } else if (listing_fd >= 0) {
++        qemu_close(listing_fd);
++    }
++    return success;
++}
++#endif
++
++static bool migration_remove_verified(
++    const char *path, const XboxSaveMigrationProof *proof, Error **errp)
++{
++    XboxMigrationSource source = { .fd = -1 };
++    uint8_t digest[32];
++    bool success = false;
++
++    if (!proof || proof->receipt_reused || !proof->source_hashed ||
++        !proof->source_projection_complete ||
++        !proof->source_removal_safe || proof->source_writes ||
++        proof->source_bytes == 0U || !path || !g_path_is_absolute(path)) {
++        error_setg(errp, "Xbox HDD removal proof is not fresh and removal-safe");
++        return false;
++    }
++    if (!migration_source_open_for_removal(path, &source, errp)) {
++        goto done;
++    }
++    if ((uint64_t)source.identity.st_size != proof->source_bytes ||
++        memcmp(source.identity_digest, proof->source_identity_sha256,
++               sizeof(source.identity_digest)) != 0 ||
++        !migration_hash_fd(source.fd, source.identity.st_size,
++                           digest, errp) ||
++        memcmp(digest, proof->source_sha256, sizeof(digest)) != 0 ||
++        !migration_source_identity_unchanged(&source, true, true, errp)) {
++        if (!*errp) {
++            error_setg(errp, "Xbox HDD removal source does not match the proof");
++        }
++        goto done;
++    }
++#ifdef _WIN32
++    {
++        HANDLE handle = (HANDLE)_get_osfhandle(source.fd);
++        FILE_DISPOSITION_INFO disposition = { .DeleteFile = TRUE };
++
++        if (handle == INVALID_HANDLE_VALUE ||
++            !SetFileInformationByHandle(handle, FileDispositionInfo,
++                                        &disposition,
++                                        sizeof(disposition))) {
++            error_setg_win32(errp, GetLastError(),
++                             "Could not remove verified Xbox HDD");
++            goto done;
++        }
++    }
++#else
++    {
++        g_autofree char *basename = NULL;
++        g_autofree char *quarantine = NULL;
++        GStatBuf quarantined;
++        int parent_fd = -1;
++        int marker_fd = -1;
++
++        if (!migration_parent_open_private(path, &parent_fd, &basename,
++                                           errp)) {
++            goto done;
++        }
++        if (!migration_cleanup_empty_quarantines(parent_fd, errp)) {
++            qemu_close(parent_fd);
++            goto done;
++        }
++        for (unsigned int attempt = 0U; attempt < 128U; attempt++) {
++            g_clear_pointer(&quarantine, g_free);
++            quarantine = g_strdup_printf(
++                ".gdox-xbox-hdd-removal.%08x.%08x",
++                (unsigned int)getpid(), g_random_int());
++            marker_fd = openat(parent_fd, quarantine,
++                               O_WRONLY | O_CREAT | O_EXCL
++#ifdef O_NOFOLLOW
++                               | O_NOFOLLOW
++#endif
++                               , S_IRUSR | S_IWUSR);
++            if (marker_fd >= 0 || errno != EEXIST) {
++                break;
++            }
++        }
++        if (marker_fd < 0) {
++            error_setg_errno(errp, errno,
++                             "Could not reserve Xbox HDD removal quarantine");
++            qemu_close(parent_fd);
++            goto done;
++        }
++        qemu_close(marker_fd);
++        marker_fd = -1;
++        if (renameat(parent_fd, basename, parent_fd, quarantine) != 0) {
++            int saved_errno = errno;
++
++            unlinkat(parent_fd, quarantine, 0);
++            qemu_close(parent_fd);
++            error_setg_errno(errp, saved_errno,
++                             "Could not quarantine verified Xbox HDD");
++            goto done;
++        }
++        const int stat_result = fstatat(parent_fd, quarantine, &quarantined,
++                                        AT_SYMLINK_NOFOLLOW);
++
++        if (stat_result != 0 || !S_ISREG(quarantined.st_mode) ||
++            quarantined.st_dev != source.identity.st_dev ||
++            quarantined.st_ino != source.identity.st_ino ||
++            quarantined.st_size != source.identity.st_size ||
++            !migration_source_identity_unchanged(&source, false, false,
++                                                 errp)) {
++            int saved_errno = stat_result != 0 ? errno : ESTALE;
++
++            renameat(parent_fd, quarantine, parent_fd, basename);
++            qemu_fdatasync(parent_fd);
++            qemu_close(parent_fd);
++            if (!*errp) {
++                error_setg_errno(errp, saved_errno,
++                                 "Xbox HDD identity changed during removal");
++            }
++            goto done;
++        }
++        if (qemu_fdatasync(parent_fd) != 0 ||
++            unlinkat(parent_fd, quarantine, 0) != 0 ||
++            qemu_fdatasync(parent_fd) != 0) {
++            int saved_errno = errno;
++
++            qemu_close(parent_fd);
++            error_setg_errno(errp, saved_errno,
++                             "Could not remove verified Xbox HDD");
++            goto done;
++        }
++        qemu_close(parent_fd);
++    }
++#endif
++    success = true;
++done:
++    if (source.fd >= 0) {
++        qemu_close(source.fd);
++    }
++    return success;
++}
++
++bool xbox_save_migration_execute(const XboxSaveMigrationRequest *request,
++                                 XboxSaveMigrationProof *proof,
++                                 Error **errp)
++{
++    if (!migration_execute_internal(request, proof, true, errp)) {
++        return false;
++    }
++    if (proof->receipt_reused || !proof->source_removal_safe) {
++        return true;
++    }
++    if (!migration_remove_verified(request->legacy_hdd, proof, errp)) {
++        return false;
++    }
++    proof->source_removed = true;
++    return true;
++}
++
++bool xbox_save_migration_execute_and_remove(
++    const XboxSaveMigrationRequest *request, XboxSaveMigrationProof *proof,
++    Error **errp)
++{
++    if (!migration_execute_internal(request, proof, false, errp)) {
++        return false;
++    }
++    if (!proof->source_removal_safe) {
++        error_setg(errp,
++                   "Legacy Xbox HDD has unclassified TDATA and was preserved");
++        return false;
++    }
++    if (!migration_remove_verified(request->legacy_hdd, proof, errp)) {
++        return false;
++    }
++    proof->source_removed = true;
++    return true;
++}
++
++bool xbox_save_vault_validation_execute(const char *save_vault,
++                                        const char *clean_hdd,
++                                        XboxSaveVaultProof *proof,
++                                        Error **errp)
++{
++    BlockBackend *clean_blk = NULL;
++    XboxSaveVaultIo clean_io;
++    int64_t clean_bytes;
++    bool success = false;
++
++    if (!save_vault || !clean_hdd || !proof ||
++        !g_path_is_absolute(save_vault) ||
++        !g_path_is_absolute(clean_hdd)) {
++        error_setg(errp, "Xbox save validation request is invalid");
++        return false;
++    }
++    clean_blk = migration_open_image(clean_hdd, true, false, errp);
++    if (!clean_blk) {
++        goto done;
++    }
++    clean_bytes = blk_getlength(clean_blk);
++    if (clean_bytes < 0) {
++        error_setg(errp, "Could not read clean Xbox HDD virtual size");
++        goto done;
++    }
++    if (!xbox_volatile_hdd_attach_clean(clean_blk, errp) ||
++        blk_set_perm(clean_blk,
++                     BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
++                     BLK_PERM_ALL, errp) < 0) {
++        goto done;
++    }
++    clean_io = (XboxSaveVaultIo) {
++        .opaque = clean_blk,
++        .read = migration_blk_read,
++        .write = migration_blk_write,
++        .disk_bytes = clean_bytes,
++    };
++    success = xbox_save_vault_validate_roundtrip(
++        save_vault, &clean_io, proof, errp);
++done:
++    if (clean_blk) {
++        blk_unref(clean_blk);
++    }
++    return success;
++}
+diff --git a/block/xbox-save-receipt.c b/block/xbox-save-receipt.c
+new file mode 100644
+index 0000000..da26dc9
+--- /dev/null
++++ b/block/xbox-save-receipt.c
+@@ -0,0 +1,348 @@
++/*
++ * Original Xbox migration receipt
++ *
++ * The receipt is an optimization record. It can skip a repeated multi-gigabyte
++ * source hash only when every source, clean image, policy, and vault binding
++ * matches. It is never evidence that permits removal of a legacy HDD.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "block/xbox-save-receipt.h"
++#include "block/xbox-save-security.h"
++#include "qemu/bswap.h"
++
++#include <glib/gstdio.h>
++
++#ifdef _WIN32
++#include <windows.h>
++#include <io.h>
++#endif
++
++#define RECEIPT_MAGIC "GDOXMGR1"
++#define RECEIPT_MAGIC_BYTES 8U
++#define RECEIPT_VERSION 1U
++#define RECEIPT_PAYLOAD_BYTES 268U
++#define RECEIPT_CHECKSUM_BYTES 32U
++#define RECEIPT_FILE_BYTES (RECEIPT_PAYLOAD_BYTES + RECEIPT_CHECKSUM_BYTES)
++#define RECEIPT_FILE_NAME "original-xbox-migration-receipt-v1.gdox"
++
++static char *receipt_path(const char *directory)
++{
++    return g_build_filename(directory, RECEIPT_FILE_NAME, NULL);
++}
++
++static bool receipt_read_full(int fd, void *buffer, size_t bytes)
++{
++    uint8_t *cursor = buffer;
++
++    while (bytes > 0U) {
++        ssize_t received = RETRY_ON_EINTR(read(fd, cursor, bytes));
++
++        if (received <= 0) {
++            return false;
++        }
++        cursor += received;
++        bytes -= received;
++    }
++    return true;
++}
++
++static bool receipt_directory_valid(const char *directory, Error **errp)
++{
++    GStatBuf status;
++
++    if (!directory || !g_path_is_absolute(directory) ||
++        g_lstat(directory, &status) != 0 || !S_ISDIR(status.st_mode) ||
++        xbox_save_path_is_link(directory, &status)) {
++        error_setg(errp, "Xbox save receipt directory is invalid");
++        return false;
++    }
++#ifndef _WIN32
++    if (status.st_uid != geteuid() ||
++        (status.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
++        error_setg(errp, "Xbox save receipt directory is not private");
++        return false;
++    }
++#endif
++#ifdef _WIN32
++    if (!xbox_save_windows_path_is_private(directory, true, errp)) {
++        return false;
++    }
++#endif
++    return true;
++}
++
++static bool receipt_sync_directory(const char *directory, Error **errp)
++{
++#ifndef _WIN32
++    int flags = O_RDONLY | O_DIRECTORY;
++    int fd;
++
++#ifdef O_NOFOLLOW
++    flags |= O_NOFOLLOW;
++#endif
++    fd = qemu_open(directory, flags, errp);
++    if (fd < 0) {
++        return false;
++    }
++    if (qemu_fdatasync(fd) != 0) {
++        error_setg_errno(errp, errno,
++                         "Could not synchronize Xbox save receipt directory");
++        qemu_close(fd);
++        return false;
++    }
++    qemu_close(fd);
++#endif
++    return true;
++}
++
++static void receipt_encode(const XboxSaveReceipt *receipt,
++                           uint8_t bytes[RECEIPT_FILE_BYTES])
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    gsize digest_bytes = RECEIPT_CHECKSUM_BYTES;
++
++    memset(bytes, 0, RECEIPT_FILE_BYTES);
++    memcpy(bytes, RECEIPT_MAGIC, RECEIPT_MAGIC_BYTES);
++    stl_le_p(bytes + 8U, RECEIPT_VERSION);
++    stl_le_p(bytes + 12U, RECEIPT_PAYLOAD_BYTES);
++    memcpy(bytes + 16U, receipt->source_identity_sha256, 32U);
++    stq_le_p(bytes + 48U, receipt->source_bytes);
++    memcpy(bytes + 56U, receipt->source_sha256, 32U);
++    stq_le_p(bytes + 88U, receipt->clean_bytes);
++    memcpy(bytes + 96U, receipt->clean_sha256, 32U);
++    stl_le_p(bytes + 128U, receipt->capability_schema);
++    stl_le_p(bytes + 132U, receipt->vault_format_version);
++    stl_le_p(bytes + 136U, receipt->policy_revision);
++    memcpy(bytes + 140U, receipt->policy_sha256, 32U);
++    stq_le_p(bytes + 172U, receipt->vault_generation);
++    memcpy(bytes + 180U, receipt->vault_tree_sha256, 32U);
++    stl_le_p(bytes + 212U, receipt->vault_entries);
++    stq_le_p(bytes + 216U, receipt->vault_logical_bytes);
++    stl_le_p(bytes + 224U, receipt->unclassified_tdata_entries);
++    stq_le_p(bytes + 228U, receipt->unclassified_tdata_bytes);
++    memcpy(bytes + 236U, receipt->unclassified_tdata_sha256, 32U);
++    g_checksum_update(checksum, bytes, RECEIPT_PAYLOAD_BYTES);
++    g_checksum_get_digest(checksum, bytes + RECEIPT_PAYLOAD_BYTES,
++                          &digest_bytes);
++    g_assert_cmpuint(digest_bytes, ==, RECEIPT_CHECKSUM_BYTES);
++}
++
++static bool receipt_decode(const uint8_t bytes[RECEIPT_FILE_BYTES],
++                           XboxSaveReceipt *receipt)
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    uint8_t digest[RECEIPT_CHECKSUM_BYTES];
++    gsize digest_bytes = sizeof(digest);
++
++    if (memcmp(bytes, RECEIPT_MAGIC, RECEIPT_MAGIC_BYTES) != 0 ||
++        ldl_le_p(bytes + 8U) != RECEIPT_VERSION ||
++        ldl_le_p(bytes + 12U) != RECEIPT_PAYLOAD_BYTES) {
++        return false;
++    }
++    g_checksum_update(checksum, bytes, RECEIPT_PAYLOAD_BYTES);
++    g_checksum_get_digest(checksum, digest, &digest_bytes);
++    if (digest_bytes != sizeof(digest) ||
++        memcmp(digest, bytes + RECEIPT_PAYLOAD_BYTES,
++               sizeof(digest)) != 0) {
++        return false;
++    }
++    memset(receipt, 0, sizeof(*receipt));
++    memcpy(receipt->source_identity_sha256, bytes + 16U, 32U);
++    receipt->source_bytes = ldq_le_p(bytes + 48U);
++    memcpy(receipt->source_sha256, bytes + 56U, 32U);
++    receipt->clean_bytes = ldq_le_p(bytes + 88U);
++    memcpy(receipt->clean_sha256, bytes + 96U, 32U);
++    receipt->capability_schema = ldl_le_p(bytes + 128U);
++    receipt->vault_format_version = ldl_le_p(bytes + 132U);
++    receipt->policy_revision = ldl_le_p(bytes + 136U);
++    memcpy(receipt->policy_sha256, bytes + 140U, 32U);
++    receipt->vault_generation = ldq_le_p(bytes + 172U);
++    memcpy(receipt->vault_tree_sha256, bytes + 180U, 32U);
++    receipt->vault_entries = ldl_le_p(bytes + 212U);
++    receipt->vault_logical_bytes = ldq_le_p(bytes + 216U);
++    receipt->unclassified_tdata_entries = ldl_le_p(bytes + 224U);
++    receipt->unclassified_tdata_bytes = ldq_le_p(bytes + 228U);
++    memcpy(receipt->unclassified_tdata_sha256, bytes + 236U, 32U);
++    return receipt->source_bytes > 0U && receipt->clean_bytes > 0U &&
++           receipt->capability_schema == XBOX_SAVE_VAULT_CAPABILITY_SCHEMA &&
++           receipt->vault_format_version > 0U &&
++           receipt->vault_generation > 0U;
++}
++
++bool xbox_save_receipt_load(const char *directory, XboxSaveReceipt *receipt,
++                            bool *exists, bool *valid, Error **errp)
++{
++    g_autofree char *path = NULL;
++    uint8_t bytes[RECEIPT_FILE_BYTES];
++    GStatBuf status;
++    int flags = O_RDONLY | O_BINARY;
++    int fd;
++
++    if (!receipt || !exists || !valid ||
++        !receipt_directory_valid(directory, errp)) {
++        return false;
++    }
++    memset(receipt, 0, sizeof(*receipt));
++    *exists = false;
++    *valid = false;
++    path = receipt_path(directory);
++#ifdef O_NOFOLLOW
++    flags |= O_NOFOLLOW;
++#endif
++    fd = qemu_open(path, flags, NULL);
++    if (fd < 0) {
++        if (errno == ENOENT) {
++            return true;
++        }
++        error_setg_errno(errp, errno, "Could not open Xbox save receipt");
++        return false;
++    }
++    *exists = true;
++    if (xbox_save_fstat(fd, &status) != 0 ||
++        !S_ISREG(status.st_mode) ||
++        xbox_save_path_is_link(path, &status)) {
++        error_setg(errp, "Xbox save receipt is not a regular file");
++        qemu_close(fd);
++        return false;
++    }
++#ifndef _WIN32
++    if (status.st_uid != geteuid() || status.st_nlink != 1 ||
++        (status.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
++        error_setg(errp, "Xbox save receipt is not private");
++        qemu_close(fd);
++        return false;
++    }
++#else
++    {
++        HANDLE handle = (HANDLE)_get_osfhandle(fd);
++        FILE_ATTRIBUTE_TAG_INFO attributes;
++
++        if (handle == INVALID_HANDLE_VALUE ||
++            !GetFileInformationByHandleEx(handle, FileAttributeTagInfo,
++                                          &attributes, sizeof(attributes)) ||
++            (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
++            !xbox_save_windows_fd_is_private(fd, errp)) {
++            if (*errp) {
++                qemu_close(fd);
++                return false;
++            }
++            error_setg(errp, "Xbox save receipt is unsafe");
++            qemu_close(fd);
++            return false;
++        }
++    }
++#endif
++    if (status.st_size == RECEIPT_FILE_BYTES &&
++        receipt_read_full(fd, bytes, sizeof(bytes))) {
++        *valid = receipt_decode(bytes, receipt);
++    }
++    if (qemu_close(fd) != 0) {
++        error_setg_errno(errp, errno, "Could not close Xbox save receipt");
++        return false;
++    }
++    return true;
++}
++
++bool xbox_save_receipt_store(const char *directory,
++                             const XboxSaveReceipt *receipt, Error **errp)
++{
++    g_autofree char *final = NULL;
++    g_autofree char *temporary = NULL;
++    uint8_t bytes[RECEIPT_FILE_BYTES];
++    int flags = O_WRONLY | O_BINARY;
++    int fd = -1;
++    bool success = false;
++
++    if (!receipt || !receipt_directory_valid(directory, errp)) {
++        return false;
++    }
++    receipt_encode(receipt, bytes);
++    final = receipt_path(directory);
++    temporary = g_strdup_printf("%s.tmp.XXXXXX", final);
++#ifdef O_NOFOLLOW
++    flags |= O_NOFOLLOW;
++#endif
++    fd = g_mkstemp_full(temporary, flags, S_IRUSR | S_IWUSR);
++    if (fd < 0) {
++        error_setg_errno(errp, errno, "Could not create Xbox save receipt");
++        return false;
++    }
++    if (qemu_write_full(fd, bytes, sizeof(bytes)) != sizeof(bytes) ||
++        qemu_fdatasync(fd) != 0) {
++        error_setg_errno(errp, errno, "Could not write Xbox save receipt");
++        goto done;
++    }
++    if (qemu_close(fd) != 0) {
++        fd = -1;
++        error_setg_errno(errp, errno, "Could not close Xbox save receipt");
++        goto done;
++    }
++    fd = -1;
++#ifdef _WIN32
++    {
++        g_autofree gunichar2 *temporary_wide =
++            g_utf8_to_utf16(temporary, -1, NULL, NULL, NULL);
++        g_autofree gunichar2 *final_wide =
++            g_utf8_to_utf16(final, -1, NULL, NULL, NULL);
++
++        if (!temporary_wide || !final_wide ||
++            !MoveFileExW((LPCWSTR)temporary_wide, (LPCWSTR)final_wide,
++                         MOVEFILE_REPLACE_EXISTING |
++                         MOVEFILE_WRITE_THROUGH)) {
++            error_setg_win32(errp, GetLastError(),
++                             "Could not publish Xbox save receipt");
++            goto done;
++        }
++    }
++#else
++    if (g_rename(temporary, final) != 0) {
++        error_setg_errno(errp, errno, "Could not publish Xbox save receipt");
++        goto done;
++    }
++#endif
++    if (!receipt_sync_directory(directory, errp)) {
++        goto done;
++    }
++    success = true;
++done:
++    if (fd >= 0) {
++        qemu_close(fd);
++    }
++    if (!success) {
++        g_unlink(temporary);
++    }
++    return success;
++}
++
++bool xbox_save_receipt_refresh_vault(const char *directory,
++                                     const XboxSaveVaultProof *vault,
++                                     Error **errp)
++{
++    XboxSaveReceipt receipt;
++    bool exists;
++    bool valid;
++
++    if (!vault ||
++        !xbox_save_receipt_load(directory, &receipt, &exists, &valid,
++                                errp)) {
++        return false;
++    }
++    if (!exists || !valid ||
++        receipt.capability_schema != XBOX_SAVE_VAULT_CAPABILITY_SCHEMA ||
++        receipt.policy_revision != vault->policy_revision ||
++        memcmp(receipt.policy_sha256, vault->policy_sha256,
++               sizeof(receipt.policy_sha256)) != 0) {
++        return true;
++    }
++    receipt.vault_format_version = vault->vault_version;
++    receipt.vault_generation = vault->generation;
++    memcpy(receipt.vault_tree_sha256, vault->tree_sha256,
++           sizeof(receipt.vault_tree_sha256));
++    receipt.vault_entries = vault->entries;
++    receipt.vault_logical_bytes = vault->logical_bytes;
++    return xbox_save_receipt_store(directory, &receipt, errp);
++}
+diff --git a/block/xbox-save-vault.c b/block/xbox-save-vault.c
+new file mode 100644
+index 0000000..6318c2d
+--- /dev/null
++++ b/block/xbox-save-vault.c
+@@ -0,0 +1,2903 @@
++/*
++ * Logical Original Xbox save vault
++ *
++ * Files and directories below E:\UDATA are serialized. E:\TDATA is limited to
++ * exact reviewed save/profile policy matches. The archive does not contain FAT
++ * entries, directory sectors, unused clusters, slack, or unclassified TDATA.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "block/xbox-save-vault.h"
++#include "block/xbox-save-policy.h"
++#include "block/xbox-save-receipt.h"
++#include "block/xbox-save-security.h"
++#include "qemu/bswap.h"
++#include "qemu/cutils.h"
++#include "qemu/error-report.h"
++#include "qemu/units.h"
++
++#include <glib/gstdio.h>
++
++#ifdef _WIN32
++#include <windows.h>
++#include <io.h>
++#endif
++
++#define VAULT_MAGIC_V1 "GDOXSAV1"
++#define VAULT_MAGIC_V2 "GDOXSAV2"
++#define VAULT_MAGIC_BYTES 8U
++#define VAULT_VERSION_V1 1U
++#define VAULT_VERSION_V2 2U
++#define VAULT_HEADER_V1_BYTES 40U
++#define VAULT_HEADER_V2_BYTES 76U
++#define VAULT_ENTRY_HEADER_BYTES 20U
++#define VAULT_DIGEST_BYTES 32U
++#define VAULT_SLOT_COUNT 2U
++#define VAULT_MAX_ENTRIES 65536U
++#define VAULT_MAX_DEPTH 32U
++#define VAULT_MAX_PATH_BYTES 4096U
++#define VAULT_MAX_FILE_BYTES (512U * MiB)
++#define VAULT_MAX_LOGICAL_BYTES (512U * MiB)
++#define VAULT_MAX_METADATA_BYTES (16U * MiB)
++
++#define FATX_E_OFFSET UINT64_C(0xabe80000)
++#define FATX_E_BYTES UINT64_C(0x1312d6000)
++#define FATX_SUPERBLOCK_BYTES 4096U
++#define FATX_DIRECTORY_ENTRY_BYTES 64U
++#define FATX_FILENAME_BYTES 42U
++#define FATX_SECTOR_BYTES 512U
++#define FATX_DIRECTORY_ATTRIBUTE 0x10U
++#define FATX_ALLOWED_ATTRIBUTES 0x37U
++#define FATX_END_MARKER 0xffU
++#define FATX_EMPTY_MARKER 0x00U
++#define FATX_DELETED_MARKER 0xe5U
++#define XBOX_HDD_CONFIG_PATH "CONFIG/hdd-config-v1"
++
++typedef struct QEMU_PACKED FatxRawDirectoryEntry {
++    uint8_t filename_len;
++    uint8_t attributes;
++    uint8_t filename[FATX_FILENAME_BYTES];
++    uint8_t first_cluster[4];
++    uint8_t file_size[4];
++    uint8_t timestamps[12];
++} FatxRawDirectoryEntry;
++
++QEMU_BUILD_BUG_ON(sizeof(FatxRawDirectoryEntry) !=
++                  FATX_DIRECTORY_ENTRY_BYTES);
++
++typedef struct FatxVolume {
++    const XboxSaveVaultIo *io;
++    uint64_t partition_end;
++    uint64_t fat_offset;
++    uint64_t cluster_offset;
++    uint32_t cluster_bytes;
++    uint32_t cluster_count;
++    uint32_t root_cluster;
++    uint32_t allocation_hint;
++    uint8_t fat_entry_bytes;
++} FatxVolume;
++
++typedef struct VaultTreeEntry {
++    char *path;
++    char *folded_path;
++    uint8_t attributes;
++    uint8_t timestamps[12];
++    uint32_t first_cluster;
++    uint32_t file_bytes;
++    bool directory;
++    bool hdd_config;
++} VaultTreeEntry;
++
++typedef struct VaultUnclassifiedEntry {
++    char *path;
++    char *folded_path;
++    uint32_t file_bytes;
++} VaultUnclassifiedEntry;
++
++typedef struct VaultPack {
++    GByteArray *bytes;
++    uint32_t version;
++    uint64_t generation;
++    uint64_t logical_bytes;
++    GPtrArray *entries;
++    uint32_t policy_revision;
++    uint8_t policy_sha256[XBOX_SAVE_POLICY_DIGEST_BYTES];
++    uint32_t udata_entries;
++    uint64_t udata_logical_bytes;
++    uint32_t tdata_entries;
++    uint64_t tdata_logical_bytes;
++    uint64_t hdd_config_bytes;
++    uint8_t hdd_config_sha256[VAULT_DIGEST_BYTES];
++    uint32_t unclassified_tdata_entries;
++    uint64_t unclassified_tdata_bytes;
++    uint8_t unclassified_tdata_sha256[VAULT_DIGEST_BYTES];
++} VaultPack;
++
++typedef struct VaultPackEntrySource {
++    const VaultTreeEntry *entry;
++    const VaultPack *pack;
++} VaultPackEntrySource;
++
++typedef struct VaultCollectContext {
++    FatxVolume *volume;
++    GPtrArray *entries;
++    GHashTable *folded_paths;
++    GHashTable *owned_clusters;
++    GPtrArray *unclassified;
++    const XboxSavePolicy *policy;
++    uint64_t logical_bytes;
++    size_t metadata_bytes;
++} VaultCollectContext;
++
++static void vault_proof_from_pack(const VaultPack *pack,
++                                  XboxSaveVaultProof *proof);
++
++static bool vault_read_full(int fd, void *buffer, size_t bytes, Error **errp)
++{
++    uint8_t *cursor = buffer;
++
++    while (bytes > 0) {
++        ssize_t received = RETRY_ON_EINTR(read(fd, cursor, bytes));
++
++        if (received < 0) {
++            error_setg_errno(errp, errno, "Could not read Xbox save vault");
++            return false;
++        }
++        if (received == 0) {
++            error_setg(errp, "Xbox save vault was truncated while reading");
++            return false;
++        }
++        cursor += received;
++        bytes -= received;
++    }
++    return true;
++}
++
++static void vault_tree_entry_free(gpointer opaque)
++{
++    VaultTreeEntry *entry = opaque;
++
++    if (entry) {
++        g_free(entry->path);
++        g_free(entry->folded_path);
++        g_free(entry);
++    }
++}
++
++static void vault_unclassified_entry_free(gpointer opaque)
++{
++    VaultUnclassifiedEntry *entry = opaque;
++
++    if (entry) {
++        g_free(entry->path);
++        g_free(entry->folded_path);
++        g_free(entry);
++    }
++}
++
++static void vault_pack_clear(VaultPack *pack)
++{
++    if (pack) {
++        g_clear_pointer(&pack->bytes, g_byte_array_unref);
++        g_clear_pointer(&pack->entries, g_ptr_array_unref);
++        memset(pack, 0, sizeof(*pack));
++    }
++}
++
++static void vault_canonical_digest(const VaultPack *pack,
++                                   uint8_t digest[VAULT_DIGEST_BYTES])
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    gsize bytes = VAULT_DIGEST_BYTES;
++
++    g_assert(pack->bytes && pack->bytes->len >=
++             VAULT_HEADER_V1_BYTES + VAULT_DIGEST_BYTES);
++    g_checksum_update(checksum, pack->bytes->data, 16U);
++    g_checksum_update(checksum, pack->bytes->data + 24U,
++                      pack->bytes->len - 24U - VAULT_DIGEST_BYTES);
++    g_checksum_get_digest(checksum, digest, &bytes);
++    g_assert_cmpuint(bytes, ==, VAULT_DIGEST_BYTES);
++}
++
++static int vault_io_read(const XboxSaveVaultIo *io, uint64_t offset,
++                         void *buffer, size_t bytes, Error **errp)
++{
++    int ret;
++
++    if (bytes > io->disk_bytes || offset > io->disk_bytes - bytes) {
++        error_setg(errp, "Xbox save data points outside the guest HDD");
++        return -EINVAL;
++    }
++    ret = io->read(io->opaque, offset, buffer, bytes);
++    if (ret < 0) {
++        error_setg_errno(errp, -ret, "Could not read Xbox save data");
++    }
++    return ret;
++}
++
++static int vault_io_write(const XboxSaveVaultIo *io, uint64_t offset,
++                          const void *buffer, size_t bytes, Error **errp)
++{
++    int ret;
++
++    if (!io->write) {
++        error_setg(errp, "Xbox save destination is read-only");
++        return -EROFS;
++    }
++    if (bytes > io->disk_bytes || offset > io->disk_bytes - bytes) {
++        error_setg(errp, "Xbox save data points outside the guest HDD");
++        return -EINVAL;
++    }
++    ret = io->write(io->opaque, offset, buffer, bytes);
++    if (ret < 0) {
++        error_setg_errno(errp, -ret, "Could not restore Xbox save data");
++    }
++    return ret;
++}
++
++static bool fatx_volume_open(FatxVolume *volume, const XboxSaveVaultIo *io,
++                             Error **errp)
++{
++    uint8_t superblock[FATX_SUPERBLOCK_BYTES];
++    uint64_t nominal_clusters;
++    uint64_t fat_bytes;
++    uint32_t sectors_per_cluster;
++
++    memset(volume, 0, sizeof(*volume));
++    if (!io || !io->read || io->disk_bytes < FATX_E_OFFSET + FATX_E_BYTES) {
++        error_setg(errp, "Xbox HDD does not contain the retail E partition");
++        return false;
++    }
++    if (vault_io_read(io, FATX_E_OFFSET, superblock,
++                      sizeof(superblock), errp) < 0) {
++        return false;
++    }
++    if (memcmp(superblock, "FATX", 4) != 0) {
++        error_setg(errp, "Xbox E partition has no FATX superblock");
++        return false;
++    }
++    sectors_per_cluster = ldl_le_p(superblock + 8);
++    if (sectors_per_cluster == 0U ||
++        (sectors_per_cluster & (sectors_per_cluster - 1U)) != 0U ||
++        sectors_per_cluster > 128U) {
++        error_setg(errp, "Xbox E partition has an invalid cluster size");
++        return false;
++    }
++    volume->cluster_bytes = sectors_per_cluster * FATX_SECTOR_BYTES;
++    nominal_clusters = FATX_E_BYTES / volume->cluster_bytes + 1U;
++    volume->fat_entry_bytes = nominal_clusters < 0xfff0U ? 2U : 4U;
++    fat_bytes = ROUND_UP(nominal_clusters * volume->fat_entry_bytes, 4096U);
++    if (fat_bytes > FATX_E_BYTES - FATX_SUPERBLOCK_BYTES) {
++        error_setg(errp, "Xbox E partition FAT is invalid");
++        return false;
++    }
++    volume->io = io;
++    volume->partition_end = FATX_E_OFFSET + FATX_E_BYTES;
++    volume->fat_offset = FATX_E_OFFSET + FATX_SUPERBLOCK_BYTES;
++    volume->cluster_offset = volume->fat_offset + fat_bytes;
++    volume->cluster_count =
++        (volume->partition_end - volume->cluster_offset) /
++        volume->cluster_bytes + 1U;
++    volume->root_cluster = ldl_le_p(superblock + 12);
++    volume->allocation_hint = 1U;
++    if (volume->root_cluster == 0U ||
++        volume->root_cluster >= volume->cluster_count) {
++        error_setg(errp, "Xbox E partition root directory is invalid");
++        return false;
++    }
++    return true;
++}
++
++static bool fatx_cluster_offset(const FatxVolume *volume, uint32_t cluster,
++                                uint64_t *offset, Error **errp)
++{
++    uint64_t result;
++
++    if (cluster == 0U || cluster >= volume->cluster_count) {
++        error_setg(errp, "Xbox save references an invalid FATX cluster");
++        return false;
++    }
++    result = volume->cluster_offset +
++        (uint64_t)(cluster - 1U) * volume->cluster_bytes;
++    if (result > volume->partition_end - volume->cluster_bytes) {
++        error_setg(errp, "Xbox save FATX cluster exceeds the E partition");
++        return false;
++    }
++    *offset = result;
++    return true;
++}
++
++static bool fatx_read_entry(const FatxVolume *volume, uint32_t cluster,
++                            uint32_t *entry, Error **errp)
++{
++    uint8_t raw[4] = { 0 };
++    uint64_t offset;
++
++    if (cluster >= volume->cluster_count) {
++        error_setg(errp, "Xbox save FAT index is invalid");
++        return false;
++    }
++    offset = volume->fat_offset +
++        (uint64_t)cluster * volume->fat_entry_bytes;
++    if (vault_io_read(volume->io, offset, raw,
++                      volume->fat_entry_bytes, errp) < 0) {
++        return false;
++    }
++    *entry = volume->fat_entry_bytes == 2U ? lduw_le_p(raw) : ldl_le_p(raw);
++    return true;
++}
++
++static bool fatx_write_entry(const FatxVolume *volume, uint32_t cluster,
++                             uint32_t entry, Error **errp)
++{
++    uint8_t raw[4];
++    uint64_t offset;
++
++    if (cluster >= volume->cluster_count) {
++        error_setg(errp, "Xbox save FAT index is invalid");
++        return false;
++    }
++    offset = volume->fat_offset +
++        (uint64_t)cluster * volume->fat_entry_bytes;
++    if (volume->fat_entry_bytes == 2U) {
++        stw_le_p(raw, entry);
++    } else {
++        stl_le_p(raw, entry);
++    }
++    return vault_io_write(volume->io, offset, raw,
++                          volume->fat_entry_bytes, errp) == 0;
++}
++
++static bool fatx_entry_is_end(const FatxVolume *volume, uint32_t entry)
++{
++    return volume->fat_entry_bytes == 2U ? entry >= 0xfff8U
++                                         : entry >= 0xfffffff8U;
++}
++
++static bool fatx_next_cluster(const FatxVolume *volume, uint32_t cluster,
++                              uint32_t *next, bool *end, Error **errp)
++{
++    uint32_t entry;
++
++    if (!fatx_read_entry(volume, cluster, &entry, errp)) {
++        return false;
++    }
++    if (fatx_entry_is_end(volume, entry)) {
++        *end = true;
++        *next = 0U;
++        return true;
++    }
++    if (entry == 0U || entry >= volume->cluster_count) {
++        error_setg(errp, "Xbox save contains a broken FATX chain");
++        return false;
++    }
++    *end = false;
++    *next = entry;
++    return true;
++}
++
++static bool fatx_read_cluster(const FatxVolume *volume, uint32_t cluster,
++                              void *buffer, Error **errp)
++{
++    uint64_t offset;
++
++    return fatx_cluster_offset(volume, cluster, &offset, errp) &&
++        vault_io_read(volume->io, offset, buffer,
++                      volume->cluster_bytes, errp) == 0;
++}
++
++static bool fatx_write_cluster(const FatxVolume *volume, uint32_t cluster,
++                               const void *buffer, Error **errp)
++{
++    uint64_t offset;
++
++    return fatx_cluster_offset(volume, cluster, &offset, errp) &&
++        vault_io_write(volume->io, offset, buffer,
++                       volume->cluster_bytes, errp) == 0;
++}
++
++static char *vault_fold_path(const char *path)
++{
++    char *folded = g_strdup(path);
++
++    for (char *p = folded; *p; p++) {
++        *p = g_ascii_tolower(*p);
++    }
++    return folded;
++}
++
++static bool vault_name_valid(const uint8_t *name, uint8_t bytes)
++{
++    static const char forbidden[] = "\"*+,/:;<=>?\\|";
++
++    if (bytes == 0U || bytes > FATX_FILENAME_BYTES) {
++        return false;
++    }
++    for (uint8_t i = 0; i < bytes; i++) {
++        if (name[i] == 0U || name[i] < 0x20U ||
++            strchr(forbidden, name[i]) != NULL) {
++            return false;
++        }
++    }
++    return !(bytes == 1U && name[0] == '.') &&
++           !(bytes == 2U && name[0] == '.' && name[1] == '.');
++}
++
++static uint32_t vault_path_depth(const char *path)
++{
++    uint32_t depth = path[0] ? 1U : 0U;
++
++    for (; *path; path++) {
++        depth += *path == '/';
++    }
++    return depth;
++}
++
++static bool fatx_claim_cluster(VaultCollectContext *context,
++                               uint32_t cluster, Error **errp)
++{
++    if (g_hash_table_contains(context->owned_clusters,
++                              GUINT_TO_POINTER(cluster))) {
++        error_setg(errp, "Xbox save trees have overlapping FATX cluster chains");
++        return false;
++    }
++    g_hash_table_add(context->owned_clusters, GUINT_TO_POINTER(cluster));
++    return true;
++}
++
++static bool fatx_validate_file_chain(VaultCollectContext *context,
++                                     uint32_t first_cluster,
++                                     uint32_t file_bytes, Error **errp)
++{
++    const FatxVolume *volume = context->volume;
++    uint64_t required = DIV_ROUND_UP(file_bytes, volume->cluster_bytes);
++    g_autoptr(GHashTable) seen = g_hash_table_new(g_direct_hash,
++                                                  g_direct_equal);
++    uint32_t cluster = first_cluster;
++
++    if (file_bytes == 0U) {
++        if (first_cluster != 0U) {
++            error_setg(errp, "Empty Xbox save file owns a FATX cluster");
++            return false;
++        }
++        return true;
++    }
++    if (cluster == 0U || required >= volume->cluster_count) {
++        error_setg(errp, "Xbox save file has an invalid FATX chain");
++        return false;
++    }
++    for (uint64_t i = 0; i < required; i++) {
++        uint32_t next;
++        bool end;
++
++        if (g_hash_table_contains(seen, GUINT_TO_POINTER(cluster))) {
++            error_setg(errp, "Xbox save file contains a FATX cycle");
++            return false;
++        }
++        if (!fatx_claim_cluster(context, cluster, errp)) {
++            return false;
++        }
++        g_hash_table_add(seen, GUINT_TO_POINTER(cluster));
++        if (!fatx_next_cluster(volume, cluster, &next, &end, errp)) {
++            return false;
++        }
++        if (i + 1U == required) {
++            if (!end) {
++                error_setg(errp, "Xbox save file FATX chain is too long");
++                return false;
++            }
++        } else if (end) {
++            error_setg(errp, "Xbox save file FATX chain is truncated");
++            return false;
++        }
++        cluster = next;
++    }
++    return true;
++}
++
++static bool vault_collect_directory(VaultCollectContext *context,
++                                    uint32_t first_cluster,
++                                    const char *parent_path,
++                                    uint32_t depth, Error **errp)
++{
++    FatxVolume *volume = context->volume;
++    g_autoptr(GHashTable) chain = g_hash_table_new(g_direct_hash,
++                                                   g_direct_equal);
++    g_autoptr(GHashTable) names = g_hash_table_new_full(g_str_hash,
++                                                        g_str_equal,
++                                                        g_free, NULL);
++    g_autofree uint8_t *cluster_data = g_malloc(volume->cluster_bytes);
++    uint32_t cluster = first_cluster;
++
++    if (depth > VAULT_MAX_DEPTH) {
++        error_setg(errp, "Xbox save directory nesting exceeds the limit");
++        return false;
++    }
++    while (true) {
++        uint32_t entries = volume->cluster_bytes /
++                           FATX_DIRECTORY_ENTRY_BYTES;
++
++        if (g_hash_table_contains(chain, GUINT_TO_POINTER(cluster))) {
++            error_setg(errp, "Xbox save directory contains a FATX cycle");
++            return false;
++        }
++        g_hash_table_add(chain, GUINT_TO_POINTER(cluster));
++        if (!fatx_claim_cluster(context, cluster, errp)) {
++            return false;
++        }
++        if (!fatx_read_cluster(volume, cluster, cluster_data, errp)) {
++            return false;
++        }
++        for (uint32_t i = 0; i < entries; i++) {
++            const FatxRawDirectoryEntry *raw =
++                (const void *)(cluster_data +
++                               i * FATX_DIRECTORY_ENTRY_BYTES);
++            g_autofree char *name = NULL;
++            g_autofree char *folded_name = NULL;
++            VaultTreeEntry *entry;
++            size_t path_bytes;
++
++            if (raw->filename_len == FATX_END_MARKER ||
++                raw->filename_len == FATX_EMPTY_MARKER) {
++                return true;
++            }
++            if (raw->filename_len == FATX_DELETED_MARKER) {
++                continue;
++            }
++            if (!vault_name_valid(raw->filename, raw->filename_len) ||
++                (raw->attributes & ~FATX_ALLOWED_ATTRIBUTES) != 0U) {
++                error_setg(errp, "Xbox UDATA contains an invalid directory entry");
++                return false;
++            }
++            name = g_strndup((const char *)raw->filename,
++                             raw->filename_len);
++            folded_name = g_ascii_strdown(name, -1);
++            if (g_hash_table_contains(names, folded_name)) {
++                error_setg(errp, "Xbox UDATA contains duplicate FATX names");
++                return false;
++            }
++            g_hash_table_add(names, g_steal_pointer(&folded_name));
++            path_bytes = strlen(parent_path) + strlen(name) +
++                         (parent_path[0] ? 1U : 0U);
++            if (path_bytes == 0U || path_bytes > VAULT_MAX_PATH_BYTES) {
++                error_setg(errp, "Xbox save path exceeds the limit");
++                return false;
++            }
++            if (context->entries->len >= VAULT_MAX_ENTRIES ||
++                context->metadata_bytes > VAULT_MAX_METADATA_BYTES -
++                    path_bytes - VAULT_ENTRY_HEADER_BYTES) {
++                error_setg(errp, "Xbox save tree exceeds the metadata limit");
++                return false;
++            }
++            entry = g_new0(VaultTreeEntry, 1);
++            entry->path = parent_path[0]
++                ? g_strdup_printf("%s/%s", parent_path, name)
++                : g_strdup(name);
++            entry->folded_path = vault_fold_path(entry->path);
++            entry->attributes = raw->attributes;
++            memcpy(entry->timestamps, raw->timestamps,
++                   sizeof(entry->timestamps));
++            entry->first_cluster = ldl_le_p(raw->first_cluster);
++            entry->file_bytes = ldl_le_p(raw->file_size);
++            entry->directory =
++                (entry->attributes & FATX_DIRECTORY_ATTRIBUTE) != 0U;
++            if (g_hash_table_contains(context->folded_paths,
++                                      entry->folded_path)) {
++                error_setg(errp, "Xbox UDATA contains duplicate paths");
++                vault_tree_entry_free(entry);
++                return false;
++            }
++            g_hash_table_add(context->folded_paths,
++                             g_strdup(entry->folded_path));
++            if (entry->directory) {
++                if (entry->first_cluster == 0U || entry->file_bytes != 0U) {
++                    error_setg(errp, "Xbox save directory metadata is invalid");
++                    vault_tree_entry_free(entry);
++                    return false;
++                }
++            } else {
++                if (entry->file_bytes > VAULT_MAX_FILE_BYTES ||
++                    context->logical_bytes > VAULT_MAX_LOGICAL_BYTES -
++                        entry->file_bytes ||
++                    !fatx_validate_file_chain(context, entry->first_cluster,
++                                              entry->file_bytes, errp)) {
++                    if (!*errp) {
++                        error_setg(errp, "Xbox save data exceeds the size limit");
++                    }
++                    vault_tree_entry_free(entry);
++                    return false;
++                }
++                context->logical_bytes += entry->file_bytes;
++            }
++            context->metadata_bytes += path_bytes +
++                                       VAULT_ENTRY_HEADER_BYTES;
++            g_ptr_array_add(context->entries, entry);
++            if (entry->directory &&
++                !vault_collect_directory(context, entry->first_cluster,
++                                         entry->path, depth + 1U, errp)) {
++                return false;
++            }
++        }
++        {
++            uint32_t next;
++            bool end;
++
++            if (!fatx_next_cluster(volume, cluster, &next, &end, errp)) {
++                return false;
++            }
++            if (end) {
++                return true;
++            }
++            cluster = next;
++        }
++    }
++}
++
++static bool vault_add_unclassified(VaultCollectContext *context,
++                                   const char *path, uint32_t file_bytes,
++                                   Error **errp)
++{
++    VaultUnclassifiedEntry *entry;
++
++    if (context->unclassified->len >= VAULT_MAX_ENTRIES) {
++        error_setg(errp, "Xbox unclassified TDATA inventory exceeds the limit");
++        return false;
++    }
++    entry = g_new0(VaultUnclassifiedEntry, 1);
++    entry->path = g_strdup(path);
++    entry->folded_path = vault_fold_path(path);
++    entry->file_bytes = file_bytes;
++    g_ptr_array_add(context->unclassified, entry);
++    return true;
++}
++
++static bool vault_collect_tdata_directory(VaultCollectContext *context,
++                                          uint32_t first_cluster,
++                                          const char *parent_path,
++                                          uint32_t depth, Error **errp)
++{
++    FatxVolume *volume = context->volume;
++    g_autoptr(GHashTable) chain = g_hash_table_new(g_direct_hash,
++                                                   g_direct_equal);
++    g_autoptr(GHashTable) names = g_hash_table_new_full(g_str_hash,
++                                                        g_str_equal,
++                                                        g_free, NULL);
++    g_autofree uint8_t *cluster_data = g_malloc(volume->cluster_bytes);
++    uint32_t cluster = first_cluster;
++
++    if (depth > VAULT_MAX_DEPTH - 1U) {
++        error_setg(errp, "Xbox TDATA directory nesting exceeds the limit");
++        return false;
++    }
++    while (true) {
++        uint32_t entries = volume->cluster_bytes /
++                           FATX_DIRECTORY_ENTRY_BYTES;
++
++        if (g_hash_table_contains(chain, GUINT_TO_POINTER(cluster))) {
++            error_setg(errp, "Xbox TDATA directory contains a FATX cycle");
++            return false;
++        }
++        g_hash_table_add(chain, GUINT_TO_POINTER(cluster));
++        if (!fatx_claim_cluster(context, cluster, errp) ||
++            !fatx_read_cluster(volume, cluster, cluster_data, errp)) {
++            return false;
++        }
++        for (uint32_t i = 0; i < entries; i++) {
++            const FatxRawDirectoryEntry *raw =
++                (const void *)(cluster_data +
++                               i * FATX_DIRECTORY_ENTRY_BYTES);
++            g_autofree char *name = NULL;
++            g_autofree char *folded_name = NULL;
++            g_autofree char *relative = NULL;
++            g_autofree char *scoped = NULL;
++            VaultTreeEntry *entry = NULL;
++            uint32_t first;
++            uint32_t file_bytes;
++            bool directory;
++            bool selected;
++            size_t path_bytes;
++
++            if (raw->filename_len == FATX_END_MARKER ||
++                raw->filename_len == FATX_EMPTY_MARKER) {
++                return true;
++            }
++            if (raw->filename_len == FATX_DELETED_MARKER) {
++                continue;
++            }
++            if (!vault_name_valid(raw->filename, raw->filename_len) ||
++                (raw->attributes & ~FATX_ALLOWED_ATTRIBUTES) != 0U) {
++                error_setg(errp, "Xbox TDATA contains an invalid directory entry");
++                return false;
++            }
++            name = g_strndup((const char *)raw->filename,
++                             raw->filename_len);
++            folded_name = g_ascii_strdown(name, -1);
++            if (g_hash_table_contains(names, folded_name)) {
++                error_setg(errp, "Xbox TDATA contains duplicate FATX names");
++                return false;
++            }
++            g_hash_table_add(names, g_steal_pointer(&folded_name));
++            relative = parent_path[0]
++                ? g_strdup_printf("%s/%s", parent_path, name)
++                : g_strdup(name);
++            scoped = g_strdup_printf("TDATA/%s", relative);
++            path_bytes = strlen(scoped);
++            if (path_bytes > VAULT_MAX_PATH_BYTES) {
++                error_setg(errp, "Xbox TDATA path exceeds the limit");
++                return false;
++            }
++            first = ldl_le_p(raw->first_cluster);
++            file_bytes = ldl_le_p(raw->file_size);
++            directory = (raw->attributes & FATX_DIRECTORY_ATTRIBUTE) != 0U;
++            selected = directory
++                ? xbox_save_policy_needs_directory(context->policy, relative)
++                : xbox_save_policy_allows_file(context->policy, relative);
++            if (directory) {
++                if (first == 0U || file_bytes != 0U) {
++                    error_setg(errp, "Xbox TDATA directory metadata is invalid");
++                    return false;
++                }
++            } else {
++                if (!fatx_validate_file_chain(context, first, file_bytes,
++                                              errp)) {
++                    return false;
++                }
++                if (!selected &&
++                    !vault_add_unclassified(context, scoped,
++                                            file_bytes, errp)) {
++                    return false;
++                }
++            }
++            if (selected) {
++                if (context->entries->len >= VAULT_MAX_ENTRIES ||
++                    context->metadata_bytes > VAULT_MAX_METADATA_BYTES -
++                        path_bytes - VAULT_ENTRY_HEADER_BYTES) {
++                    error_setg(errp, "Xbox save tree exceeds the metadata limit");
++                    return false;
++                }
++                entry = g_new0(VaultTreeEntry, 1);
++                entry->path = g_strdup(scoped);
++                entry->folded_path = vault_fold_path(entry->path);
++                entry->attributes = raw->attributes;
++                memcpy(entry->timestamps, raw->timestamps,
++                       sizeof(entry->timestamps));
++                entry->first_cluster = first;
++                entry->file_bytes = file_bytes;
++                entry->directory = directory;
++                if (g_hash_table_contains(context->folded_paths,
++                                          entry->folded_path)) {
++                    error_setg(errp, "Xbox save projection contains duplicate paths");
++                    vault_tree_entry_free(entry);
++                    return false;
++                }
++                if (!directory &&
++                    (file_bytes > VAULT_MAX_FILE_BYTES ||
++                     context->logical_bytes > VAULT_MAX_LOGICAL_BYTES -
++                         file_bytes)) {
++                    if (!*errp) {
++                        error_setg(errp, "Xbox save data exceeds the size limit");
++                    }
++                    vault_tree_entry_free(entry);
++                    return false;
++                }
++                if (!directory) {
++                    context->logical_bytes += file_bytes;
++                }
++                context->metadata_bytes += path_bytes +
++                                           VAULT_ENTRY_HEADER_BYTES;
++                g_hash_table_add(context->folded_paths,
++                                 g_strdup(entry->folded_path));
++                g_ptr_array_add(context->entries, entry);
++            }
++            if (directory &&
++                !vault_collect_tdata_directory(context, first, relative,
++                                               depth + 1U, errp)) {
++                return false;
++            }
++        }
++        {
++            uint32_t next;
++            bool end;
++
++            if (!fatx_next_cluster(volume, cluster, &next, &end, errp)) {
++                return false;
++            }
++            if (end) {
++                return true;
++            }
++            cluster = next;
++        }
++    }
++}
++
++static bool fatx_find_child(const FatxVolume *volume, uint32_t directory,
++                            const char *wanted, FatxRawDirectoryEntry *result,
++                            bool *found, Error **errp)
++{
++    g_autoptr(GHashTable) chain = g_hash_table_new(g_direct_hash,
++                                                   g_direct_equal);
++    g_autofree uint8_t *cluster_data = g_malloc(volume->cluster_bytes);
++    uint32_t cluster = directory;
++
++    *found = false;
++    while (true) {
++        uint32_t count = volume->cluster_bytes /
++                         FATX_DIRECTORY_ENTRY_BYTES;
++
++        if (g_hash_table_contains(chain, GUINT_TO_POINTER(cluster))) {
++            error_setg(errp, "Xbox FATX directory contains a cycle");
++            return false;
++        }
++        g_hash_table_add(chain, GUINT_TO_POINTER(cluster));
++        if (!fatx_read_cluster(volume, cluster, cluster_data, errp)) {
++            return false;
++        }
++        for (uint32_t i = 0; i < count; i++) {
++            const FatxRawDirectoryEntry *raw =
++                (const void *)(cluster_data +
++                               i * FATX_DIRECTORY_ENTRY_BYTES);
++            g_autofree char *name = NULL;
++
++            if (raw->filename_len == FATX_END_MARKER ||
++                raw->filename_len == FATX_EMPTY_MARKER) {
++                return true;
++            }
++            if (raw->filename_len == FATX_DELETED_MARKER) {
++                continue;
++            }
++            if (!vault_name_valid(raw->filename, raw->filename_len)) {
++                error_setg(errp, "Xbox FATX directory entry is invalid");
++                return false;
++            }
++            name = g_strndup((const char *)raw->filename,
++                             raw->filename_len);
++            if (g_ascii_strcasecmp(name, wanted) == 0) {
++                *result = *raw;
++                *found = true;
++                return true;
++            }
++        }
++        {
++            uint32_t next;
++            bool end;
++
++            if (!fatx_next_cluster(volume, cluster, &next, &end, errp)) {
++                return false;
++            }
++            if (end) {
++                return true;
++            }
++            cluster = next;
++        }
++    }
++}
++
++static gint vault_entry_compare(gconstpointer left, gconstpointer right)
++{
++    const VaultTreeEntry *const *a = left;
++    const VaultTreeEntry *const *b = right;
++    int folded = strcmp((*a)->folded_path, (*b)->folded_path);
++
++    return folded ? folded : strcmp((*a)->path, (*b)->path);
++}
++
++static gint vault_unclassified_compare(gconstpointer left,
++                                       gconstpointer right)
++{
++    const VaultUnclassifiedEntry *const *a = left;
++    const VaultUnclassifiedEntry *const *b = right;
++    int folded = strcmp((*a)->folded_path, (*b)->folded_path);
++
++    return folded ? folded : strcmp((*a)->path, (*b)->path);
++}
++
++static bool vault_add_hdd_config(FatxVolume *volume,
++                                 VaultCollectContext *context,
++                                 VaultPack *pack, Error **errp)
++{
++    g_autofree uint8_t *config = g_try_malloc(XBOX_SAVE_HDD_CONFIG_BYTES);
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    VaultTreeEntry *entry;
++    gsize digest_bytes = VAULT_DIGEST_BYTES;
++
++    if (!config) {
++        error_setg(errp, "Could not allocate Xbox HDD configuration buffer");
++        return false;
++    }
++    if (vault_io_read(volume->io, 0U, config,
++                      XBOX_SAVE_HDD_CONFIG_BYTES, errp) < 0) {
++        return false;
++    }
++    entry = g_new0(VaultTreeEntry, 1);
++    entry->path = g_strdup(XBOX_HDD_CONFIG_PATH);
++    entry->folded_path = vault_fold_path(entry->path);
++    entry->file_bytes = XBOX_SAVE_HDD_CONFIG_BYTES;
++    entry->hdd_config = true;
++    context->logical_bytes += XBOX_SAVE_HDD_CONFIG_BYTES;
++    context->metadata_bytes += strlen(entry->path) +
++                               VAULT_ENTRY_HEADER_BYTES;
++    g_hash_table_add(context->folded_paths, g_strdup(entry->folded_path));
++    g_ptr_array_add(context->entries, entry);
++    pack->hdd_config_bytes = XBOX_SAVE_HDD_CONFIG_BYTES;
++    g_checksum_update(checksum, config, XBOX_SAVE_HDD_CONFIG_BYTES);
++    g_checksum_get_digest(checksum, pack->hdd_config_sha256, &digest_bytes);
++    g_assert_cmpuint(digest_bytes, ==, VAULT_DIGEST_BYTES);
++    return true;
++}
++
++static void vault_finish_unclassified(VaultCollectContext *context,
++                                      VaultPack *pack)
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    gsize digest_bytes = VAULT_DIGEST_BYTES;
++
++    g_ptr_array_sort(context->unclassified, vault_unclassified_compare);
++    for (guint i = 0; i < context->unclassified->len; i++) {
++        const VaultUnclassifiedEntry *entry =
++            g_ptr_array_index(context->unclassified, i);
++        uint8_t size[4];
++        const uint8_t separator = 0U;
++
++        stl_le_p(size, entry->file_bytes);
++        g_checksum_update(checksum, (const uint8_t *)entry->folded_path,
++                          strlen(entry->folded_path));
++        g_checksum_update(checksum, &separator, 1U);
++        g_checksum_update(checksum, size, sizeof(size));
++        pack->unclassified_tdata_bytes += entry->file_bytes;
++    }
++    pack->unclassified_tdata_entries = context->unclassified->len;
++    g_checksum_get_digest(checksum, pack->unclassified_tdata_sha256,
++                          &digest_bytes);
++    g_assert_cmpuint(digest_bytes, ==, VAULT_DIGEST_BYTES);
++}
++
++static bool vault_collect_tree(FatxVolume *volume, VaultPack *pack,
++                               Error **errp)
++{
++    FatxRawDirectoryEntry udata;
++    FatxRawDirectoryEntry tdata;
++    bool found;
++    VaultCollectContext context = {
++        .volume = volume,
++        .entries = g_ptr_array_new_with_free_func(vault_tree_entry_free),
++        .folded_paths = g_hash_table_new_full(g_str_hash, g_str_equal,
++                                              g_free, NULL),
++        .owned_clusters = g_hash_table_new(g_direct_hash, g_direct_equal),
++        .unclassified = g_ptr_array_new_with_free_func(
++            vault_unclassified_entry_free),
++        .policy = xbox_save_policy_default(),
++    };
++    bool success = false;
++
++    pack->version = VAULT_VERSION_V2;
++    pack->policy_revision = context.policy->revision;
++    xbox_save_policy_digest(context.policy, pack->policy_sha256);
++    if (!vault_add_hdd_config(volume, &context, pack, errp) ||
++        !fatx_find_child(volume, volume->root_cluster, "UDATA", &udata,
++                         &found, errp)) {
++        goto done;
++    }
++    if (found) {
++        if ((udata.attributes & FATX_DIRECTORY_ATTRIBUTE) == 0U ||
++            ldl_le_p(udata.first_cluster) == 0U ||
++            ldl_le_p(udata.file_size) != 0U ||
++            !vault_collect_directory(&context, ldl_le_p(udata.first_cluster),
++                                     "UDATA", 1U, errp)) {
++            if (!*errp) {
++                error_setg(errp, "Xbox UDATA entry is not a directory");
++            }
++            goto done;
++        }
++    }
++    pack->udata_entries = context.entries->len - 1U;
++    pack->udata_logical_bytes = context.logical_bytes -
++                                XBOX_SAVE_HDD_CONFIG_BYTES;
++    if (!fatx_find_child(volume, volume->root_cluster, "TDATA", &tdata,
++                         &found, errp)) {
++        goto done;
++    }
++    if (found &&
++        ((tdata.attributes & FATX_DIRECTORY_ATTRIBUTE) == 0U ||
++         ldl_le_p(tdata.first_cluster) == 0U ||
++         ldl_le_p(tdata.file_size) != 0U ||
++         !vault_collect_tdata_directory(
++             &context, ldl_le_p(tdata.first_cluster), "", 1U, errp))) {
++        if (!*errp) {
++            error_setg(errp, "Xbox TDATA entry is not a directory");
++        }
++        goto done;
++    }
++    pack->tdata_entries = context.entries->len -
++                          pack->udata_entries - 1U;
++    pack->tdata_logical_bytes = context.logical_bytes -
++                                pack->udata_logical_bytes -
++                                XBOX_SAVE_HDD_CONFIG_BYTES;
++    vault_finish_unclassified(&context, pack);
++    g_ptr_array_sort(context.entries, vault_entry_compare);
++    pack->entries = g_steal_pointer(&context.entries);
++    pack->logical_bytes = context.logical_bytes;
++    success = true;
++done:
++    g_clear_pointer(&context.entries, g_ptr_array_unref);
++    g_hash_table_unref(context.folded_paths);
++    g_hash_table_unref(context.owned_clusters);
++    g_ptr_array_unref(context.unclassified);
++    return success;
++}
++
++static bool vault_copy_file(uint8_t *destination, const FatxVolume *volume,
++                            const VaultTreeEntry *entry, Error **errp)
++{
++    g_autofree uint8_t *cluster_data = NULL;
++    uint32_t remaining = entry->file_bytes;
++    uint32_t cluster = entry->first_cluster;
++
++    if (entry->hdd_config) {
++        return entry->file_bytes == XBOX_SAVE_HDD_CONFIG_BYTES &&
++            vault_io_read(volume->io, 0U, destination,
++                          XBOX_SAVE_HDD_CONFIG_BYTES, errp) == 0;
++    }
++    if (remaining == 0U) {
++        return true;
++    }
++    cluster_data = g_malloc(volume->cluster_bytes);
++    while (remaining > 0U) {
++        uint32_t chunk = MIN(remaining, volume->cluster_bytes);
++        uint32_t next;
++        bool end;
++
++        if (!fatx_read_cluster(volume, cluster, cluster_data, errp)) {
++            return false;
++        }
++        memcpy(destination, cluster_data, chunk);
++        destination += chunk;
++        remaining -= chunk;
++        if (!fatx_next_cluster(volume, cluster, &next, &end, errp)) {
++            return false;
++        }
++        if ((remaining == 0U) != end) {
++            error_setg(errp, "Xbox save changed during checkpoint");
++            return false;
++        }
++        cluster = next;
++    }
++    return true;
++}
++
++static bool vault_build_pack(FatxVolume *volume, uint64_t generation,
++                             VaultPack *pack, Error **errp)
++{
++    g_autoptr(GChecksum) checksum = NULL;
++    g_autofree uint8_t *contents = NULL;
++    uint8_t digest[VAULT_DIGEST_BYTES];
++    gsize digest_bytes = sizeof(digest);
++    size_t pack_bytes = VAULT_HEADER_V2_BYTES + VAULT_DIGEST_BYTES;
++    size_t cursor = VAULT_HEADER_V2_BYTES;
++
++    if (!vault_collect_tree(volume, pack, errp)) {
++        return false;
++    }
++    pack->generation = generation;
++    for (guint i = 0; i < pack->entries->len; i++) {
++        const VaultTreeEntry *entry = g_ptr_array_index(pack->entries, i);
++        size_t path_bytes = strlen(entry->path);
++
++        if (pack_bytes > SIZE_MAX - VAULT_ENTRY_HEADER_BYTES - path_bytes ||
++            pack_bytes + VAULT_ENTRY_HEADER_BYTES + path_bytes >
++                SIZE_MAX - entry->file_bytes) {
++            error_setg(errp, "Xbox save vault size overflows the host");
++            return false;
++        }
++        pack_bytes += VAULT_ENTRY_HEADER_BYTES + path_bytes +
++                      entry->file_bytes;
++    }
++    contents = g_try_malloc(pack_bytes);
++    if (!contents) {
++        error_setg(errp, "Could not allocate memory for Xbox save checkpoint");
++        return false;
++    }
++    memcpy(contents, VAULT_MAGIC_V2, VAULT_MAGIC_BYTES);
++    stl_le_p(contents + 8, VAULT_VERSION_V2);
++    stl_le_p(contents + 12, VAULT_HEADER_V2_BYTES);
++    stq_le_p(contents + 16, generation);
++    stl_le_p(contents + 24, pack->entries->len);
++    stl_le_p(contents + 28, 0U);
++    stq_le_p(contents + 32, pack->logical_bytes);
++    stl_le_p(contents + 40, pack->policy_revision);
++    memcpy(contents + 44, pack->policy_sha256,
++           XBOX_SAVE_POLICY_DIGEST_BYTES);
++    for (guint i = 0; i < pack->entries->len; i++) {
++        VaultTreeEntry *entry = g_ptr_array_index(pack->entries, i);
++        size_t path_bytes = strlen(entry->path);
++        uint32_t payload_offset;
++
++        contents[cursor] = entry->hdd_config ? 3U :
++                           entry->directory ? 1U : 2U;
++        contents[cursor + 1U] = entry->attributes;
++        stw_le_p(contents + cursor + 2U, path_bytes);
++        stl_le_p(contents + cursor + 4U, entry->file_bytes);
++        memcpy(contents + cursor + 8U, entry->timestamps,
++               sizeof(entry->timestamps));
++        cursor += VAULT_ENTRY_HEADER_BYTES;
++        memcpy(contents + cursor, entry->path, path_bytes);
++        cursor += path_bytes;
++        payload_offset = cursor;
++        if (!entry->directory &&
++            !vault_copy_file(contents + cursor, volume, entry, errp)) {
++            return false;
++        }
++        cursor += entry->file_bytes;
++        entry->first_cluster = payload_offset;
++    }
++    g_assert_cmpuint(cursor, ==, pack_bytes - VAULT_DIGEST_BYTES);
++    checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    g_checksum_update(checksum, contents, cursor);
++    g_checksum_get_digest(checksum, digest, &digest_bytes);
++    g_assert_cmpuint(digest_bytes, ==, sizeof(digest));
++    memcpy(contents + cursor, digest, sizeof(digest));
++    pack->bytes = g_byte_array_new_take(g_steal_pointer(&contents), pack_bytes);
++    return true;
++}
++
++static bool vault_path_valid(const char *path)
++{
++    size_t component = 0U;
++    const char *component_start = path;
++    uint32_t depth = 1U;
++
++    if (!path || !path[0] || strlen(path) > VAULT_MAX_PATH_BYTES ||
++        path[0] == '/' || path[strlen(path) - 1U] == '/') {
++        return false;
++    }
++    for (const uint8_t *p = (const uint8_t *)path; ; p++) {
++        if (*p == '/' || *p == 0U) {
++            if (component == 0U || component > FATX_FILENAME_BYTES) {
++                return false;
++            }
++            if ((component == 1U && component_start[0] == '.') ||
++                (component == 2U && component_start[0] == '.' &&
++                 component_start[1] == '.')) {
++                return false;
++            }
++            if (*p == 0U) {
++                break;
++            }
++            component = 0U;
++            component_start = (const char *)p + 1;
++            if (++depth > VAULT_MAX_DEPTH) {
++                return false;
++            }
++        } else {
++            if (*p < 0x20U || strchr("\"*+,:;<=>?\\|", *p) != NULL) {
++                return false;
++            }
++            component++;
++        }
++    }
++    return depth == vault_path_depth(path);
++}
++
++static bool vault_parse_pack(GByteArray *bytes, VaultPack *pack,
++                             Error **errp)
++{
++    g_autoptr(GChecksum) checksum = NULL;
++    g_autoptr(GHashTable) paths = NULL;
++    const XboxSavePolicy *policy = xbox_save_policy_default();
++    uint8_t digest[VAULT_DIGEST_BYTES];
++    gsize digest_bytes = sizeof(digest);
++    uint32_t header_bytes;
++    uint32_t version;
++    uint32_t count;
++    uint64_t logical_bytes;
++    uint64_t observed_logical = 0U;
++    size_t cursor;
++    const char *previous = NULL;
++    bool legacy;
++
++    if (!bytes || bytes->len < VAULT_HEADER_V1_BYTES + VAULT_DIGEST_BYTES) {
++        error_setg(errp, "Xbox save vault header is invalid");
++        return false;
++    }
++    version = ldl_le_p(bytes->data + 8);
++    header_bytes = ldl_le_p(bytes->data + 12);
++    legacy = version == VAULT_VERSION_V1 &&
++        memcmp(bytes->data, VAULT_MAGIC_V1, VAULT_MAGIC_BYTES) == 0 &&
++        header_bytes == VAULT_HEADER_V1_BYTES;
++    if ((!legacy &&
++         (version != VAULT_VERSION_V2 ||
++          memcmp(bytes->data, VAULT_MAGIC_V2, VAULT_MAGIC_BYTES) != 0 ||
++          header_bytes != VAULT_HEADER_V2_BYTES)) ||
++        bytes->len < header_bytes + VAULT_DIGEST_BYTES ||
++        ldl_le_p(bytes->data + 28) != 0U) {
++        error_setg(errp, "Xbox save vault header is invalid");
++        return false;
++    }
++    checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    g_checksum_update(checksum, bytes->data,
++                      bytes->len - VAULT_DIGEST_BYTES);
++    g_checksum_get_digest(checksum, digest, &digest_bytes);
++    if (digest_bytes != VAULT_DIGEST_BYTES ||
++        memcmp(digest, bytes->data + bytes->len - VAULT_DIGEST_BYTES,
++               VAULT_DIGEST_BYTES) != 0) {
++        error_setg(errp, "Xbox save vault checksum is invalid");
++        return false;
++    }
++    pack->generation = ldq_le_p(bytes->data + 16);
++    pack->version = version;
++    count = ldl_le_p(bytes->data + 24);
++    logical_bytes = ldq_le_p(bytes->data + 32);
++    if (pack->generation == 0U || count > VAULT_MAX_ENTRIES ||
++        logical_bytes > VAULT_MAX_LOGICAL_BYTES) {
++        error_setg(errp, "Xbox save vault limits are invalid");
++        return false;
++    }
++    if (legacy) {
++        pack->policy_revision = policy->revision;
++        xbox_save_policy_digest(policy, pack->policy_sha256);
++    } else {
++        pack->policy_revision = ldl_le_p(bytes->data + 40);
++        memcpy(pack->policy_sha256, bytes->data + 44,
++               XBOX_SAVE_POLICY_DIGEST_BYTES);
++        policy = xbox_save_policy_lookup(pack->policy_revision,
++                                         pack->policy_sha256);
++        if (!policy) {
++            error_setg(errp, "Xbox save vault policy is not supported");
++            return false;
++        }
++    }
++    pack->entries = g_ptr_array_new_with_free_func(vault_tree_entry_free);
++    paths = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
++    cursor = header_bytes;
++    for (uint32_t i = 0; i < count; i++) {
++        VaultTreeEntry *entry;
++        uint8_t type;
++        uint16_t path_bytes;
++        size_t required;
++
++        if (cursor > bytes->len - VAULT_DIGEST_BYTES ||
++            bytes->len - VAULT_DIGEST_BYTES - cursor <
++                VAULT_ENTRY_HEADER_BYTES) {
++            error_setg(errp, "Xbox save vault is truncated");
++            return false;
++        }
++        type = bytes->data[cursor];
++        path_bytes = lduw_le_p(bytes->data + cursor + 2);
++        entry = g_new0(VaultTreeEntry, 1);
++        entry->directory = type == 1U;
++        entry->hdd_config = type == 3U;
++        entry->attributes = bytes->data[cursor + 1];
++        entry->file_bytes = ldl_le_p(bytes->data + cursor + 4);
++        memcpy(entry->timestamps, bytes->data + cursor + 8,
++               sizeof(entry->timestamps));
++        required = VAULT_ENTRY_HEADER_BYTES + path_bytes +
++                   (entry->directory ? 0U : entry->file_bytes);
++        if ((type != 1U && type != 2U && (!legacy && type != 3U)) ||
++            path_bytes == 0U ||
++            (!entry->hdd_config &&
++             (entry->attributes & ~FATX_ALLOWED_ATTRIBUTES) != 0U) ||
++            (!entry->hdd_config && entry->directory !=
++                ((entry->attributes & FATX_DIRECTORY_ATTRIBUTE) != 0U)) ||
++            (entry->directory && entry->file_bytes != 0U) ||
++            (entry->hdd_config &&
++             (entry->attributes != 0U ||
++              entry->file_bytes != XBOX_SAVE_HDD_CONFIG_BYTES)) ||
++            entry->file_bytes > VAULT_MAX_FILE_BYTES ||
++            required > bytes->len - VAULT_DIGEST_BYTES - cursor) {
++            vault_tree_entry_free(entry);
++            error_setg(errp, "Xbox save vault entry is invalid");
++            return false;
++        }
++        entry->path = g_strndup(
++            (const char *)bytes->data + cursor + VAULT_ENTRY_HEADER_BYTES,
++            path_bytes);
++        if (strlen(entry->path) != path_bytes ||
++            !vault_path_valid(entry->path)) {
++            vault_tree_entry_free(entry);
++            error_setg(errp, "Xbox save vault path is invalid");
++            return false;
++        }
++        if (legacy) {
++            char *scoped = g_strdup_printf("UDATA/%s", entry->path);
++
++            g_free(entry->path);
++            entry->path = scoped;
++        } else if (entry->hdd_config) {
++            if (strcmp(entry->path, XBOX_HDD_CONFIG_PATH) != 0) {
++                vault_tree_entry_free(entry);
++                error_setg(errp, "Xbox save vault config region is invalid");
++                return false;
++            }
++        } else if (g_str_has_prefix(entry->path, "UDATA/")) {
++            pack->udata_entries++;
++            pack->udata_logical_bytes += entry->file_bytes;
++        } else if (g_str_has_prefix(entry->path, "TDATA/")) {
++            const char *relative = entry->path + strlen("TDATA/");
++            bool allowed = entry->directory
++                ? xbox_save_policy_needs_directory(policy, relative)
++                : xbox_save_policy_allows_file(policy, relative);
++
++            if (!allowed) {
++                vault_tree_entry_free(entry);
++                error_setg(errp, "Xbox save vault contains unclassified TDATA");
++                return false;
++            }
++            pack->tdata_entries++;
++            pack->tdata_logical_bytes += entry->file_bytes;
++        } else {
++            vault_tree_entry_free(entry);
++            error_setg(errp, "Xbox save vault scope is invalid");
++            return false;
++        }
++        entry->folded_path = vault_fold_path(entry->path);
++        if ((previous && strcmp(previous, entry->folded_path) >= 0) ||
++            g_hash_table_contains(paths, entry->folded_path)) {
++            vault_tree_entry_free(entry);
++            error_setg(errp, "Xbox save vault paths are not canonical");
++            return false;
++        }
++        previous = entry->folded_path;
++        g_hash_table_add(paths, g_strdup(entry->folded_path));
++        observed_logical += entry->file_bytes;
++        if (observed_logical > VAULT_MAX_LOGICAL_BYTES) {
++            vault_tree_entry_free(entry);
++            error_setg(errp, "Xbox save vault exceeds the data limit");
++            return false;
++        }
++        entry->first_cluster = cursor + VAULT_ENTRY_HEADER_BYTES + path_bytes;
++        if (entry->hdd_config) {
++            g_autoptr(GChecksum) config_checksum =
++                g_checksum_new(G_CHECKSUM_SHA256);
++            gsize config_digest_bytes = VAULT_DIGEST_BYTES;
++
++            pack->hdd_config_bytes = entry->file_bytes;
++            g_checksum_update(config_checksum,
++                              bytes->data + entry->first_cluster,
++                              entry->file_bytes);
++            g_checksum_get_digest(config_checksum,
++                                  pack->hdd_config_sha256,
++                                  &config_digest_bytes);
++            g_assert_cmpuint(config_digest_bytes, ==, VAULT_DIGEST_BYTES);
++        }
++        cursor += required;
++        g_ptr_array_add(pack->entries, entry);
++    }
++    if (cursor != bytes->len - VAULT_DIGEST_BYTES ||
++        observed_logical != logical_bytes) {
++        error_setg(errp, "Xbox save vault length is invalid");
++        return false;
++    }
++    if (legacy) {
++        pack->udata_entries = count;
++        pack->udata_logical_bytes = logical_bytes;
++    } else if (pack->hdd_config_bytes != XBOX_SAVE_HDD_CONFIG_BYTES) {
++        error_setg(errp, "Xbox save vault is missing the HDD configuration region");
++        return false;
++    }
++    {
++        g_autoptr(GChecksum) empty = g_checksum_new(G_CHECKSUM_SHA256);
++        gsize empty_bytes = VAULT_DIGEST_BYTES;
++
++        g_checksum_get_digest(empty, pack->unclassified_tdata_sha256,
++                              &empty_bytes);
++    }
++    pack->logical_bytes = logical_bytes;
++    pack->bytes = g_byte_array_ref(bytes);
++    return true;
++}
++
++static gint vault_pack_entry_source_compare(gconstpointer left,
++                                            gconstpointer right)
++{
++    const VaultPackEntrySource *const *a = left;
++    const VaultPackEntrySource *const *b = right;
++    int folded = strcmp((*a)->entry->folded_path,
++                        (*b)->entry->folded_path);
++
++    return folded ? folded : strcmp((*a)->entry->path, (*b)->entry->path);
++}
++
++static bool vault_merge_add_entry(GPtrArray *sources, GHashTable *paths,
++                                  const VaultPack *pack,
++                                  const VaultTreeEntry *entry,
++                                  Error **errp)
++{
++    VaultPackEntrySource *source;
++
++    if (sources->len >= VAULT_MAX_ENTRIES ||
++        g_hash_table_contains(paths, entry->folded_path)) {
++        error_setg(errp, "Xbox save migration has duplicate or excessive paths");
++        return false;
++    }
++    source = g_new(VaultPackEntrySource, 1);
++    source->entry = entry;
++    source->pack = pack;
++    g_hash_table_insert(paths, g_strdup(entry->folded_path), source);
++    g_ptr_array_add(sources, source);
++    return true;
++}
++
++static bool vault_merge_entry_equal(const VaultPackEntrySource *current,
++                                    const VaultPack *projected_pack,
++                                    const VaultTreeEntry *projected)
++{
++    const VaultTreeEntry *existing;
++
++    g_assert(current && projected_pack && projected);
++    existing = current->entry;
++    if (existing->attributes != projected->attributes ||
++        memcmp(existing->timestamps, projected->timestamps,
++               sizeof(existing->timestamps)) != 0 ||
++        existing->file_bytes != projected->file_bytes ||
++        existing->directory != projected->directory ||
++        existing->hdd_config != projected->hdd_config) {
++        return false;
++    }
++    return existing->directory || existing->file_bytes == 0U ||
++        memcmp(current->pack->bytes->data + existing->first_cluster,
++               projected_pack->bytes->data + projected->first_cluster,
++               existing->file_bytes) == 0;
++}
++
++static bool vault_merge_has_file_ancestor(GHashTable *paths,
++                                          const char *folded_path)
++{
++    g_autofree char *ancestor = g_strdup(folded_path);
++    char *separator = strchr(ancestor, '/');
++
++    while (separator) {
++        const VaultPackEntrySource *existing;
++
++        *separator = '\0';
++        existing = g_hash_table_lookup(paths, ancestor);
++        if (existing && !existing->entry->directory) {
++            return true;
++        }
++        *separator = '/';
++        separator = strchr(separator + 1, '/');
++    }
++    return false;
++}
++
++static bool vault_build_merged_pack(const VaultPack *current,
++                                    const VaultPack *projected,
++                                    VaultPack *merged, bool *changed,
++                                    bool *source_projection_complete,
++                                    Error **errp)
++{
++    const XboxSavePolicy *policy = xbox_save_policy_default();
++    g_autoptr(GPtrArray) sources =
++        g_ptr_array_new_with_free_func(g_free);
++    g_autoptr(GHashTable) paths =
++        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
++    g_autoptr(GByteArray) serialized = NULL;
++    g_autoptr(GChecksum) checksum = NULL;
++    g_autofree uint8_t *contents = NULL;
++    uint8_t policy_digest[XBOX_SAVE_POLICY_DIGEST_BYTES];
++    uint8_t digest[VAULT_DIGEST_BYTES];
++    gsize digest_bytes = sizeof(digest);
++    uint64_t logical_bytes = 0U;
++    uint64_t generation;
++    size_t pack_bytes = VAULT_HEADER_V2_BYTES + VAULT_DIGEST_BYTES;
++    size_t cursor = VAULT_HEADER_V2_BYTES;
++    bool mutated;
++
++    g_assert(current && projected && merged && changed &&
++             source_projection_complete);
++    *source_projection_complete = true;
++    xbox_save_policy_digest(policy, policy_digest);
++    mutated = current->version != VAULT_VERSION_V2 ||
++              current->policy_revision != policy->revision ||
++              memcmp(current->policy_sha256, policy_digest,
++                     sizeof(policy_digest)) != 0;
++    if (mutated && current->generation == UINT64_MAX) {
++        error_setg(errp, "Xbox save vault generation is exhausted");
++        return false;
++    }
++    generation = mutated ? current->generation + 1U : current->generation;
++
++    for (guint i = 0; i < current->entries->len; i++) {
++        const VaultTreeEntry *entry = g_ptr_array_index(current->entries, i);
++
++        if (g_str_has_prefix(entry->path, "TDATA/")) {
++            const char *relative = entry->path + strlen("TDATA/");
++            bool allowed = entry->directory
++                ? xbox_save_policy_needs_directory(policy, relative)
++                : xbox_save_policy_allows_file(policy, relative);
++
++            if (!allowed) {
++                error_setg(errp, "Xbox save policy no longer permits an existing TDATA path");
++                return false;
++            }
++        }
++        if (!vault_merge_add_entry(sources, paths, current, entry, errp)) {
++            return false;
++        }
++    }
++    for (guint i = 0; i < projected->entries->len; i++) {
++        const VaultTreeEntry *entry = g_ptr_array_index(projected->entries, i);
++        const VaultPackEntrySource *existing =
++            g_hash_table_lookup(paths, entry->folded_path);
++
++        if (vault_merge_has_file_ancestor(paths, entry->folded_path)) {
++            *source_projection_complete = false;
++            continue;
++        }
++        if (existing) {
++            if (!vault_merge_entry_equal(existing, projected, entry)) {
++                *source_projection_complete = false;
++            }
++            continue;
++        }
++        if (!vault_merge_add_entry(sources, paths, projected, entry, errp)) {
++            return false;
++        }
++        mutated = true;
++    }
++    if (!g_hash_table_contains(paths, "config/hdd-config-v1")) {
++        error_setg(errp, "Xbox save migration has no HDD configuration projection");
++        return false;
++    }
++    if (mutated && generation == current->generation) {
++        if (current->generation == UINT64_MAX) {
++            error_setg(errp, "Xbox save vault generation is exhausted");
++            return false;
++        }
++        generation = current->generation + 1U;
++    }
++    g_ptr_array_sort(sources, vault_pack_entry_source_compare);
++    for (guint i = 0; i < sources->len; i++) {
++        const VaultPackEntrySource *source = g_ptr_array_index(sources, i);
++        const VaultTreeEntry *entry = source->entry;
++        size_t path_bytes = strlen(entry->path);
++
++        if (pack_bytes > SIZE_MAX - VAULT_ENTRY_HEADER_BYTES - path_bytes ||
++            pack_bytes + VAULT_ENTRY_HEADER_BYTES + path_bytes >
++                SIZE_MAX - entry->file_bytes ||
++            logical_bytes > VAULT_MAX_LOGICAL_BYTES - entry->file_bytes) {
++            error_setg(errp, "Xbox save migration projection exceeds the size limit");
++            return false;
++        }
++        pack_bytes += VAULT_ENTRY_HEADER_BYTES + path_bytes +
++                      entry->file_bytes;
++        logical_bytes += entry->file_bytes;
++    }
++    contents = g_try_malloc(pack_bytes);
++    if (!contents) {
++        error_setg(errp, "Could not allocate Xbox save migration projection");
++        return false;
++    }
++    memcpy(contents, VAULT_MAGIC_V2, VAULT_MAGIC_BYTES);
++    stl_le_p(contents + 8, VAULT_VERSION_V2);
++    stl_le_p(contents + 12, VAULT_HEADER_V2_BYTES);
++    stq_le_p(contents + 16, generation);
++    stl_le_p(contents + 24, sources->len);
++    stl_le_p(contents + 28, 0U);
++    stq_le_p(contents + 32, logical_bytes);
++    stl_le_p(contents + 40, policy->revision);
++    memcpy(contents + 44, policy_digest, sizeof(policy_digest));
++    for (guint i = 0; i < sources->len; i++) {
++        const VaultPackEntrySource *source = g_ptr_array_index(sources, i);
++        const VaultTreeEntry *entry = source->entry;
++        size_t path_bytes = strlen(entry->path);
++
++        contents[cursor] = entry->hdd_config ? 3U :
++                           entry->directory ? 1U : 2U;
++        contents[cursor + 1U] = entry->attributes;
++        stw_le_p(contents + cursor + 2U, path_bytes);
++        stl_le_p(contents + cursor + 4U, entry->file_bytes);
++        memcpy(contents + cursor + 8U, entry->timestamps,
++               sizeof(entry->timestamps));
++        cursor += VAULT_ENTRY_HEADER_BYTES;
++        memcpy(contents + cursor, entry->path, path_bytes);
++        cursor += path_bytes;
++        if (!entry->directory && entry->file_bytes > 0U) {
++            memcpy(contents + cursor,
++                   source->pack->bytes->data + entry->first_cluster,
++                   entry->file_bytes);
++        }
++        cursor += entry->file_bytes;
++    }
++    checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    g_checksum_update(checksum, contents, cursor);
++    g_checksum_get_digest(checksum, digest, &digest_bytes);
++    g_assert_cmpuint(digest_bytes, ==, sizeof(digest));
++    memcpy(contents + cursor, digest, sizeof(digest));
++    serialized = g_byte_array_new_take(g_steal_pointer(&contents), pack_bytes);
++    if (!vault_parse_pack(serialized, merged, errp)) {
++        return false;
++    }
++    merged->unclassified_tdata_entries =
++        projected->unclassified_tdata_entries;
++    merged->unclassified_tdata_bytes = projected->unclassified_tdata_bytes;
++    memcpy(merged->unclassified_tdata_sha256,
++           projected->unclassified_tdata_sha256,
++           sizeof(merged->unclassified_tdata_sha256));
++    *changed = mutated;
++    return true;
++}
++
++static char *vault_slot_path(const char *directory, unsigned int slot)
++{
++    return g_strdup_printf("%s%coriginal-xbox-udata-%u.gdox",
++                           directory, G_DIR_SEPARATOR, slot);
++}
++
++static bool vault_regular_file(const char *path, bool *exists, Error **errp)
++{
++    GStatBuf status;
++
++    if (g_lstat(path, &status) != 0) {
++        if (errno == ENOENT) {
++            *exists = false;
++            return true;
++        }
++        error_setg_errno(errp, errno, "Could not inspect Xbox save vault");
++        return false;
++    }
++    *exists = true;
++    if (!S_ISREG(status.st_mode) ||
++        xbox_save_path_is_link(path, &status)) {
++        error_setg(errp, "Xbox save vault is not a regular file");
++        return false;
++    }
++#ifndef _WIN32
++    if (status.st_uid != geteuid() || status.st_nlink != 1 ||
++        (status.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
++        error_setg(errp, "Xbox save vault file is not private");
++        return false;
++    }
++#endif
++#ifdef _WIN32
++    if (!xbox_save_windows_path_is_private(path, false, errp)) {
++        return false;
++    }
++#endif
++    if ((uint64_t)status.st_size >
++        VAULT_HEADER_V2_BYTES + VAULT_MAX_METADATA_BYTES +
++        VAULT_MAX_LOGICAL_BYTES + VAULT_DIGEST_BYTES) {
++        error_setg(errp, "Xbox save vault exceeds the file size limit");
++        return false;
++    }
++    return true;
++}
++
++static bool vault_read_path(const char *path, VaultPack *pack,
++                            bool *exists, Error **errp)
++{
++    GStatBuf status;
++    g_autoptr(GByteArray) array = NULL;
++    g_autofree uint8_t *contents = NULL;
++    uint64_t maximum = VAULT_HEADER_V2_BYTES + VAULT_MAX_METADATA_BYTES +
++                       VAULT_MAX_LOGICAL_BYTES + VAULT_DIGEST_BYTES;
++    int flags = O_RDONLY | O_BINARY;
++    int fd;
++
++#ifdef O_NOFOLLOW
++    flags |= O_NOFOLLOW;
++#endif
++    fd = qemu_open(path, flags, errp);
++    if (fd < 0) {
++        *exists = errno != ENOENT;
++        if (!*exists) {
++            error_free(*errp);
++            *errp = NULL;
++            return true;
++        }
++        return false;
++    }
++    *exists = true;
++    if (xbox_save_fstat(fd, &status) != 0 || !S_ISREG(status.st_mode)) {
++        error_setg(errp, "Xbox save vault is not a regular file");
++        goto fail;
++    }
++#ifndef _WIN32
++    if (status.st_uid != geteuid() || status.st_nlink != 1 ||
++        (status.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
++        error_setg(errp, "Xbox save vault file is not private");
++        goto fail;
++    }
++#else
++    {
++        HANDLE handle = (HANDLE)_get_osfhandle(fd);
++        FILE_ATTRIBUTE_TAG_INFO attributes;
++
++        if (handle == INVALID_HANDLE_VALUE ||
++            !GetFileInformationByHandleEx(handle, FileAttributeTagInfo,
++                                          &attributes, sizeof(attributes)) ||
++            (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
++            !xbox_save_windows_fd_is_private(fd, errp)) {
++            if (*errp) {
++                goto fail;
++            }
++            error_setg(errp, "Xbox save vault file is unsafe");
++            goto fail;
++        }
++    }
++#endif
++    if (status.st_size < 0 || (uint64_t)status.st_size > maximum ||
++        (uint64_t)status.st_size > G_MAXUINT) {
++        error_setg(errp, "Xbox save vault exceeds the file size limit");
++        goto fail;
++    }
++    contents = g_try_malloc(MAX((uint64_t)status.st_size, UINT64_C(1)));
++    if (!contents) {
++        error_setg(errp, "Could not allocate memory for Xbox save vault");
++        goto fail;
++    }
++    if (!vault_read_full(fd, contents, status.st_size, errp)) {
++        goto fail;
++    }
++    if (qemu_close(fd) != 0) {
++        error_setg_errno(errp, errno, "Could not close Xbox save vault");
++        return false;
++    }
++    array = g_byte_array_new_take(g_steal_pointer(&contents), status.st_size);
++    return vault_parse_pack(array, pack, errp);
++fail:
++    qemu_close(fd);
++    return false;
++}
++
++static bool vault_read_slot(const char *directory, unsigned int slot,
++                            VaultPack *pack, bool *exists, Error **errp)
++{
++    g_autofree char *path = vault_slot_path(directory, slot);
++
++    return vault_read_path(path, pack, exists, errp);
++}
++
++static bool vault_select(const char *directory, VaultPack *selected,
++                         unsigned int *selected_slot, bool *found,
++                         Error **errp)
++{
++    uint64_t generations[VAULT_SLOT_COUNT] = { 0 };
++    uint8_t canonical[VAULT_SLOT_COUNT][VAULT_DIGEST_BYTES] = { 0 };
++    bool valid[VAULT_SLOT_COUNT] = { false };
++    Error *first_error = NULL;
++    bool any_exists = false;
++
++    *found = false;
++    for (unsigned int i = 0; i < VAULT_SLOT_COUNT; i++) {
++        VaultPack candidate = { 0 };
++        Error *local_error = NULL;
++        bool exists = false;
++
++        if (!vault_read_slot(directory, i, &candidate, &exists,
++                             &local_error)) {
++            any_exists |= exists;
++            if (!first_error) {
++                first_error = local_error;
++                local_error = NULL;
++            }
++            error_free(local_error);
++            continue;
++        }
++        any_exists |= exists;
++        if (exists) {
++            generations[i] = candidate.generation;
++            vault_canonical_digest(&candidate, canonical[i]);
++            valid[i] = true;
++        }
++        vault_pack_clear(&candidate);
++    }
++    if (valid[0] || valid[1]) {
++        bool exists;
++        unsigned int slot = !valid[0] ? 1U :
++                            !valid[1] ? 0U :
++                            generations[1] > generations[0] ? 1U : 0U;
++
++        if (valid[0] && valid[1] && generations[0] == generations[1] &&
++            memcmp(canonical[0], canonical[1], VAULT_DIGEST_BYTES) != 0) {
++            error_free(first_error);
++            error_setg(errp, "Xbox save vault generations conflict");
++            return false;
++        }
++        error_free(first_error);
++        if (!vault_read_slot(directory, slot, selected, &exists, errp) ||
++            !exists) {
++            if (!*errp) {
++                error_setg(errp, "Xbox save vault disappeared while reading");
++            }
++            return false;
++        }
++        if (selected->generation != generations[slot]) {
++            vault_pack_clear(selected);
++            error_setg(errp, "Xbox save vault changed while reading");
++            return false;
++        }
++        {
++            uint8_t reread_digest[VAULT_DIGEST_BYTES];
++
++            vault_canonical_digest(selected, reread_digest);
++            if (memcmp(reread_digest, canonical[slot],
++                       VAULT_DIGEST_BYTES) != 0) {
++                vault_pack_clear(selected);
++                error_setg(errp, "Xbox save vault changed while reading");
++                return false;
++            }
++        }
++        *selected_slot = slot;
++        *found = true;
++        return true;
++    }
++    if (any_exists) {
++        if (first_error) {
++            error_propagate(errp, first_error);
++        } else {
++            error_setg(errp, "Xbox save vault has no valid generation");
++        }
++        return false;
++    }
++    error_free(first_error);
++    return true;
++}
++
++static bool vault_directory_valid(const char *directory, Error **errp)
++{
++    GStatBuf status;
++
++    if (!directory || !g_path_is_absolute(directory) ||
++        g_lstat(directory, &status) != 0 || !S_ISDIR(status.st_mode) ||
++        xbox_save_path_is_link(directory, &status)) {
++        error_setg(errp, "Xbox save vault must be an existing absolute directory");
++        return false;
++    }
++#ifndef _WIN32
++    if (status.st_uid != geteuid() ||
++        (status.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
++        error_setg(errp, "Xbox save vault directory is not private");
++        return false;
++    }
++#endif
++#ifdef _WIN32
++    if (!xbox_save_windows_path_is_private(directory, true, errp)) {
++        return false;
++    }
++#endif
++    return true;
++}
++
++bool xbox_save_vault_lock(const char *directory, XboxSaveVaultLock *lock,
++                          Error **errp)
++{
++    g_autofree char *path = NULL;
++    GStatBuf status;
++    int flags = O_RDWR | O_BINARY;
++
++    if (!lock || lock->fd != -1 || !vault_directory_valid(directory, errp)) {
++        if (!*errp) {
++            error_setg(errp, "Xbox save vault lock state is invalid");
++        }
++        return false;
++    }
++    path = g_strdup_printf("%s%coriginal-xbox-udata.lock",
++                           directory, G_DIR_SEPARATOR);
++#ifdef O_NOFOLLOW
++    flags |= O_NOFOLLOW;
++#endif
++    lock->fd = qemu_create(path, flags, S_IRUSR | S_IWUSR, errp);
++    if (lock->fd < 0) {
++        return false;
++    }
++    if (xbox_save_fstat(lock->fd, &status) != 0 ||
++        !S_ISREG(status.st_mode)) {
++        error_setg(errp, "Xbox save vault lock is not a regular file");
++        goto fail;
++    }
++#ifndef _WIN32
++    if (status.st_uid != geteuid() || status.st_nlink != 1 ||
++        (status.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
++        error_setg(errp, "Xbox save vault lock is not private");
++        goto fail;
++    }
++    if (qemu_lock_fd(lock->fd, 0, 1, true) != 0) {
++        error_setg_errno(errp, errno, "Xbox save vault is already in use");
++        goto fail;
++    }
++#else
++    {
++        HANDLE handle = (HANDLE)_get_osfhandle(lock->fd);
++        FILE_ATTRIBUTE_TAG_INFO attributes;
++        OVERLAPPED overlap = { 0 };
++
++        if (handle == INVALID_HANDLE_VALUE ||
++            !GetFileInformationByHandleEx(handle, FileAttributeTagInfo,
++                                          &attributes, sizeof(attributes)) ||
++            (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
++            !xbox_save_windows_fd_is_private(lock->fd, errp) ||
++            !LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK |
++                        LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlap)) {
++            if (*errp) {
++                goto fail;
++            }
++            error_setg(errp, "Xbox save vault is already in use or unsafe");
++            goto fail;
++        }
++    }
++#endif
++    return true;
++fail:
++    qemu_close(lock->fd);
++    lock->fd = -1;
++    return false;
++}
++
++void xbox_save_vault_unlock(XboxSaveVaultLock *lock)
++{
++    if (!lock || lock->fd < 0) {
++        return;
++    }
++#ifdef _WIN32
++    {
++        HANDLE handle = (HANDLE)_get_osfhandle(lock->fd);
++        OVERLAPPED overlap = { 0 };
++
++        if (handle != INVALID_HANDLE_VALUE) {
++            UnlockFileEx(handle, 0, 1, 0, &overlap);
++        }
++    }
++#endif
++    qemu_close(lock->fd);
++    lock->fd = -1;
++}
++
++static bool vault_sync_directory(const char *directory, Error **errp)
++{
++#ifndef _WIN32
++    int flags = O_RDONLY | O_DIRECTORY;
++    int fd;
++
++#ifdef O_NOFOLLOW
++    flags |= O_NOFOLLOW;
++#endif
++    fd = qemu_open(directory, flags, errp);
++    if (fd < 0) {
++        return false;
++    }
++    if (qemu_fdatasync(fd) != 0) {
++        error_setg_errno(errp, errno,
++                         "Could not synchronize Xbox save directory");
++        qemu_close(fd);
++        return false;
++    }
++    qemu_close(fd);
++#endif
++    return true;
++}
++
++static bool vault_stage_pack(const char *directory, const GByteArray *bytes,
++                             char **staged_path, Error **errp)
++{
++    g_autofree char *path = g_strdup_printf(
++        "%s%coriginal-xbox-udata-migration.XXXXXX",
++        directory, G_DIR_SEPARATOR);
++    int flags = O_WRONLY | O_BINARY;
++    int fd;
++    bool success = false;
++
++#ifdef O_NOFOLLOW
++    flags |= O_NOFOLLOW;
++#endif
++    fd = g_mkstemp_full(path, flags, S_IRUSR | S_IWUSR);
++    if (fd < 0) {
++        error_setg_errno(errp, errno, "Could not stage Xbox save vault");
++        return false;
++    }
++    if (qemu_write_full(fd, bytes->data, bytes->len) != bytes->len) {
++        error_setg_errno(errp, errno, "Could not write staged Xbox save vault");
++        goto done;
++    }
++    if (qemu_fdatasync(fd) != 0) {
++        error_setg_errno(errp, errno,
++                         "Could not synchronize staged Xbox save vault");
++        goto done;
++    }
++    if (qemu_close(fd) != 0) {
++        fd = -1;
++        error_setg_errno(errp, errno, "Could not close staged Xbox save vault");
++        goto done;
++    }
++    fd = -1;
++    if (!vault_sync_directory(directory, errp)) {
++        goto done;
++    }
++    *staged_path = g_steal_pointer(&path);
++    success = true;
++done:
++    if (fd >= 0) {
++        qemu_close(fd);
++    }
++    if (!success) {
++        g_unlink(path);
++    }
++    return success;
++}
++
++static bool vault_publish_stage(const char *directory, const char *staged_path,
++                                Error **errp)
++{
++    g_autofree char *final = vault_slot_path(directory, 0U);
++    bool exists;
++
++    if (!vault_regular_file(final, &exists, errp)) {
++        return false;
++    }
++    if (exists) {
++        error_setg(errp, "Xbox save vault changed before publication");
++        return false;
++    }
++#ifdef _WIN32
++    {
++        g_autofree gunichar2 *staged_wide =
++            g_utf8_to_utf16(staged_path, -1, NULL, NULL, NULL);
++        g_autofree gunichar2 *final_wide =
++            g_utf8_to_utf16(final, -1, NULL, NULL, NULL);
++
++        if (!staged_wide || !final_wide ||
++            !MoveFileExW((LPCWSTR)staged_wide, (LPCWSTR)final_wide,
++                         MOVEFILE_WRITE_THROUGH)) {
++            error_setg_win32(errp, GetLastError(),
++                             "Could not publish migrated Xbox save vault");
++            return false;
++        }
++    }
++#else
++    if (link(staged_path, final) != 0) {
++        error_setg_errno(errp, errno,
++                         "Could not publish migrated Xbox save vault");
++        return false;
++    }
++    if (g_unlink(staged_path) != 0) {
++        int saved_errno = errno;
++
++        g_unlink(final);
++        vault_sync_directory(directory, NULL);
++        error_setg_errno(errp, saved_errno,
++                         "Could not finalize migrated Xbox save vault");
++        return false;
++    }
++#endif
++    if (!vault_sync_directory(directory, errp)) {
++        g_unlink(final);
++        vault_sync_directory(directory, NULL);
++        return false;
++    }
++    return true;
++}
++
++static bool vault_replace_stage(const char *directory, unsigned int slot,
++                                const char *staged_path, Error **errp)
++{
++    g_autofree char *final = vault_slot_path(directory, slot);
++
++#ifdef _WIN32
++    {
++        g_autofree gunichar2 *staged_wide =
++            g_utf8_to_utf16(staged_path, -1, NULL, NULL, NULL);
++        g_autofree gunichar2 *final_wide =
++            g_utf8_to_utf16(final, -1, NULL, NULL, NULL);
++
++        if (!staged_wide || !final_wide ||
++            !MoveFileExW((LPCWSTR)staged_wide, (LPCWSTR)final_wide,
++                         MOVEFILE_REPLACE_EXISTING |
++                         MOVEFILE_WRITE_THROUGH)) {
++            error_setg_win32(errp, GetLastError(),
++                             "Could not publish migrated Xbox save vault");
++            return false;
++        }
++    }
++#else
++    if (g_rename(staged_path, final) != 0) {
++        error_setg_errno(errp, errno,
++                         "Could not publish migrated Xbox save vault");
++        return false;
++    }
++#endif
++    return vault_sync_directory(directory, errp);
++}
++
++static bool vault_clear_stale_migration_files(const char *directory,
++                                               Error **errp)
++{
++    static const char prefix[] = "original-xbox-udata-migration.";
++    g_autoptr(GDir) listing = g_dir_open(directory, 0, NULL);
++    const char *name;
++    bool removed = false;
++
++    if (!listing) {
++        error_setg_errno(errp, errno,
++                         "Could not inspect Xbox save migration staging");
++        return false;
++    }
++    while ((name = g_dir_read_name(listing))) {
++        g_autofree char *path = NULL;
++
++        if (!g_str_has_prefix(name, prefix)) {
++            continue;
++        }
++        path = g_build_filename(directory, name, NULL);
++        if (g_unlink(path) != 0) {
++            error_setg_errno(errp, errno,
++                             "Could not clear stale Xbox save migration staging");
++            return false;
++        }
++        removed = true;
++    }
++    return !removed || vault_sync_directory(directory, errp);
++}
++
++static bool vault_write_atomic(const char *directory, unsigned int slot,
++                               const GByteArray *bytes, Error **errp)
++{
++    g_autofree char *final = vault_slot_path(directory, slot);
++    g_autofree char *temporary = g_strdup_printf("%s.tmp.XXXXXX", final);
++    bool exists;
++    int fd = -1;
++    int flags = O_WRONLY | O_BINARY;
++    bool success = false;
++
++    if (!vault_regular_file(final, &exists, errp)) {
++        return false;
++    }
++#ifdef O_NOFOLLOW
++    flags |= O_NOFOLLOW;
++#endif
++    fd = g_mkstemp_full(temporary, flags, S_IRUSR | S_IWUSR);
++    if (fd < 0) {
++        error_setg_errno(errp, errno, "Could not create Xbox save temporary file");
++        return false;
++    }
++    if (qemu_write_full(fd, bytes->data, bytes->len) != bytes->len) {
++        error_setg_errno(errp, errno, "Could not write Xbox save vault");
++        goto done;
++    }
++    if (qemu_fdatasync(fd) != 0) {
++        error_setg_errno(errp, errno, "Could not synchronize Xbox save vault");
++        goto done;
++    }
++    if (qemu_close(fd) != 0) {
++        fd = -1;
++        error_setg_errno(errp, errno, "Could not close Xbox save vault");
++        goto done;
++    }
++    fd = -1;
++#ifdef _WIN32
++    {
++        g_autofree gunichar2 *temporary_wide =
++            g_utf8_to_utf16(temporary, -1, NULL, NULL, NULL);
++        g_autofree gunichar2 *final_wide =
++            g_utf8_to_utf16(final, -1, NULL, NULL, NULL);
++
++        if (!temporary_wide || !final_wide ||
++            !MoveFileExW((LPCWSTR)temporary_wide, (LPCWSTR)final_wide,
++                         MOVEFILE_REPLACE_EXISTING |
++                         MOVEFILE_WRITE_THROUGH)) {
++            error_setg_win32(errp, GetLastError(),
++                             "Could not publish Xbox save vault");
++            goto done;
++        }
++    }
++#else
++    if (g_rename(temporary, final) != 0) {
++        error_setg_errno(errp, errno, "Could not publish Xbox save vault");
++        goto done;
++    }
++    if (!vault_sync_directory(directory, errp)) {
++        goto done;
++    }
++#endif
++    success = true;
++done:
++    if (fd >= 0) {
++        qemu_close(fd);
++    }
++    if (!success) {
++        g_unlink(temporary);
++    }
++    return success;
++}
++
++static bool fatx_allocate_cluster(FatxVolume *volume,
++                                  uint32_t *allocated, Error **errp)
++{
++    g_autofree uint8_t *zero = g_malloc0(volume->cluster_bytes);
++    uint32_t cluster = volume->allocation_hint;
++
++    for (uint32_t checked = 1U; checked < volume->cluster_count; checked++) {
++        uint32_t entry;
++
++        if (cluster >= volume->cluster_count) {
++            cluster = 1U;
++        }
++        if (!fatx_read_entry(volume, cluster, &entry, errp)) {
++            return false;
++        }
++        if (entry == 0U) {
++            uint32_t end = volume->fat_entry_bytes == 2U ? 0xffffU
++                                                         : 0xffffffffU;
++            if (!fatx_write_entry(volume, cluster, end, errp) ||
++                !fatx_write_cluster(volume, cluster, zero, errp)) {
++                return false;
++            }
++            *allocated = cluster;
++            volume->allocation_hint = cluster + 1U;
++            return true;
++        }
++        cluster++;
++    }
++    error_setg(errp, "Xbox E partition has no space for saved games");
++    return false;
++}
++
++static bool fatx_allocate_dirent(FatxVolume *volume,
++                                 uint32_t directory, uint64_t *offset,
++                                 Error **errp)
++{
++    g_autofree uint8_t *data = g_malloc(volume->cluster_bytes);
++    uint32_t cluster = directory;
++
++    while (true) {
++        uint32_t count = volume->cluster_bytes /
++                         FATX_DIRECTORY_ENTRY_BYTES;
++        uint64_t cluster_start;
++
++        if (!fatx_cluster_offset(volume, cluster, &cluster_start, errp) ||
++            !fatx_read_cluster(volume, cluster, data, errp)) {
++            return false;
++        }
++        for (uint32_t i = 0; i < count; i++) {
++            FatxRawDirectoryEntry *raw =
++                (void *)(data + i * FATX_DIRECTORY_ENTRY_BYTES);
++
++            if (raw->filename_len == FATX_DELETED_MARKER) {
++                *offset = cluster_start +
++                          i * FATX_DIRECTORY_ENTRY_BYTES;
++                return true;
++            }
++            if (raw->filename_len == FATX_END_MARKER ||
++                raw->filename_len == FATX_EMPTY_MARKER) {
++                *offset = cluster_start +
++                          i * FATX_DIRECTORY_ENTRY_BYTES;
++                if (i + 1U < count) {
++                    uint8_t marker = FATX_END_MARKER;
++                    if (vault_io_write(volume->io,
++                            *offset + FATX_DIRECTORY_ENTRY_BYTES,
++                            &marker, 1U, errp) < 0) {
++                        return false;
++                    }
++                }
++                return true;
++            }
++        }
++        {
++            uint32_t next;
++            bool end;
++
++            if (!fatx_next_cluster(volume, cluster, &next, &end, errp)) {
++                return false;
++            }
++            if (!end) {
++                cluster = next;
++                continue;
++            }
++            if (!fatx_allocate_cluster(volume, &next, errp) ||
++                !fatx_write_entry(volume, cluster, next, errp) ||
++                !fatx_cluster_offset(volume, next, offset, errp)) {
++                return false;
++            }
++            {
++                uint8_t marker = FATX_END_MARKER;
++                return vault_io_write(volume->io, *offset +
++                    FATX_DIRECTORY_ENTRY_BYTES, &marker, 1U, errp) == 0;
++            }
++        }
++    }
++}
++
++static bool fatx_create_entry(FatxVolume *volume,
++                              uint32_t parent_cluster, const char *name,
++                              const VaultTreeEntry *entry,
++                              const uint8_t *payload,
++                              uint32_t *created_cluster, Error **errp)
++{
++    FatxRawDirectoryEntry raw;
++    uint64_t dirent_offset;
++    size_t name_bytes = strlen(name);
++    uint32_t first = 0U;
++    uint32_t previous = 0U;
++    uint32_t remaining = entry->file_bytes;
++
++    if (!fatx_allocate_dirent(volume, parent_cluster,
++                              &dirent_offset, errp)) {
++        return false;
++    }
++    if (entry->directory || remaining > 0U) {
++        if (!fatx_allocate_cluster(volume, &first, errp)) {
++            return false;
++        }
++        previous = first;
++    }
++    while (remaining > 0U) {
++        uint32_t chunk = MIN(remaining, volume->cluster_bytes);
++        g_autofree uint8_t *cluster_data = g_malloc0(volume->cluster_bytes);
++
++        memcpy(cluster_data, payload, chunk);
++        if (!fatx_write_cluster(volume, previous, cluster_data, errp)) {
++            return false;
++        }
++        payload += chunk;
++        remaining -= chunk;
++        if (remaining > 0U) {
++            uint32_t next;
++
++            if (!fatx_allocate_cluster(volume, &next, errp) ||
++                !fatx_write_entry(volume, previous, next, errp)) {
++                return false;
++            }
++            previous = next;
++        }
++    }
++    memset(&raw, 0xff, sizeof(raw));
++    raw.filename_len = name_bytes;
++    raw.attributes = entry->attributes;
++    memcpy(raw.filename, name, name_bytes);
++    stl_le_p(raw.first_cluster, first);
++    stl_le_p(raw.file_size, entry->file_bytes);
++    memcpy(raw.timestamps, entry->timestamps, sizeof(raw.timestamps));
++    if (vault_io_write(volume->io, dirent_offset, &raw,
++                       sizeof(raw), errp) < 0) {
++        return false;
++    }
++    *created_cluster = first;
++    return true;
++}
++
++static bool fatx_ensure_root_directory(FatxVolume *volume, const char *name,
++                                       uint32_t *cluster, Error **errp)
++{
++    FatxRawDirectoryEntry root;
++    bool found;
++
++    if (!fatx_find_child(volume, volume->root_cluster, name, &root,
++                         &found, errp)) {
++        return false;
++    }
++    if (found) {
++        if ((root.attributes & FATX_DIRECTORY_ATTRIBUTE) == 0U ||
++            ldl_le_p(root.first_cluster) == 0U ||
++            ldl_le_p(root.file_size) != 0U) {
++            error_setg(errp, "Xbox save root entry is not a directory");
++            return false;
++        }
++        *cluster = ldl_le_p(root.first_cluster);
++        return true;
++    }
++    {
++        VaultTreeEntry entry = {
++            .attributes = FATX_DIRECTORY_ATTRIBUTE,
++            .directory = true,
++        };
++        return fatx_create_entry(volume, volume->root_cluster, name,
++                                 &entry, NULL, cluster, errp);
++    }
++}
++
++static bool vault_import_pack(FatxVolume *volume, const VaultPack *pack,
++                              Error **errp)
++{
++    g_autoptr(GHashTable) directories =
++        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
++    uint32_t udata_cluster = 0U;
++    uint32_t tdata_cluster = 0U;
++
++    if (pack->udata_entries > 0U) {
++        if (!fatx_ensure_root_directory(volume, "UDATA", &udata_cluster,
++                                        errp)) {
++            return false;
++        }
++        g_hash_table_insert(directories, g_strdup("udata"),
++                            GUINT_TO_POINTER(udata_cluster));
++    }
++    if (pack->tdata_entries > 0U) {
++        if (!fatx_ensure_root_directory(volume, "TDATA", &tdata_cluster,
++                                        errp)) {
++            return false;
++        }
++        g_hash_table_insert(directories, g_strdup("tdata"),
++                            GUINT_TO_POINTER(tdata_cluster));
++    }
++    for (guint i = 0; i < pack->entries->len; i++) {
++        const VaultTreeEntry *entry = g_ptr_array_index(pack->entries, i);
++        g_autofree char *parent = g_path_get_dirname(entry->folded_path);
++        g_autofree char *base = g_path_get_basename(entry->path);
++        gpointer parent_value;
++        uint32_t created;
++        const uint8_t *payload = pack->bytes->data + entry->first_cluster;
++
++        if (entry->hdd_config) {
++            if (entry->file_bytes != XBOX_SAVE_HDD_CONFIG_BYTES ||
++                vault_io_write(volume->io, 0U, payload,
++                               XBOX_SAVE_HDD_CONFIG_BYTES, errp) < 0) {
++                return false;
++            }
++            continue;
++        }
++        parent_value = g_hash_table_lookup(directories, parent);
++        if (!parent_value) {
++            error_setg(errp, "Xbox save vault has a missing parent directory");
++            return false;
++        }
++        if (!fatx_create_entry(volume, GPOINTER_TO_UINT(parent_value), base,
++                               entry, payload, &created, errp)) {
++            return false;
++        }
++        if (entry->directory) {
++            g_hash_table_insert(directories,
++                                g_strdup(entry->folded_path),
++                                GUINT_TO_POINTER(created));
++        }
++    }
++    return true;
++}
++
++bool xbox_save_vault_checkpoint(const char *directory,
++                                const XboxSaveVaultIo *io, Error **errp)
++{
++    FatxVolume volume;
++    VaultPack current = { 0 };
++    VaultPack next = { 0 };
++    unsigned int current_slot = 0U;
++    bool found;
++    uint8_t current_digest[VAULT_DIGEST_BYTES] = { 0 };
++    bool success = false;
++
++    if (!vault_directory_valid(directory, errp) ||
++        !vault_clear_stale_migration_files(directory, errp) ||
++        !fatx_volume_open(&volume, io, errp) ||
++        !vault_select(directory, &current, &current_slot, &found, errp)) {
++        goto done;
++    }
++    {
++        uint64_t next_generation;
++
++        if (found && current.generation == UINT64_MAX) {
++            error_setg(errp, "Xbox save vault generation is exhausted");
++            goto done;
++        }
++        next_generation = found ? current.generation + 1U : 1U;
++
++        if (found) {
++            vault_canonical_digest(&current, current_digest);
++        }
++        /* Keep the bounded peak to one pack while constructing its successor. */
++        vault_pack_clear(&current);
++        if (!vault_build_pack(&volume, next_generation, &next, errp)) {
++            goto done;
++        }
++    }
++    if (found) {
++        uint8_t next_digest[VAULT_DIGEST_BYTES];
++
++        vault_canonical_digest(&next, next_digest);
++        if (memcmp(current_digest, next_digest,
++                   VAULT_DIGEST_BYTES) == 0) {
++            success = true;
++            goto done;
++        }
++    }
++    if (!found && next.entries->len == 0U) {
++        success = true;
++        goto done;
++    }
++    if (!vault_write_atomic(directory, found ? 1U - current_slot : 0U,
++                            next.bytes, errp)) {
++        goto done;
++    }
++    {
++        VaultPack verify = { 0 };
++        bool exists;
++        unsigned int slot = found ? 1U - current_slot : 0U;
++        uint64_t expected_generation = next.generation;
++
++        vault_pack_clear(&next);
++
++        if (!vault_read_slot(directory, slot, &verify, &exists, errp) ||
++            !exists || verify.generation != expected_generation) {
++            if (!*errp) {
++                error_setg(errp, "Xbox save vault verification failed");
++            }
++            vault_pack_clear(&verify);
++            goto done;
++        }
++        vault_pack_clear(&verify);
++    }
++    success = true;
++done:
++    if (success) {
++        XboxSaveVaultProof proof;
++        Error *receipt_error = NULL;
++
++        if (xbox_save_vault_describe(directory, &proof, &receipt_error) &&
++            xbox_save_receipt_refresh_vault(directory, &proof,
++                                            &receipt_error)) {
++            error_free(receipt_error);
++        } else {
++            warn_report_err(receipt_error);
++        }
++    }
++    vault_pack_clear(&current);
++    vault_pack_clear(&next);
++    return success;
++}
++
++bool xbox_save_vault_import(const char *directory,
++                            const XboxSaveVaultIo *io, Error **errp)
++{
++    FatxVolume volume;
++    VaultPack selected = { 0 };
++    unsigned int slot;
++    bool found;
++    bool success = false;
++
++    if (!vault_directory_valid(directory, errp) ||
++        !vault_clear_stale_migration_files(directory, errp) ||
++        !vault_select(directory, &selected, &slot, &found, errp)) {
++        goto done;
++    }
++    if (!found) {
++        success = true;
++        goto done;
++    }
++    if (!fatx_volume_open(&volume, io, errp) ||
++        !vault_import_pack(&volume, &selected, errp)) {
++        goto done;
++    }
++    success = true;
++done:
++    vault_pack_clear(&selected);
++    return success;
++}
++
++bool xbox_save_vault_validate(const char *directory, Error **errp)
++{
++    VaultPack selected = { 0 };
++    unsigned int slot;
++    bool found;
++    bool success;
++
++    if (!vault_directory_valid(directory, errp) ||
++        !vault_select(directory, &selected, &slot, &found, errp)) {
++        vault_pack_clear(&selected);
++        return false;
++    }
++    success = found;
++    if (!found) {
++        error_setg(errp, "Xbox save vault is empty");
++    }
++    vault_pack_clear(&selected);
++    return success;
++}
++
++bool xbox_save_vault_describe(const char *directory,
++                              XboxSaveVaultProof *proof, Error **errp)
++{
++    bool found;
++
++    if (!xbox_save_vault_try_describe(directory, proof, &found, errp)) {
++        return false;
++    }
++    if (!found) {
++        error_setg(errp, "Xbox save vault is empty");
++        return false;
++    }
++    return true;
++}
++
++bool xbox_save_vault_try_describe(const char *directory,
++                                  XboxSaveVaultProof *proof, bool *found,
++                                  Error **errp)
++{
++    VaultPack selected = { 0 };
++    unsigned int slot;
++    bool success = false;
++
++    if (!proof || !found) {
++        error_setg(errp, "Xbox save vault proof is missing");
++        return false;
++    }
++    memset(proof, 0, sizeof(*proof));
++    *found = false;
++    if (!vault_directory_valid(directory, errp) ||
++        !vault_select(directory, &selected, &slot, found, errp)) {
++        goto done;
++    }
++    if (*found) {
++        vault_proof_from_pack(&selected, proof);
++        proof->vault_reopened = true;
++    }
++    success = true;
++done:
++    vault_pack_clear(&selected);
++    return success;
++}
++
++static void vault_proof_from_pack(const VaultPack *pack,
++                                  XboxSaveVaultProof *proof)
++{
++    proof->vault_version = pack->version;
++    proof->generation = pack->generation;
++    proof->entries = pack->entries->len;
++    proof->logical_bytes = pack->logical_bytes;
++    vault_canonical_digest(pack, proof->tree_sha256);
++    proof->policy_revision = pack->policy_revision;
++    memcpy(proof->policy_sha256, pack->policy_sha256,
++           sizeof(proof->policy_sha256));
++    proof->udata_entries = pack->udata_entries;
++    proof->udata_logical_bytes = pack->udata_logical_bytes;
++    proof->tdata_entries = pack->tdata_entries;
++    proof->tdata_logical_bytes = pack->tdata_logical_bytes;
++    proof->hdd_config_bytes = pack->hdd_config_bytes;
++    memcpy(proof->hdd_config_sha256, pack->hdd_config_sha256,
++           sizeof(proof->hdd_config_sha256));
++    proof->unclassified_tdata_entries =
++        pack->unclassified_tdata_entries;
++    proof->unclassified_tdata_bytes = pack->unclassified_tdata_bytes;
++    memcpy(proof->unclassified_tdata_sha256,
++           pack->unclassified_tdata_sha256,
++           sizeof(proof->unclassified_tdata_sha256));
++}
++
++bool xbox_save_vault_migrate(const char *directory,
++                             const XboxSaveVaultIo *source,
++                             const XboxSaveVaultIo *clean,
++                             XboxSaveVaultSourceVerify *verify_source,
++                             void *verify_opaque,
++                             XboxSaveVaultProof *proof,
++                             bool *source_projection_complete,
++                             Error **errp)
++{
++    XboxSaveVaultLock lock = XBOX_SAVE_VAULT_LOCK_INIT;
++    FatxVolume source_volume;
++    FatxVolume clean_volume;
++    VaultPack current = { 0 };
++    VaultPack projected = { 0 };
++    VaultPack merged = { 0 };
++    VaultPack staged = { 0 };
++    VaultPack roundtrip = { 0 };
++    g_autofree char *staged_path = NULL;
++    uint8_t current_digest[VAULT_DIGEST_BYTES] = { 0 };
++    uint8_t staged_digest[VAULT_DIGEST_BYTES];
++    uint8_t roundtrip_digest[VAULT_DIGEST_BYTES];
++    uint64_t current_generation = 0U;
++    unsigned int current_slot;
++    bool current_found;
++    bool staged_exists;
++    bool vault_changed = true;
++    bool published = false;
++    bool success = false;
++
++    if (!proof || !source_projection_complete || !verify_source) {
++        error_setg(errp, "Xbox save migration proof contract is missing");
++        return false;
++    }
++    memset(proof, 0, sizeof(*proof));
++    *source_projection_complete = false;
++    if (!vault_directory_valid(directory, errp) ||
++        !xbox_save_vault_lock(directory, &lock, errp) ||
++        !vault_clear_stale_migration_files(directory, errp) ||
++        !vault_select(directory, &current, &current_slot,
++                      &current_found, errp)) {
++        goto done;
++    }
++    if (current_found) {
++        vault_canonical_digest(&current, current_digest);
++        current_generation = current.generation;
++    }
++
++    if (!fatx_volume_open(&source_volume, source, errp) ||
++        !vault_build_pack(&source_volume, 1U, &projected, errp)) {
++        goto done;
++    }
++    if (current_found) {
++        if (!vault_build_merged_pack(&current, &projected, &merged,
++                                     &vault_changed,
++                                     source_projection_complete, errp)) {
++            goto done;
++        }
++        vault_proof_from_pack(&merged, proof);
++        if (!vault_stage_pack(directory, merged.bytes,
++                              &staged_path, errp)) {
++            goto done;
++        }
++    } else {
++        *source_projection_complete = true;
++        vault_proof_from_pack(&projected, proof);
++        if (!vault_stage_pack(directory, projected.bytes,
++                              &staged_path, errp)) {
++            goto done;
++        }
++    }
++    vault_pack_clear(&current);
++    vault_pack_clear(&projected);
++    vault_pack_clear(&merged);
++    if (!vault_read_path(staged_path, &staged, &staged_exists, errp) ||
++        !staged_exists) {
++        if (!*errp) {
++            error_setg(errp, "Staged Xbox save vault could not be reopened");
++        }
++        goto done;
++    }
++    proof->vault_reopened = true;
++    vault_canonical_digest(&staged, staged_digest);
++    if (staged.entries->len != proof->entries ||
++        staged.logical_bytes != proof->logical_bytes ||
++        memcmp(staged_digest, proof->tree_sha256,
++               VAULT_DIGEST_BYTES) != 0) {
++        error_setg(errp, "Staged Xbox save vault changed after reopening");
++        goto done;
++    }
++    if (!fatx_volume_open(&clean_volume, clean, errp) ||
++        !vault_import_pack(&clean_volume, &staged, errp)) {
++        goto done;
++    }
++    vault_pack_clear(&staged);
++    proof->reprojected = true;
++    if (!vault_build_pack(&clean_volume, 1U, &roundtrip, errp)) {
++        goto done;
++    }
++    vault_canonical_digest(&roundtrip, roundtrip_digest);
++    if (roundtrip.entries->len != proof->entries ||
++        roundtrip.logical_bytes != proof->logical_bytes ||
++        memcmp(roundtrip_digest, proof->tree_sha256,
++               VAULT_DIGEST_BYTES) != 0) {
++        error_setg(errp, "Xbox save migration roundtrip does not match");
++        goto done;
++    }
++    proof->roundtrip_verified = true;
++    vault_pack_clear(&roundtrip);
++    if (!verify_source(verify_opaque, errp)) {
++        goto done;
++    }
++    if (!current_found) {
++        if (!vault_publish_stage(directory, staged_path, errp)) {
++            goto done;
++        }
++        published = true;
++    } else if (vault_changed) {
++        VaultPack latest = { 0 };
++        unsigned int latest_slot;
++        bool latest_found;
++        uint8_t latest_digest[VAULT_DIGEST_BYTES];
++
++        if (!vault_select(directory, &latest, &latest_slot,
++                          &latest_found, errp) || !latest_found) {
++            if (!*errp) {
++                error_setg(errp, "Xbox save vault changed before publication");
++            }
++            vault_pack_clear(&latest);
++            goto done;
++        }
++        vault_canonical_digest(&latest, latest_digest);
++        if (latest_slot != current_slot ||
++            latest.generation != current_generation ||
++            memcmp(latest_digest, current_digest,
++                   sizeof(latest_digest)) != 0) {
++            vault_pack_clear(&latest);
++            error_setg(errp, "Xbox save vault changed before publication");
++            goto done;
++        }
++        vault_pack_clear(&latest);
++        if (!vault_replace_stage(directory, 1U - current_slot,
++                                 staged_path, errp)) {
++            goto done;
++        }
++        published = true;
++    }
++    success = true;
++done:
++    vault_pack_clear(&current);
++    vault_pack_clear(&projected);
++    vault_pack_clear(&merged);
++    vault_pack_clear(&staged);
++    vault_pack_clear(&roundtrip);
++    if (staged_path && !published) {
++        g_unlink(staged_path);
++    }
++    xbox_save_vault_unlock(&lock);
++    return success;
++}
++
++bool xbox_save_vault_validate_roundtrip(const char *directory,
++                                        const XboxSaveVaultIo *clean,
++                                        XboxSaveVaultProof *proof,
++                                        Error **errp)
++{
++    XboxSaveVaultLock lock = XBOX_SAVE_VAULT_LOCK_INIT;
++    FatxVolume clean_volume;
++    VaultPack selected = { 0 };
++    VaultPack baseline = { 0 };
++    VaultPack expected = { 0 };
++    VaultPack roundtrip = { 0 };
++    uint8_t roundtrip_digest[VAULT_DIGEST_BYTES];
++    unsigned int slot;
++    bool found;
++    bool legacy;
++    bool source_projection_complete;
++    bool success = false;
++
++    if (!proof) {
++        error_setg(errp, "Xbox save validation proof is missing");
++        return false;
++    }
++    memset(proof, 0, sizeof(*proof));
++    if (!vault_directory_valid(directory, errp) ||
++        !xbox_save_vault_lock(directory, &lock, errp) ||
++        !vault_select(directory, &selected, &slot, &found, errp)) {
++        goto done;
++    }
++    if (!found) {
++        error_setg(errp, "Xbox save vault is empty");
++        goto done;
++    }
++    legacy = selected.version == VAULT_VERSION_V1;
++    if (!fatx_volume_open(&clean_volume, clean, errp)) {
++        goto done;
++    }
++    if (legacy) {
++        bool changed;
++
++        if (!vault_build_pack(&clean_volume, 1U, &baseline, errp) ||
++            !vault_build_merged_pack(&selected, &baseline, &expected,
++                                     &changed,
++                                     &source_projection_complete, errp)) {
++            goto done;
++        }
++        vault_proof_from_pack(&expected, proof);
++    } else {
++        vault_proof_from_pack(&selected, proof);
++    }
++    proof->vault_reopened = true;
++    if (!vault_import_pack(&clean_volume, &selected, errp)) {
++        goto done;
++    }
++    proof->reprojected = true;
++    if (!vault_build_pack(&clean_volume, 1U, &roundtrip, errp)) {
++        goto done;
++    }
++    vault_canonical_digest(&roundtrip, roundtrip_digest);
++    if (roundtrip.entries->len != proof->entries ||
++        roundtrip.logical_bytes != proof->logical_bytes ||
++        memcmp(roundtrip_digest, proof->tree_sha256,
++               VAULT_DIGEST_BYTES) != 0) {
++        const VaultPack *reference = legacy ? &expected : &selected;
++        size_t difference = 0U;
++
++        while (difference < reference->bytes->len &&
++               difference < roundtrip.bytes->len &&
++               ((difference >= 16U && difference < 24U) ||
++                reference->bytes->data[difference] ==
++                    roundtrip.bytes->data[difference])) {
++            difference++;
++        }
++        error_setg(errp,
++                   "Xbox save vault validation roundtrip does not match "
++                   "(expected %u entries/%" PRIu64 " bytes, observed %u/%" PRIu64
++                   ", first difference %zu)",
++                   proof->entries, proof->logical_bytes,
++                   roundtrip.entries->len, roundtrip.logical_bytes,
++                   difference);
++        goto done;
++    }
++    proof->roundtrip_verified = true;
++    success = true;
++done:
++    vault_pack_clear(&selected);
++    vault_pack_clear(&baseline);
++    vault_pack_clear(&expected);
++    vault_pack_clear(&roundtrip);
++    xbox_save_vault_unlock(&lock);
++    return success;
++}
+diff --git a/include/block/xbox-save-migration.h b/include/block/xbox-save-migration.h
+new file mode 100644
+index 0000000..bd67052
+--- /dev/null
++++ b/include/block/xbox-save-migration.h
+@@ -0,0 +1,81 @@
++/*
++ * Original Xbox legacy HDD save migration
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef XBOX_SAVE_MIGRATION_H
++#define XBOX_SAVE_MIGRATION_H
++
++#include "block/xbox-save-vault.h"
++
++typedef struct XboxSaveMigrationRequest {
++    const char *legacy_hdd;
++    const char *clean_hdd;
++    const char *save_vault;
++    uint64_t expected_source_bytes;
++    uint8_t expected_source_sha256[32];
++    bool expected_source_sha256_valid;
++} XboxSaveMigrationRequest;
++
++typedef struct XboxSaveMigrationProof {
++    uint64_t source_bytes;
++    uint8_t source_identity_sha256[32];
++    uint8_t source_sha256[32];
++    uint64_t clean_bytes;
++    uint8_t clean_sha256[32];
++    XboxSaveVaultProof vault;
++    bool source_writes;
++    bool source_hashed;
++    bool anonymous_cow;
++    bool clean_backing;
++    bool receipt_reused;
++    bool source_projection_complete;
++    bool source_removal_safe;
++    bool source_removed;
++} XboxSaveMigrationProof;
++
++typedef struct XboxSaveMigrationSourceSnapshot {
++    void *opaque;
++    uint64_t bytes;
++    uint8_t identity_sha256[32];
++    uint8_t sha256[32];
++} XboxSaveMigrationSourceSnapshot;
++
++#define XBOX_SAVE_MIGRATION_SOURCE_SNAPSHOT_INIT { 0 }
++
++bool xbox_save_migration_source_snapshot_open(
++    const char *path, XboxSaveMigrationSourceSnapshot *snapshot,
++    Error **errp);
++bool xbox_save_migration_source_snapshot_verify(
++    XboxSaveMigrationSourceSnapshot *snapshot, Error **errp);
++void xbox_save_migration_source_snapshot_close(
++    XboxSaveMigrationSourceSnapshot *snapshot);
++
++/*
++ * Block modules and the main AIO context must be initialized by the caller.
++ * A fresh migration removes the exact legacy source only after a zero
++ * unclassified-TDATA proof. A matching receipt with unclassified TDATA skips
++ * the source hash and preserves the source. A zero-unclassified receipt never
++ * authorizes removal; if its source still exists, migration is freshly
++ * reverified before completing removal.
++ */
++bool xbox_save_migration_execute(const XboxSaveMigrationRequest *request,
++                                 XboxSaveMigrationProof *proof,
++                                 Error **errp);
++
++/*
++ * Performs a forced-fresh recovery migration and removes the exact source only after
++ * full source re-verification, clean-COW roundtrip verification, and a zero
++ * unclassified-TDATA proof. A receipt can never authorize this operation.
++ */
++bool xbox_save_migration_execute_and_remove(
++    const XboxSaveMigrationRequest *request, XboxSaveMigrationProof *proof,
++    Error **errp);
++
++bool xbox_save_vault_validation_execute(const char *save_vault,
++                                        const char *clean_hdd,
++                                        XboxSaveVaultProof *proof,
++                                        Error **errp);
++
++#endif
+diff --git a/include/block/xbox-save-receipt.h b/include/block/xbox-save-receipt.h
+new file mode 100644
+index 0000000..8323c14
+--- /dev/null
++++ b/include/block/xbox-save-receipt.h
+@@ -0,0 +1,41 @@
++/*
++ * Original Xbox migration receipt
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef XBOX_SAVE_RECEIPT_H
++#define XBOX_SAVE_RECEIPT_H
++
++#include "block/xbox-save-vault.h"
++
++#define XBOX_SAVE_RECEIPT_IDENTITY_BYTES 32U
++
++typedef struct XboxSaveReceipt {
++    uint8_t source_identity_sha256[XBOX_SAVE_RECEIPT_IDENTITY_BYTES];
++    uint64_t source_bytes;
++    uint8_t source_sha256[32];
++    uint64_t clean_bytes;
++    uint8_t clean_sha256[32];
++    uint32_t capability_schema;
++    uint32_t vault_format_version;
++    uint32_t policy_revision;
++    uint8_t policy_sha256[XBOX_SAVE_POLICY_DIGEST_BYTES];
++    uint64_t vault_generation;
++    uint8_t vault_tree_sha256[XBOX_SAVE_VAULT_TREE_DIGEST_BYTES];
++    uint32_t vault_entries;
++    uint64_t vault_logical_bytes;
++    uint32_t unclassified_tdata_entries;
++    uint64_t unclassified_tdata_bytes;
++    uint8_t unclassified_tdata_sha256[XBOX_SAVE_VAULT_TREE_DIGEST_BYTES];
++} XboxSaveReceipt;
++
++bool xbox_save_receipt_load(const char *directory, XboxSaveReceipt *receipt,
++                            bool *exists, bool *valid, Error **errp);
++bool xbox_save_receipt_store(const char *directory,
++                             const XboxSaveReceipt *receipt, Error **errp);
++bool xbox_save_receipt_refresh_vault(const char *directory,
++                                     const XboxSaveVaultProof *vault,
++                                     Error **errp);
++
++#endif
+diff --git a/include/block/xbox-save-vault.h b/include/block/xbox-save-vault.h
+new file mode 100644
+index 0000000..e319fb2
+--- /dev/null
++++ b/include/block/xbox-save-vault.h
+@@ -0,0 +1,114 @@
++/*
++ * Logical Original Xbox save vault
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef XBOX_SAVE_VAULT_H
++#define XBOX_SAVE_VAULT_H
++
++#include "qapi/error.h"
++
++#include <stdint.h>
++
++#include "block/xbox-save-policy.h"
++
++#define XBOX_SAVE_VAULT_CAPABILITY_SCHEMA 3U
++#define XBOX_SAVE_VAULT_ENVIRONMENT "GDOX_XEMU_SAVE_VAULT"
++#define XBOX_SAVE_VAULT_FORMAT "logical-files-v2"
++#define XBOX_SAVE_VAULT_TREE_DIGEST_BYTES 32U
++#define XBOX_SAVE_HDD_CONFIG_BYTES UINT64_C(0x80000)
++
++typedef int XboxSaveVaultRead(void *opaque, uint64_t offset,
++                              void *buffer, size_t bytes);
++typedef int XboxSaveVaultWrite(void *opaque, uint64_t offset,
++                               const void *buffer, size_t bytes);
++
++typedef struct XboxSaveVaultIo {
++    void *opaque;
++    XboxSaveVaultRead *read;
++    XboxSaveVaultWrite *write;
++    uint64_t disk_bytes;
++} XboxSaveVaultIo;
++
++typedef struct XboxSaveVaultLock {
++    int fd;
++} XboxSaveVaultLock;
++
++typedef struct XboxSaveVaultProof {
++    uint32_t vault_version;
++    uint64_t generation;
++    uint32_t entries;
++    uint64_t logical_bytes;
++    uint8_t tree_sha256[XBOX_SAVE_VAULT_TREE_DIGEST_BYTES];
++    uint32_t policy_revision;
++    uint8_t policy_sha256[XBOX_SAVE_POLICY_DIGEST_BYTES];
++    uint32_t udata_entries;
++    uint64_t udata_logical_bytes;
++    uint32_t tdata_entries;
++    uint64_t tdata_logical_bytes;
++    uint64_t hdd_config_bytes;
++    uint8_t hdd_config_sha256[XBOX_SAVE_VAULT_TREE_DIGEST_BYTES];
++    uint32_t unclassified_tdata_entries;
++    uint64_t unclassified_tdata_bytes;
++    uint8_t unclassified_tdata_sha256[XBOX_SAVE_VAULT_TREE_DIGEST_BYTES];
++    bool vault_reopened;
++    bool reprojected;
++    bool roundtrip_verified;
++} XboxSaveVaultProof;
++
++typedef bool XboxSaveVaultSourceVerify(void *opaque, Error **errp);
++
++#define XBOX_SAVE_VAULT_LOCK_INIT { .fd = -1 }
++
++/* One managed xemu process owns a vault at a time. */
++bool xbox_save_vault_lock(const char *directory, XboxSaveVaultLock *lock,
++                          Error **errp);
++void xbox_save_vault_unlock(XboxSaveVaultLock *lock);
++
++/*
++ * Imports the newest valid generation into the volatile HDD. A missing vault
++ * is an empty save set. The complete pack is validated before the first guest
++ * write.
++ */
++bool xbox_save_vault_import(const char *directory,
++                            const XboxSaveVaultIo *io, Error **errp);
++
++/*
++ * Atomically checkpoints logical E:\UDATA plus only reviewed, positive-policy
++ * E:\TDATA save/profile paths. Raw FAT entries, unused clusters, directory
++ * slack, unclassified TDATA, and every other partition are excluded.
++ */
++bool xbox_save_vault_checkpoint(const char *directory,
++                                const XboxSaveVaultIo *io, Error **errp);
++
++/* Validates the newest generation without opening or modifying an HDD. */
++bool xbox_save_vault_validate(const char *directory, Error **errp);
++bool xbox_save_vault_describe(const char *directory,
++                              XboxSaveVaultProof *proof, Error **errp);
++bool xbox_save_vault_try_describe(const char *directory,
++                                  XboxSaveVaultProof *proof, bool *found,
++                                  Error **errp);
++
++/*
++ * Stages a typed configuration/UDATA/reviewed-TDATA projection, reopens it,
++ * imports it into a clean anonymous HDD view, and compares a fresh projection
++ * before publication. Missing source entries are merged without replacing
++ * existing entries. source_projection_complete is false when a same-path
++ * source entry differs from the retained vault entry.
++ */
++bool xbox_save_vault_migrate(const char *directory,
++                             const XboxSaveVaultIo *source,
++                             const XboxSaveVaultIo *clean,
++                             XboxSaveVaultSourceVerify *verify_source,
++                             void *verify_opaque,
++                             XboxSaveVaultProof *proof,
++                             bool *source_projection_complete,
++                             Error **errp);
++
++bool xbox_save_vault_validate_roundtrip(const char *directory,
++                                        const XboxSaveVaultIo *clean,
++                                        XboxSaveVaultProof *proof,
++                                        Error **errp);
++
++#endif
+diff --git a/include/ui/xemu-gdox-save-operation.h b/include/ui/xemu-gdox-save-operation.h
+new file mode 100644
+index 0000000..3b9d9b9
+--- /dev/null
++++ b/include/ui/xemu-gdox-save-operation.h
+@@ -0,0 +1,16 @@
++/*
++ * GDOX headless save maintenance
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef XEMU_GDOX_SAVE_OPERATION_H
++#define XEMU_GDOX_SAVE_OPERATION_H
++
++#include "qapi/error.h"
++#include "ui/xemu-gdox-runtime.h"
++
++bool xemu_gdox_save_operation_run(const XemuGdoxLaunch *launch,
++                                  char **result, Error **errp);
++
++#endif
+diff --git a/ui/xemu-gdox-save-operation.c b/ui/xemu-gdox-save-operation.c
+new file mode 100644
+index 0000000..2f07554
+--- /dev/null
++++ b/ui/xemu-gdox-save-operation.c
+@@ -0,0 +1,165 @@
++/*
++ * GDOX headless save maintenance
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "block/block-global-state.h"
++#include "block/xbox-save-migration.h"
++#include "crypto/init.h"
++#include "qemu/main-loop.h"
++#include "system/system.h"
++#include "ui/xemu-gdox-save-operation.h"
++
++static char *xemu_gdox_digest_hex(const uint8_t digest[32])
++{
++    char *hex = g_malloc(65U);
++
++    for (unsigned int i = 0; i < 32U; i++) {
++        snprintf(hex + i * 2U, 3U, "%02x", digest[i]);
++    }
++    return hex;
++}
++
++bool xemu_gdox_save_operation_run(const XemuGdoxLaunch *launch,
++                                  char **result, Error **errp)
++{
++    XboxSaveVaultProof vault;
++    g_autofree char *tree_sha = NULL;
++
++    *result = NULL;
++    if (qcrypto_init(errp) < 0) {
++        return false;
++    }
++    qemu_init_subsystems();
++    if (qemu_init_main_loop(errp) < 0) {
++        return false;
++    }
++    if (launch->mode == XEMU_GDOX_LAUNCH_MIGRATE ||
++        launch->mode == XEMU_GDOX_LAUNCH_MIGRATE_REMOVE) {
++        XboxSaveMigrationProof proof;
++        const char *operation = launch->mode == XEMU_GDOX_LAUNCH_MIGRATE_REMOVE
++            ? "xbox-hdd-save-migration-removal"
++            : "xbox-hdd-save-migration";
++        g_autofree char *source_identity = NULL;
++        g_autofree char *source_sha = NULL;
++        g_autofree char *clean_sha = NULL;
++        g_autofree char *policy_sha = NULL;
++        g_autofree char *config_sha = NULL;
++        g_autofree char *unclassified_sha = NULL;
++
++        if (launch->mode == XEMU_GDOX_LAUNCH_MIGRATE_REMOVE
++                ? !xbox_save_migration_execute_and_remove(
++                      &launch->migration, &proof, errp)
++                : !xbox_save_migration_execute(
++                      &launch->migration, &proof, errp)) {
++            return false;
++        }
++        source_identity = xemu_gdox_digest_hex(
++            proof.source_identity_sha256);
++        source_sha = xemu_gdox_digest_hex(proof.source_sha256);
++        clean_sha = xemu_gdox_digest_hex(proof.clean_sha256);
++        tree_sha = xemu_gdox_digest_hex(proof.vault.tree_sha256);
++        policy_sha = xemu_gdox_digest_hex(proof.vault.policy_sha256);
++        config_sha = xemu_gdox_digest_hex(proof.vault.hdd_config_sha256);
++        unclassified_sha = xemu_gdox_digest_hex(
++            proof.vault.unclassified_tdata_sha256);
++        *result = g_strdup_printf(
++            "{\"schema\":3,\"operation\":\"%s\","
++            "\"source_writes\":%s,\"source_bytes\":%" PRIu64 ","
++            "\"source_identity_sha256\":\"%s\","
++            "\"source_sha256\":\"%s\",\"source_hashed\":%s,"
++            "\"source_projection_complete\":%s,"
++            "\"clean_bytes\":%" PRIu64 ",\"clean_sha256\":\"%s\","
++            "\"receipt_reused\":%s,\"source_removal_safe\":%s,"
++            "\"source_removed\":%s,"
++            "\"vault_version\":%u,\"generation\":%" PRIu64 ","
++            "\"scope\":\"hdd-config-v1+E:\\\\UDATA+reviewed-E:\\\\TDATA\","
++            "\"format\":\"logical-files-v2\",\"entries\":%u,"
++            "\"logical_bytes\":%" PRIu64 ",\"tree_sha256\":\"%s\","
++            "\"policy_revision\":%u,\"policy_sha256\":\"%s\","
++            "\"udata_entries\":%u,\"udata_logical_bytes\":%" PRIu64 ","
++            "\"tdata_entries\":%u,\"tdata_logical_bytes\":%" PRIu64 ","
++            "\"hdd_config_format\":\"hdd-config-v1\","
++            "\"hdd_config_bytes\":%" PRIu64 ","
++            "\"hdd_config_sha256\":\"%s\","
++            "\"unclassified_tdata_entries\":%u,"
++            "\"unclassified_tdata_bytes\":%" PRIu64 ","
++            "\"unclassified_tdata_sha256\":\"%s\","
++            "\"vault_reopened\":%s,\"anonymous_cow\":%s,"
++            "\"clean_backing\":%s,\"reprojected\":%s,"
++            "\"roundtrip_verified\":%s}\n",
++            operation, proof.source_writes ? "true" : "false",
++            proof.source_bytes, source_identity, source_sha,
++            proof.source_hashed ? "true" : "false",
++            proof.source_projection_complete ? "true" : "false",
++            proof.clean_bytes, clean_sha,
++            proof.receipt_reused ? "true" : "false",
++            proof.source_removal_safe ? "true" : "false",
++            proof.source_removed ? "true" : "false",
++            proof.vault.vault_version, proof.vault.generation,
++            proof.vault.entries, proof.vault.logical_bytes, tree_sha,
++            proof.vault.policy_revision, policy_sha,
++            proof.vault.udata_entries, proof.vault.udata_logical_bytes,
++            proof.vault.tdata_entries, proof.vault.tdata_logical_bytes,
++            proof.vault.hdd_config_bytes, config_sha,
++            proof.vault.unclassified_tdata_entries,
++            proof.vault.unclassified_tdata_bytes, unclassified_sha,
++            proof.vault.vault_reopened ? "true" : "false",
++            proof.anonymous_cow ? "true" : "false",
++            proof.clean_backing ? "true" : "false",
++            proof.vault.reprojected ? "true" : "false",
++            proof.vault.roundtrip_verified ? "true" : "false");
++        return true;
++    }
++    if (launch->mode == XEMU_GDOX_LAUNCH_VALIDATE) {
++        g_autofree char *policy_sha = NULL;
++        g_autofree char *config_sha = NULL;
++        g_autofree char *unclassified_sha = NULL;
++        if (!xbox_save_vault_validation_execute(
++                launch->validation_vault, launch->validation_clean_hdd,
++                &vault, errp)) {
++            return false;
++        }
++        tree_sha = xemu_gdox_digest_hex(vault.tree_sha256);
++        policy_sha = xemu_gdox_digest_hex(vault.policy_sha256);
++        config_sha = xemu_gdox_digest_hex(vault.hdd_config_sha256);
++        unclassified_sha = xemu_gdox_digest_hex(
++            vault.unclassified_tdata_sha256);
++        *result = g_strdup_printf(
++            "{\"schema\":3,\"operation\":\"xbox-save-vault-validation\","
++            "\"vault_version\":%u,\"generation\":%" PRIu64 ","
++            "\"scope\":\"hdd-config-v1+E:\\\\UDATA+reviewed-E:\\\\TDATA\","
++            "\"format\":\"logical-files-v2\","
++            "\"entries\":%u,\"logical_bytes\":%" PRIu64 ","
++            "\"tree_sha256\":\"%s\","
++            "\"policy_revision\":%u,\"policy_sha256\":\"%s\","
++            "\"udata_entries\":%u,\"udata_logical_bytes\":%" PRIu64 ","
++            "\"tdata_entries\":%u,\"tdata_logical_bytes\":%" PRIu64 ","
++            "\"hdd_config_format\":\"hdd-config-v1\","
++            "\"hdd_config_bytes\":%" PRIu64 ","
++            "\"hdd_config_sha256\":\"%s\","
++            "\"unclassified_tdata_entries\":%u,"
++            "\"unclassified_tdata_bytes\":%" PRIu64 ","
++            "\"unclassified_tdata_sha256\":\"%s\","
++            "\"vault_reopened\":%s,"
++            "\"anonymous_cow\":true,\"clean_backing\":true,"
++            "\"reprojected\":%s,\"roundtrip_verified\":%s}\n",
++            vault.vault_version, vault.generation,
++            vault.entries, vault.logical_bytes, tree_sha,
++            vault.policy_revision, policy_sha,
++            vault.udata_entries, vault.udata_logical_bytes,
++            vault.tdata_entries, vault.tdata_logical_bytes,
++            vault.hdd_config_bytes, config_sha,
++            vault.unclassified_tdata_entries,
++            vault.unclassified_tdata_bytes, unclassified_sha,
++            vault.vault_reopened ? "true" : "false",
++            vault.reprojected ? "true" : "false",
++            vault.roundtrip_verified ? "true" : "false");
++        return true;
++    }
++    error_setg(errp, "GDOX save operation mode is invalid");
++    return false;
++}

@@ -1,0 +1,63 @@
+diff --git a/android/app/src/main/cpp/CMakeLists.txt b/android/app/src/main/cpp/CMakeLists.txt
+index 8f5944779..4c81245d7 100644
+--- a/android/app/src/main/cpp/CMakeLists.txt
++++ b/android/app/src/main/cpp/CMakeLists.txt
+@@ -113,6 +113,7 @@ if(XEMU_ENABLE_VULKAN)
+     GIT_REPOSITORY "https://github.com/KhronosGroup/SPIRV-Reflect"
+     GIT_TAG "${SPIRV_REFLECT_GIT_REV}"
+     GIT_SHALLOW TRUE
++    GIT_SUBMODULES ""
+   )
+   FetchContent_MakeAvailable(spirv_reflect)
+ 
+diff --git a/android/app/src/main/cpp/patch_glib.cmake b/android/app/src/main/cpp/patch_glib.cmake
+index 954685239..104375523 100644
+--- a/android/app/src/main/cpp/patch_glib.cmake
++++ b/android/app/src/main/cpp/patch_glib.cmake
+@@ -4,6 +4,46 @@ endif()
+ 
+ string(REPLACE "\"" "" GLIB_SOURCE_DIR "${GLIB_SOURCE_DIR}")
+ 
++function(gdox_pin_glib_wrap name original_revision pinned_revision)
++  set(wrap_file "${GLIB_SOURCE_DIR}/subprojects/${name}.wrap")
++  if(NOT EXISTS "${wrap_file}")
++    message(FATAL_ERROR "GLib subproject wrap not found at ${wrap_file}")
++  endif()
++  file(READ "${wrap_file}" wrap_contents)
++  string(FIND
++    "${wrap_contents}"
++    "revision=${pinned_revision}"
++    pinned_revision_offset
++  )
++  if(NOT pinned_revision_offset EQUAL -1)
++    return()
++  endif()
++  string(FIND
++    "${wrap_contents}"
++    "revision=${original_revision}"
++    original_revision_offset
++  )
++  if(original_revision_offset EQUAL -1)
++    message(FATAL_ERROR
++      "GLib ${name} wrap does not contain the expected revision"
++    )
++  endif()
++  string(REPLACE
++    "revision=${original_revision}"
++    "revision=${pinned_revision}"
++    wrap_contents
++    "${wrap_contents}"
++  )
++  file(WRITE "${wrap_file}" "${wrap_contents}")
++endfunction()
++
++gdox_pin_glib_wrap(
++  libffi meson 83d0cfd00d7d37af4b4349511d29f1f0512621b3
++)
++gdox_pin_glib_wrap(
++  proxy-libintl 0.1 e792f40de9b2d5c660003276c022ba8d3038fe62
++)
++
+ set(MESON_FILE "${GLIB_SOURCE_DIR}/glib/meson.build")
+ if(NOT EXISTS "${MESON_FILE}")
+   message(FATAL_ERROR "glib meson.build not found at ${MESON_FILE}")

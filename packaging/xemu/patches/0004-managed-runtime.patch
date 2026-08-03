@@ -1,0 +1,336 @@
+diff --git a/include/ui/xemu-gdox-runtime.h b/include/ui/xemu-gdox-runtime.h
+new file mode 100644
+index 0000000..5844e2e
+--- /dev/null
++++ b/include/ui/xemu-gdox-runtime.h
+@@ -0,0 +1,40 @@
++/*
++ * GDOX runtime and save maintenance modes
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef XEMU_GDOX_RUNTIME_H
++#define XEMU_GDOX_RUNTIME_H
++
++#include "block/xbox-save-migration.h"
++
++#define XEMU_GDOX_RUNTIME_ARGUMENT "--gdox-runtime"
++#define XEMU_GDOX_MIGRATE_ARGUMENT "--gdox-migrate-hdd"
++#define XEMU_GDOX_REMOVE_SOURCE_ARGUMENT "--gdox-remove-migrated-source"
++#define XEMU_GDOX_VALIDATE_ARGUMENT "--gdox-validate-save-vault"
++#define XEMU_GDOX_CLEAN_HDD_ARGUMENT "--gdox-clean-hdd"
++#define XEMU_GDOX_SAVE_VAULT_ARGUMENT "--gdox-save-vault"
++#define XEMU_GDOX_EXPECTED_BYTES_ARGUMENT "--gdox-expected-source-bytes"
++#define XEMU_GDOX_EXPECTED_SHA_ARGUMENT "--gdox-expected-source-sha256"
++#define XEMU_GDOX_SAVE_VAULT_ENVIRONMENT XBOX_SAVE_VAULT_ENVIRONMENT
++
++typedef enum XemuGdoxLaunchMode {
++    XEMU_GDOX_LAUNCH_NORMAL,
++    XEMU_GDOX_LAUNCH_RUNTIME,
++    XEMU_GDOX_LAUNCH_MIGRATE,
++    XEMU_GDOX_LAUNCH_MIGRATE_REMOVE,
++    XEMU_GDOX_LAUNCH_VALIDATE,
++} XemuGdoxLaunchMode;
++
++typedef struct XemuGdoxLaunch {
++    XemuGdoxLaunchMode mode;
++    XboxSaveMigrationRequest migration;
++    const char *validation_vault;
++    const char *validation_clean_hdd;
++} XemuGdoxLaunch;
++
++bool xemu_gdox_launch_prepare(int *argc, char **argv,
++                              XemuGdoxLaunch *launch);
++
++#endif
+diff --git a/ui/xemu-gdox-runtime.c b/ui/xemu-gdox-runtime.c
+new file mode 100644
+index 0000000..30ef328
+--- /dev/null
++++ b/ui/xemu-gdox-runtime.c
+@@ -0,0 +1,181 @@
++/*
++ * GDOX runtime and save maintenance modes
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "ui/xemu-gdox-runtime.h"
++
++static void xemu_gdox_remove_argument(int *argc, char **argv, int index)
++{
++    (*argc)--;
++    memmove(&argv[index], &argv[index + 1],
++            (*argc - index + 1) * sizeof(argv[0]));
++}
++
++static bool xemu_gdox_take_value(int *argc, char **argv, int index,
++                                 const char **value)
++{
++    if (*value || index + 1 >= *argc || !argv[index + 1][0]) {
++        return false;
++    }
++    *value = argv[index + 1];
++    xemu_gdox_remove_argument(argc, argv, index + 1);
++    xemu_gdox_remove_argument(argc, argv, index);
++    return true;
++}
++
++static bool xemu_gdox_parse_u64(const char *text, uint64_t *value)
++{
++    char *end = NULL;
++    uint64_t parsed;
++
++    if (!text || !text[0] || text[0] == '-' ||
++        (text[0] == '0' && text[1] != '\0')) {
++        return false;
++    }
++    errno = 0;
++    parsed = g_ascii_strtoull(text, &end, 10);
++    if (errno || !end || *end != '\0') {
++        return false;
++    }
++    *value = parsed;
++    return true;
++}
++
++static bool xemu_gdox_parse_sha256(const char *text, uint8_t digest[32])
++{
++    if (!text || strlen(text) != 64U) {
++        return false;
++    }
++    for (unsigned int i = 0; i < 32U; i++) {
++        int high;
++        int low;
++
++        if (!g_ascii_isxdigit(text[i * 2U]) ||
++            !g_ascii_isxdigit(text[i * 2U + 1U]) ||
++            (text[i * 2U] >= 'A' && text[i * 2U] <= 'F') ||
++            (text[i * 2U + 1U] >= 'A' && text[i * 2U + 1U] <= 'F')) {
++            return false;
++        }
++        high = g_ascii_xdigit_value(text[i * 2U]);
++        low = g_ascii_xdigit_value(text[i * 2U + 1U]);
++        digest[i] = (high << 4) | low;
++    }
++    return true;
++}
++
++bool xemu_gdox_launch_prepare(int *argc, char **argv,
++                              XemuGdoxLaunch *launch)
++{
++    const char *legacy_hdd = NULL;
++    const char *clean_hdd = NULL;
++    const char *save_vault = NULL;
++    const char *expected_bytes = NULL;
++    const char *expected_sha = NULL;
++    bool runtime = false;
++    bool validate = false;
++    bool remove_source = false;
++
++    memset(launch, 0, sizeof(*launch));
++    for (int i = 1; i < *argc;) {
++        if (strcmp(argv[i], XEMU_GDOX_RUNTIME_ARGUMENT) == 0) {
++            if (runtime) {
++                return false;
++            }
++            runtime = true;
++            xemu_gdox_remove_argument(argc, argv, i);
++        } else if (strcmp(argv[i], XEMU_GDOX_MIGRATE_ARGUMENT) == 0) {
++            if (!xemu_gdox_take_value(argc, argv, i, &legacy_hdd)) {
++                return false;
++            }
++        } else if (strcmp(argv[i], XEMU_GDOX_REMOVE_SOURCE_ARGUMENT) == 0) {
++            if (remove_source) {
++                return false;
++            }
++            remove_source = true;
++            xemu_gdox_remove_argument(argc, argv, i);
++        } else if (strcmp(argv[i], XEMU_GDOX_VALIDATE_ARGUMENT) == 0) {
++            if (validate || save_vault || i + 1 >= *argc ||
++                !argv[i + 1][0]) {
++                return false;
++            }
++            validate = true;
++            save_vault = argv[i + 1];
++            xemu_gdox_remove_argument(argc, argv, i + 1);
++            xemu_gdox_remove_argument(argc, argv, i);
++        } else if (strcmp(argv[i], XEMU_GDOX_CLEAN_HDD_ARGUMENT) == 0) {
++            if (!xemu_gdox_take_value(argc, argv, i, &clean_hdd)) {
++                return false;
++            }
++        } else if (strcmp(argv[i], XEMU_GDOX_SAVE_VAULT_ARGUMENT) == 0) {
++            if (!xemu_gdox_take_value(argc, argv, i, &save_vault)) {
++                return false;
++            }
++        } else if (strcmp(argv[i], XEMU_GDOX_EXPECTED_BYTES_ARGUMENT) == 0) {
++            if (!xemu_gdox_take_value(argc, argv, i, &expected_bytes)) {
++                return false;
++            }
++        } else if (strcmp(argv[i], XEMU_GDOX_EXPECTED_SHA_ARGUMENT) == 0) {
++            if (!xemu_gdox_take_value(argc, argv, i, &expected_sha)) {
++                return false;
++            }
++        } else {
++            i++;
++        }
++    }
++    if (runtime) {
++        if (legacy_hdd || validate || remove_source || clean_hdd || expected_bytes ||
++            expected_sha || !save_vault ||
++            !g_path_is_absolute(save_vault)) {
++            return false;
++        }
++        launch->mode = XEMU_GDOX_LAUNCH_RUNTIME;
++        if (!g_setenv("MESA_SHADER_CACHE_DISABLE", "1", true) ||
++            !g_setenv("__GL_SHADER_DISK_CACHE", "0", true) ||
++            !g_setenv(XEMU_GDOX_SAVE_VAULT_ENVIRONMENT,
++                      save_vault, true)) {
++            return false;
++        }
++        return true;
++    }
++    if (legacy_hdd) {
++        if (validate || !clean_hdd || !save_vault || !expected_bytes ||
++            !g_path_is_absolute(legacy_hdd) ||
++            !g_path_is_absolute(clean_hdd) ||
++            !g_path_is_absolute(save_vault) || *argc != 1 ||
++            !xemu_gdox_parse_u64(expected_bytes,
++                                 &launch->migration.expected_source_bytes) ||
++            (expected_sha && !xemu_gdox_parse_sha256(
++                expected_sha, launch->migration.expected_source_sha256))) {
++            return false;
++        }
++        launch->migration.expected_source_sha256_valid =
++            expected_sha != NULL;
++        launch->mode = remove_source ? XEMU_GDOX_LAUNCH_MIGRATE_REMOVE
++                                     : XEMU_GDOX_LAUNCH_MIGRATE;
++        launch->migration.legacy_hdd = legacy_hdd;
++        launch->migration.clean_hdd = clean_hdd;
++        launch->migration.save_vault = save_vault;
++        return true;
++    }
++    if (validate) {
++        if (!clean_hdd || expected_bytes || expected_sha ||
++            !g_path_is_absolute(clean_hdd) ||
++            !g_path_is_absolute(save_vault) || *argc != 1) {
++            return false;
++        }
++        launch->mode = XEMU_GDOX_LAUNCH_VALIDATE;
++        launch->validation_vault = save_vault;
++        launch->validation_clean_hdd = clean_hdd;
++        return true;
++    }
++    if (remove_source || save_vault || clean_hdd || expected_bytes ||
++        expected_sha) {
++        return false;
++    }
++    launch->mode = XEMU_GDOX_LAUNCH_NORMAL;
++    return true;
++}
+diff --git a/ui/xemu.c b/ui/xemu.c
+index 4a2f0ba..f2982ca 100644
+--- a/ui/xemu.c
++++ b/ui/xemu.c
+@@ -33,12 +33,15 @@
+ #include "qemu/main-loop.h"
+ #include "qemu/rcu.h"
+ #include "qemu-version.h"
++#include "block/xbox-volatile-hdd.h"
+ #include "qapi/error.h"
+ #include "qapi/qapi-commands-block.h"
+ #include "qobject/qdict.h"
+ #include "ui/console.h"
+ #include "ui/input.h"
+ #include "ui/kbd-state.h"
++#include "ui/xemu-gdox-runtime.h"
++#include "ui/xemu-gdox-save-operation.h"
+ #include "system/runstate.h"
+ #include "system/runstate-action.h"
+ #include "system/system.h"
+@@ -1210,6 +1213,7 @@ static void *qemu_main(void *opaque)
+     qemu_sem_wait(&display_shutdown_sem);
+     bql_lock();
+     qemu_cleanup(exit_status);
++    exit_status = xbox_volatile_hdd_adjust_exit_status(exit_status);
+     bql_unlock();
+ 
+     return NULL;
+@@ -1274,8 +1278,53 @@ static void init_sdl_app_metadata(void)
+ 
+ int main(int argc, char **argv)
+ {
++    XemuGdoxLaunch gdox_launch;
++    bool gdox_runtime;
+     QemuThread thread;
+ 
++    for (int i = 1; i < argc; i++) {
++        if (strcmp(argv[i], "--gdox-capabilities") == 0) {
++            fputs("{\"schema\":3,\"runtime\":\"xemu\","
++                  "\"storage\":{\"full_hdd_ram_cow\":true,"
++                  "\"backing_writes\":false,"
++                  "\"persistent_save_export\":true,"
++                  "\"persistent_save_scope\":"
++                  "\"hdd-config-v1+E:\\\\UDATA+reviewed-E:\\\\TDATA\","
++                  "\"persistent_save_format\":\"logical-files-v2\","
++                  "\"persistent_hdd_config_format\":\"hdd-config-v1\","
++                  "\"persistent_hdd_config_bytes\":524288,"
++                  "\"tdata_policy\":\"positive-reviewed-paths-v1\","
++                  "\"tdata_policy_revision\":1,"
++                  "\"unknown_tdata\":\"preserve-legacy-source\","
++                  "\"persistent_save_atomic\":true,"
++                  "\"persistent_save_import_before_boot\":true,"
++                  "\"persistent_save_checkpoint\":"
++                  "\"guest-flush-and-orderly-shutdown\","
++                  "\"legacy_hdd_migration\":true,"
++                  "\"migration_receipt\":true,"
++                  "\"migration_interruption_safe\":true,"
++                  "\"max_dirty_bytes\":4294967296}}\n", stdout);
++            return EXIT_SUCCESS;
++        }
++    }
++    if (!xemu_gdox_launch_prepare(&argc, argv, &gdox_launch)) {
++        return EXIT_FAILURE;
++    }
++    gdox_runtime = gdox_launch.mode == XEMU_GDOX_LAUNCH_RUNTIME;
++    if (gdox_launch.mode == XEMU_GDOX_LAUNCH_MIGRATE ||
++        gdox_launch.mode == XEMU_GDOX_LAUNCH_MIGRATE_REMOVE ||
++        gdox_launch.mode == XEMU_GDOX_LAUNCH_VALIDATE) {
++        g_autofree char *result = NULL;
++        Error *error = NULL;
++
++        if (!xemu_gdox_save_operation_run(&gdox_launch, &result, &error)) {
++            error_reportf_err(error, "GDOX Xbox save operation failed: ");
++            return EXIT_FAILURE;
++        }
++        fputs(result, stdout);
++        return EXIT_SUCCESS;
++    }
++
+     setlocale(LC_NUMERIC, "C");
+ 
+ #ifdef _WIN32
+@@ -1288,6 +1337,9 @@ int main(int argc, char **argv)
+         if (_fileno(stderr) == -2) {
+             freopen("CONOUT$", "w+", stderr);
+         }
++    } else if (gdox_runtime) {
++        (void)freopen("NUL", "w", stdout);
++        (void)freopen("NUL", "w", stderr);
+     } else {
+         // Launched without a console. Redirect stdout and stderr to a log file.
+         HANDLE logfile = CreateFileA("xemu.log",
+@@ -1331,6 +1383,10 @@ int main(int argc, char **argv)
+         SDL_Quit();
+         exit(1);
+     }
++    if (gdox_runtime) {
++        g_config.perf.cache_shaders = false;
++        g_config.display.setup_nvidia_profile = false;
++    }
+     atexit(xemu_settings_save);
+ 
+ #ifdef _WIN32

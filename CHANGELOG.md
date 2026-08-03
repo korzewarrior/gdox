@@ -1,15 +1,26 @@
 # changes
 
+## 0.2.0
+
+- add Xbox 360 image playback on Windows x86-64, Linux x86-64, and Steam Deck
+- add Xbox 360 physical playback through the exact GP63EX70/RF02 profile: XGD2
+  on Windows, Linux, and Steam Deck; XGD3 on Linux and Steam Deck
+- keep automatic disc detection available from the Windows notification area,
+  macOS menu bar, and compatible Linux desktops
+- preserve Original Xbox and Xbox 360 saves and profiles without keeping game
+  content, shader caches, or session files
+- improve Xenia title compatibility and Steam Deck performance
+- harden disc switching, emulator shutdown, storage migration, runtime
+  verification, and release packaging
+
 ## 0.1.4
 
 - stop background controller input from activating gdox navigation, links, or
   quit while xemu is running; controller navigation now resumes only after
   gdox regains focus and every button has been released
-- replaced the unused public session reducer with the desktop runtime's
-  ordered, payload-owning command planner; `gdox_session_event` now contains
-  only application commands that are actually accepted
-- consolidated desktop state, optical discovery, MMC commands, build layers,
-  version metadata, and platform tests without changing supported hardware
+- simplify internal session commands, desktop state, optical discovery, build
+  layers, version metadata, and platform tests without changing supported
+  hardware
 
 ## 0.1.3
 

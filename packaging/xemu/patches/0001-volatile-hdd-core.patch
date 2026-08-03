@@ -1,0 +1,876 @@
+diff --git a/block/xbox-volatile-hdd.c b/block/xbox-volatile-hdd.c
+new file mode 100644
+index 0000000..b09b59d
+--- /dev/null
++++ b/block/xbox-volatile-hdd.c
+@@ -0,0 +1,763 @@
++/*
++ * Volatile Original Xbox hard disk
++ *
++ * Every guest write is retained in anonymous process memory. The configured
++ * image is a read-only logical backing store and is never flushed or changed.
++ * The Xbox X, Y, and Z cache partitions are presented as newly formatted
++ * volumes on every launch so stale cache data in legacy images is hidden.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++
++#include "block/block-global-state.h"
++#include "block/block-io.h"
++#include "block/block_int.h"
++#include "block/block_int-io.h"
++#include "block/xbox-save-vault.h"
++#include "block/xbox-volatile-hdd.h"
++#include "qemu/iov.h"
++#include "qemu/module.h"
++#include "qemu/thread.h"
++#include "qemu/units.h"
++#include "qobject/qdict.h"
++#include "system/block-backend.h"
++#include "system/block-backend-io.h"
++
++typedef struct XboxCachePartition {
++    uint64_t offset;
++    uint32_t volume_id;
++} XboxCachePartition;
++
++typedef struct XboxVolatileHddState {
++    uint8_t **pages;
++    uint32_t page_count;
++    uint32_t page_limit;
++    uint32_t resident_pages;
++    uint64_t disk_bytes;
++    CoMutex request_lock;
++    QemuMutex lock;
++    char *save_vault;
++    XboxSaveVaultLock save_vault_lock;
++    bool save_dirty;
++    bool save_failed;
++} XboxVolatileHddState;
++
++static bool xbox_save_checkpoint_failed;
++
++/* A non-NULL value that cannot be returned by GLib's aligned allocator. */
++#define XBOX_VOLATILE_ZERO_PAGE ((uint8_t *)(uintptr_t)1)
++
++static const XboxCachePartition xbox_cache_partitions[] = {
++    { UINT64_C(0x00080000), UINT32_C(0x000d0137) },
++    { UINT64_C(0x2ee80000), UINT32_C(0x000d01d4) },
++    { UINT64_C(0x5dc80000), UINT32_C(0x000d02a4) },
++};
++
++static void xbox_hdd_put_le32(uint8_t *destination, uint32_t value)
++{
++    destination[0] = value;
++    destination[1] = value >> 8;
++    destination[2] = value >> 16;
++    destination[3] = value >> 24;
++}
++
++static uint32_t xbox_hdd_page_index(uint64_t offset)
++{
++    return offset / XBOX_VOLATILE_HDD_PAGE_SIZE;
++}
++
++static size_t xbox_hdd_page_offset(uint64_t offset)
++{
++    return offset % XBOX_VOLATILE_HDD_PAGE_SIZE;
++}
++
++static bool xbox_hdd_is_cache(uint64_t offset)
++{
++    return offset >= XBOX_VOLATILE_HDD_CACHE_START &&
++           offset < XBOX_VOLATILE_HDD_CACHE_END;
++}
++
++static bool xbox_hdd_intersects_persistent_projection(int64_t offset,
++                                                      int64_t bytes)
++{
++    uint64_t start;
++    uint64_t end;
++
++    if (offset < 0 || bytes <= 0) {
++        return false;
++    }
++    start = offset;
++    end = (uint64_t)bytes > UINT64_MAX - start ? UINT64_MAX
++                                                : start + bytes;
++    return (start < XBOX_SAVE_HDD_CONFIG_BYTES && end > 0U) ||
++           (start < XBOX_VOLATILE_HDD_E_END &&
++            end > XBOX_VOLATILE_HDD_E_START);
++}
++
++static bool xbox_hdd_page_defaults_to_zero(uint32_t index)
++{
++    const uint64_t offset = (uint64_t)index * XBOX_VOLATILE_HDD_PAGE_SIZE;
++
++    return xbox_hdd_is_cache(offset);
++}
++
++static int xbox_hdd_new_page(XboxVolatileHddState *s, uint8_t **page)
++{
++    if (s->resident_pages >= s->page_limit) {
++        return -ENOSPC;
++    }
++    *page = g_try_malloc0(XBOX_VOLATILE_HDD_PAGE_SIZE);
++    return *page ? 0 : -ENOMEM;
++}
++
++static int xbox_hdd_install_zero_page(XboxVolatileHddState *s,
++                                      uint32_t index, uint8_t **page)
++{
++    uint8_t *allocated;
++    int ret;
++
++    ret = xbox_hdd_new_page(s, &allocated);
++    if (ret < 0) {
++        return ret;
++    }
++    if (s->pages[index] && s->pages[index] != XBOX_VOLATILE_ZERO_PAGE) {
++        g_free(allocated);
++        *page = s->pages[index];
++        return 0;
++    }
++    s->pages[index] = allocated;
++    s->resident_pages++;
++    *page = allocated;
++    return 0;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++xbox_hdd_get_writable_page(BlockDriverState *bs, uint32_t index,
++                           bool whole_page, uint8_t **page)
++{
++    XboxVolatileHddState *s = bs->opaque;
++    uint8_t *current;
++    uint8_t *candidate = NULL;
++    uint64_t page_start = (uint64_t)index * XBOX_VOLATILE_HDD_PAGE_SIZE;
++    int64_t readable;
++    int ret;
++
++    qemu_mutex_lock(&s->lock);
++    current = s->pages[index];
++    if (current && current != XBOX_VOLATILE_ZERO_PAGE) {
++        *page = current;
++        qemu_mutex_unlock(&s->lock);
++        return 0;
++    }
++    if (current == XBOX_VOLATILE_ZERO_PAGE || whole_page ||
++        xbox_hdd_page_defaults_to_zero(index)) {
++        ret = xbox_hdd_install_zero_page(s, index, page);
++        qemu_mutex_unlock(&s->lock);
++        return ret;
++    }
++    qemu_mutex_unlock(&s->lock);
++
++    qemu_mutex_lock(&s->lock);
++    if (s->resident_pages >= s->page_limit) {
++        qemu_mutex_unlock(&s->lock);
++        return -ENOSPC;
++    }
++    qemu_mutex_unlock(&s->lock);
++    candidate = g_try_malloc0(XBOX_VOLATILE_HDD_PAGE_SIZE);
++    if (!candidate) {
++        return -ENOMEM;
++    }
++    readable = MIN((uint64_t)XBOX_VOLATILE_HDD_PAGE_SIZE,
++                   s->disk_bytes - page_start);
++    ret = bdrv_co_pread(bs->backing, page_start, readable, candidate, 0);
++    if (ret < 0) {
++        g_free(candidate);
++        return ret;
++    }
++
++    qemu_mutex_lock(&s->lock);
++    current = s->pages[index];
++    if (!current) {
++        if (s->resident_pages >= s->page_limit) {
++            ret = -ENOSPC;
++        } else {
++            s->pages[index] = candidate;
++            s->resident_pages++;
++            *page = candidate;
++            candidate = NULL;
++            ret = 0;
++        }
++    } else if (current == XBOX_VOLATILE_ZERO_PAGE) {
++        ret = xbox_hdd_install_zero_page(s, index, page);
++    } else {
++        *page = current;
++        ret = 0;
++    }
++    qemu_mutex_unlock(&s->lock);
++    g_free(candidate);
++    return ret;
++}
++
++static int xbox_hdd_initialize_cache_metadata(XboxVolatileHddState *s)
++{
++    for (size_t i = 0; i < ARRAY_SIZE(xbox_cache_partitions); i++) {
++        const XboxCachePartition *partition = &xbox_cache_partitions[i];
++        uint32_t index = xbox_hdd_page_index(partition->offset);
++        uint8_t *page;
++        int ret;
++
++        ret = xbox_hdd_install_zero_page(s, index, &page);
++        if (ret < 0) {
++            return ret;
++        }
++        memset(page, 0xff, 4096);
++        memcpy(page, "FATX", 4);
++        xbox_hdd_put_le32(page + 4, partition->volume_id);
++        xbox_hdd_put_le32(page + 8, 32);
++        xbox_hdd_put_le32(page + 12, 1);
++        page[16] = 0;
++        page[17] = 0;
++        page[4096] = 0xf8;
++        page[4097] = 0xff;
++        page[4098] = 0xff;
++        page[4099] = 0xff;
++    }
++    return 0;
++}
++
++static void xbox_hdd_release(XboxVolatileHddState *s)
++{
++    xbox_save_vault_unlock(&s->save_vault_lock);
++    g_clear_pointer(&s->save_vault, g_free);
++    if (!s->pages) {
++        return;
++    }
++    for (uint32_t i = 0; i < s->page_count; i++) {
++        if (s->pages[i] != XBOX_VOLATILE_ZERO_PAGE) {
++            g_free(s->pages[i]);
++        }
++    }
++    g_free(s->pages);
++    s->pages = NULL;
++    qemu_mutex_destroy(&s->lock);
++}
++
++static int xbox_volatile_hdd_open(BlockDriverState *bs, QDict *options,
++                                  int flags, Error **errp)
++{
++    XboxVolatileHddState *s = bs->opaque;
++    int64_t page_limit;
++
++    page_limit = qdict_get_try_int(options, "page-limit",
++                                   XBOX_VOLATILE_HDD_MAX_PAGE_LIMIT);
++    qdict_del(options, "page-limit");
++    if (page_limit < 0 || page_limit > UINT32_MAX) {
++        error_setg(errp, "Xbox volatile HDD page limit is invalid");
++        return -EINVAL;
++    }
++    s->page_limit = page_limit;
++    s->save_vault_lock = (XboxSaveVaultLock)XBOX_SAVE_VAULT_LOCK_INIT;
++    return 0;
++}
++
++static void xbox_volatile_hdd_close(BlockDriverState *bs)
++{
++    XboxVolatileHddState *s = bs->opaque;
++
++    xbox_hdd_release(s);
++}
++
++static int64_t xbox_hdd_next_chunk(int64_t offset, int64_t bytes)
++{
++    return MIN(bytes, XBOX_VOLATILE_HDD_PAGE_SIZE -
++                      xbox_hdd_page_offset(offset));
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++xbox_volatile_hdd_preadv_part_locked(BlockDriverState *bs, int64_t offset,
++                                     int64_t bytes, QEMUIOVector *qiov,
++                                     size_t qiov_offset,
++                                     BdrvRequestFlags flags)
++{
++    XboxVolatileHddState *s = bs->opaque;
++
++    while (bytes > 0) {
++        int64_t chunk = xbox_hdd_next_chunk(offset, bytes);
++        uint32_t index = xbox_hdd_page_index(offset);
++        size_t page_offset = xbox_hdd_page_offset(offset);
++        uint8_t *page;
++        int ret = 0;
++
++        qemu_mutex_lock(&s->lock);
++        page = s->pages[index];
++        if (page && page != XBOX_VOLATILE_ZERO_PAGE) {
++            qemu_iovec_from_buf(qiov, qiov_offset,
++                                page + page_offset, chunk);
++        } else if (page == XBOX_VOLATILE_ZERO_PAGE ||
++                   xbox_hdd_page_defaults_to_zero(index)) {
++            qemu_iovec_memset(qiov, qiov_offset, 0, chunk);
++        } else {
++            ret = 1;
++        }
++        qemu_mutex_unlock(&s->lock);
++        if (ret == 1) {
++            ret = bdrv_co_preadv_part(bs->backing, offset, chunk, qiov,
++                                      qiov_offset, flags);
++        }
++        if (ret < 0) {
++            return ret;
++        }
++        offset += chunk;
++        qiov_offset += chunk;
++        bytes -= chunk;
++    }
++    return 0;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++xbox_hdd_vault_read(void *opaque, uint64_t offset,
++                    void *buffer, size_t bytes)
++{
++    BlockDriverState *bs = opaque;
++    QEMUIOVector qiov;
++    int ret;
++
++    qemu_iovec_init_buf(&qiov, buffer, bytes);
++    ret = xbox_volatile_hdd_preadv_part_locked(
++        bs, offset, bytes, &qiov, 0U, 0);
++    qemu_iovec_destroy(&qiov);
++    return ret;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++xbox_volatile_hdd_preadv_part(BlockDriverState *bs, int64_t offset,
++                              int64_t bytes, QEMUIOVector *qiov,
++                              size_t qiov_offset, BdrvRequestFlags flags)
++{
++    XboxVolatileHddState *s = bs->opaque;
++    int ret;
++
++    qemu_co_mutex_lock(&s->request_lock);
++    ret = xbox_volatile_hdd_preadv_part_locked(
++        bs, offset, bytes, qiov, qiov_offset, flags);
++    qemu_co_mutex_unlock(&s->request_lock);
++    return ret;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++xbox_volatile_hdd_pwritev_part_locked(BlockDriverState *bs, int64_t offset,
++                                      int64_t bytes, QEMUIOVector *qiov,
++                                      size_t qiov_offset,
++                                      BdrvRequestFlags flags)
++{
++    XboxVolatileHddState *s = bs->opaque;
++    bool save_dirty = xbox_hdd_intersects_persistent_projection(offset, bytes);
++
++    while (bytes > 0) {
++        int64_t chunk = xbox_hdd_next_chunk(offset, bytes);
++        uint32_t index = xbox_hdd_page_index(offset);
++        size_t page_offset = xbox_hdd_page_offset(offset);
++        bool whole_page = page_offset == 0 &&
++                          chunk == XBOX_VOLATILE_HDD_PAGE_SIZE;
++        uint8_t *page;
++        int ret;
++
++        ret = xbox_hdd_get_writable_page(bs, index, whole_page, &page);
++        if (ret < 0) {
++            return ret;
++        }
++        qemu_mutex_lock(&s->lock);
++        qemu_iovec_to_buf(qiov, qiov_offset, page + page_offset, chunk);
++        qemu_mutex_unlock(&s->lock);
++        offset += chunk;
++        qiov_offset += chunk;
++        bytes -= chunk;
++    }
++    s->save_dirty |= save_dirty;
++    return 0;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++xbox_volatile_hdd_pwritev_part(BlockDriverState *bs, int64_t offset,
++                               int64_t bytes, QEMUIOVector *qiov,
++                               size_t qiov_offset, BdrvRequestFlags flags)
++{
++    XboxVolatileHddState *s = bs->opaque;
++    int ret;
++
++    qemu_co_mutex_lock(&s->request_lock);
++    ret = xbox_volatile_hdd_pwritev_part_locked(
++        bs, offset, bytes, qiov, qiov_offset, flags);
++    qemu_co_mutex_unlock(&s->request_lock);
++    return ret;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++xbox_hdd_zero_range_locked(BlockDriverState *bs, int64_t offset,
++                           int64_t bytes)
++{
++    XboxVolatileHddState *s = bs->opaque;
++
++    while (bytes > 0) {
++        int64_t chunk = xbox_hdd_next_chunk(offset, bytes);
++        uint32_t index = xbox_hdd_page_index(offset);
++        size_t page_offset = xbox_hdd_page_offset(offset);
++        bool whole_page = page_offset == 0 &&
++                          chunk == XBOX_VOLATILE_HDD_PAGE_SIZE;
++        uint8_t *page;
++        int ret;
++
++        if (whole_page) {
++            qemu_mutex_lock(&s->lock);
++            page = s->pages[index];
++            if (page && page != XBOX_VOLATILE_ZERO_PAGE) {
++                g_free(page);
++                s->resident_pages--;
++            }
++            s->pages[index] = xbox_hdd_page_defaults_to_zero(index)
++                ? NULL : XBOX_VOLATILE_ZERO_PAGE;
++            qemu_mutex_unlock(&s->lock);
++        } else {
++            ret = xbox_hdd_get_writable_page(bs, index, false, &page);
++            if (ret < 0) {
++                return ret;
++            }
++            qemu_mutex_lock(&s->lock);
++            memset(page + page_offset, 0, chunk);
++            qemu_mutex_unlock(&s->lock);
++        }
++        offset += chunk;
++        bytes -= chunk;
++    }
++    return 0;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++xbox_volatile_hdd_pwrite_zeroes(BlockDriverState *bs, int64_t offset,
++                                int64_t bytes, BdrvRequestFlags flags)
++{
++    XboxVolatileHddState *s = bs->opaque;
++    bool save_dirty = xbox_hdd_intersects_persistent_projection(offset, bytes);
++    int ret;
++
++    qemu_co_mutex_lock(&s->request_lock);
++    ret = xbox_hdd_zero_range_locked(bs, offset, bytes);
++    if (ret == 0) {
++        s->save_dirty |= save_dirty;
++    }
++    qemu_co_mutex_unlock(&s->request_lock);
++    return ret;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++xbox_volatile_hdd_pdiscard(BlockDriverState *bs, int64_t offset,
++                           int64_t bytes)
++{
++    XboxVolatileHddState *s = bs->opaque;
++    bool save_dirty = xbox_hdd_intersects_persistent_projection(offset, bytes);
++    int ret;
++
++    qemu_co_mutex_lock(&s->request_lock);
++    ret = xbox_hdd_zero_range_locked(bs, offset, bytes);
++    if (ret == 0) {
++        s->save_dirty |= save_dirty;
++    }
++    qemu_co_mutex_unlock(&s->request_lock);
++    return ret;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++xbox_volatile_hdd_flush(BlockDriverState *bs)
++{
++    XboxVolatileHddState *s = bs->opaque;
++    XboxSaveVaultIo io = {
++        .opaque = bs,
++        .disk_bytes = s->disk_bytes,
++    };
++    Error *error = NULL;
++    int ret = 0;
++
++    if (!s->save_vault || !s->save_dirty) {
++        return s->save_failed ? -EIO : 0;
++    }
++    io.read = (XboxSaveVaultRead *)xbox_hdd_vault_read;
++    qemu_co_mutex_lock(&s->request_lock);
++    if (!xbox_save_vault_checkpoint(s->save_vault, &io, &error)) {
++        error_reportf_err(error, "Could not checkpoint Xbox saves: ");
++        s->save_failed = true;
++        qatomic_set(&xbox_save_checkpoint_failed, true);
++        ret = -EIO;
++    } else {
++        s->save_dirty = false;
++        s->save_failed = false;
++        qatomic_set(&xbox_save_checkpoint_failed, false);
++    }
++    qemu_co_mutex_unlock(&s->request_lock);
++    return ret;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++xbox_volatile_hdd_block_status_locked(BlockDriverState *bs,
++                                      unsigned int mode, int64_t offset,
++                                      int64_t bytes, int64_t *pnum,
++                                      int64_t *map, BlockDriverState **file)
++{
++    XboxVolatileHddState *s = bs->opaque;
++    uint32_t index = xbox_hdd_page_index(offset);
++    uint8_t *page;
++
++    *pnum = xbox_hdd_next_chunk(offset, bytes);
++    qemu_mutex_lock(&s->lock);
++    page = s->pages[index];
++    if (page || xbox_hdd_page_defaults_to_zero(index)) {
++        int status = BDRV_BLOCK_DATA | BDRV_BLOCK_ALLOCATED |
++                     BDRV_BLOCK_OFFSET_VALID;
++
++        if (page == XBOX_VOLATILE_ZERO_PAGE || !page) {
++            status |= BDRV_BLOCK_ZERO;
++        }
++        *map = offset;
++        *file = bs;
++        qemu_mutex_unlock(&s->lock);
++        return status;
++    }
++    qemu_mutex_unlock(&s->lock);
++    return bdrv_co_block_status(bs->backing->bs, offset, *pnum, pnum, map,
++                                file);
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++xbox_volatile_hdd_block_status(BlockDriverState *bs, unsigned int mode,
++                               int64_t offset, int64_t bytes, int64_t *pnum,
++                               int64_t *map, BlockDriverState **file)
++{
++    XboxVolatileHddState *s = bs->opaque;
++    int ret;
++
++    qemu_co_mutex_lock(&s->request_lock);
++    ret = xbox_volatile_hdd_block_status_locked(
++        bs, mode, offset, bytes, pnum, map, file);
++    qemu_co_mutex_unlock(&s->request_lock);
++    return ret;
++}
++
++static void xbox_volatile_hdd_child_perm(BlockDriverState *bs, BdrvChild *c,
++                                         BdrvChildRole role,
++                                         BlockReopenQueue *reopen_queue,
++                                         uint64_t perm, uint64_t shared,
++                                         uint64_t *nperm, uint64_t *nshared)
++{
++    *nperm = BLK_PERM_CONSISTENT_READ;
++    *nshared = BLK_PERM_ALL;
++}
++
++static BlockDriver bdrv_xbox_volatile_hdd = {
++    .format_name                = "xbox-volatile-hdd",
++    .instance_size              = sizeof(XboxVolatileHddState),
++    .is_format                  = true,
++    .supports_backing           = true,
++    .bdrv_open                  = xbox_volatile_hdd_open,
++    .bdrv_close                 = xbox_volatile_hdd_close,
++    .bdrv_co_preadv_part        = xbox_volatile_hdd_preadv_part,
++    .bdrv_co_pwritev_part       = xbox_volatile_hdd_pwritev_part,
++    .bdrv_co_pwrite_zeroes      = xbox_volatile_hdd_pwrite_zeroes,
++    .bdrv_co_pdiscard           = xbox_volatile_hdd_pdiscard,
++    .bdrv_co_flush              = xbox_volatile_hdd_flush,
++    .bdrv_co_block_status       = xbox_volatile_hdd_block_status,
++    .bdrv_child_perm            = xbox_volatile_hdd_child_perm,
++};
++
++static int xbox_hdd_import_read(void *opaque, uint64_t offset,
++                                void *buffer, size_t bytes)
++{
++    return blk_pread(opaque, offset, bytes, buffer, 0);
++}
++
++static int xbox_hdd_import_write(void *opaque, uint64_t offset,
++                                 const void *buffer, size_t bytes)
++{
++    return blk_pwrite(opaque, offset, bytes, buffer, 0);
++}
++
++static bool xbox_volatile_hdd_attach_internal(BlockBackend *blk,
++                                               uint32_t page_limit,
++                                               bool import_saves,
++                                               Error **errp)
++{
++    BlockDriverState *base;
++    BlockDriverState *overlay;
++    XboxVolatileHddState *s;
++    QDict *options;
++    uint64_t page_count;
++    uint64_t original_perm;
++    uint64_t original_shared_perm;
++    int64_t length;
++    const char *save_vault;
++    bool write_perm_granted = false;
++    int ret;
++
++    GLOBAL_STATE_CODE();
++
++    length = blk_getlength(blk);
++    if (length < 0) {
++        error_setg_errno(errp, -length,
++                         "Could not read Xbox hard disk length");
++        return false;
++    }
++    if (length < XBOX_VOLATILE_HDD_CACHE_END) {
++        error_setg(errp,
++                   "Xbox hard disk is too small for its cache partitions");
++        return false;
++    }
++    page_count = DIV_ROUND_UP((uint64_t)length,
++                              XBOX_VOLATILE_HDD_PAGE_SIZE);
++    if (page_count > UINT32_MAX) {
++        error_setg(errp, "Xbox hard disk is too large for volatile storage");
++        return false;
++    }
++
++    base = blk_bs(blk);
++    blk_get_perm(blk, &original_perm, &original_shared_perm);
++    options = qdict_new();
++    qdict_put_int(options, "page-limit", MIN(page_limit, page_count));
++    overlay = bdrv_new_open_driver_opts(&bdrv_xbox_volatile_hdd, NULL,
++                                        options, BDRV_O_RDWR | BDRV_O_UNMAP,
++                                        errp);
++    if (!overlay) {
++        return false;
++    }
++    s = overlay->opaque;
++    s->disk_bytes = length;
++    s->page_count = page_count;
++    s->pages = g_try_new0(uint8_t *, s->page_count);
++    if (!s->pages) {
++        error_setg(errp, "Could not allocate Xbox volatile HDD page table");
++        bdrv_unref(overlay);
++        return false;
++    }
++    qemu_mutex_init(&s->lock);
++    qemu_co_mutex_init(&s->request_lock);
++    save_vault = import_saves ? g_getenv(XBOX_SAVE_VAULT_ENVIRONMENT) : NULL;
++    if (save_vault && save_vault[0]) {
++        s->save_vault = g_strdup(save_vault);
++        if (!xbox_save_vault_lock(s->save_vault, &s->save_vault_lock,
++                                  errp)) {
++            xbox_hdd_release(s);
++            bdrv_unref(overlay);
++            return false;
++        }
++    }
++    ret = xbox_hdd_initialize_cache_metadata(s);
++    if (ret < 0) {
++        error_setg_errno(errp, -ret,
++                         "Could not initialize Xbox cache partitions");
++        xbox_hdd_release(s);
++        bdrv_unref(overlay);
++        return false;
++    }
++
++    overlay->implicit = true;
++    overlay->never_freeze = true;
++    overlay->total_sectors = base->total_sectors;
++    overlay->supported_write_flags = BDRV_REQ_WRITE_UNCHANGED | BDRV_REQ_FUA;
++    overlay->supported_zero_flags = BDRV_REQ_WRITE_UNCHANGED | BDRV_REQ_FUA |
++        BDRV_REQ_MAY_UNMAP | BDRV_REQ_NO_FALLBACK;
++
++    ret = bdrv_append(overlay, base, errp);
++    if (ret == 0) {
++        ret = blk_set_perm(blk, original_perm | BLK_PERM_WRITE,
++                           original_shared_perm, errp);
++        write_perm_granted = ret == 0;
++    }
++    if (ret == 0 && s->save_vault) {
++        XboxSaveVaultIo io = {
++            .opaque = blk,
++            .read = xbox_hdd_import_read,
++            .write = xbox_hdd_import_write,
++            .disk_bytes = s->disk_bytes,
++        };
++
++        if (!xbox_save_vault_import(s->save_vault, &io, errp)) {
++            ret = -EIO;
++        } else {
++            s->save_dirty = false;
++            s->save_failed = false;
++            qatomic_set(&xbox_save_checkpoint_failed, false);
++        }
++    }
++    if (ret < 0 && blk_bs(blk) == overlay) {
++        Error *rollback_error = NULL;
++
++        if (write_perm_granted &&
++            blk_set_perm(blk, original_perm, original_shared_perm,
++                         &rollback_error) < 0) {
++            error_append_hint(errp, "Could not restore Xbox HDD permissions: "
++                              "%s\n", error_get_pretty(rollback_error));
++            error_free(rollback_error);
++            rollback_error = NULL;
++        }
++        if (bdrv_drop_filter(blk_bs(blk), &rollback_error) < 0) {
++            error_append_hint(errp, "Could not detach failed Xbox save "
++                              "overlay: %s\n",
++                              error_get_pretty(rollback_error));
++            error_free(rollback_error);
++        }
++    }
++    bdrv_unref(overlay);
++    return ret == 0;
++}
++
++bool xbox_volatile_hdd_attach_with_page_limit(BlockBackend *blk,
++                                               uint32_t page_limit,
++                                               Error **errp)
++{
++    return xbox_volatile_hdd_attach_internal(blk, page_limit, true, errp);
++}
++
++bool xbox_volatile_hdd_save_failed(void)
++{
++    return qatomic_read(&xbox_save_checkpoint_failed);
++}
++
++int xbox_volatile_hdd_adjust_exit_status(int status)
++{
++    return status == EXIT_SUCCESS && xbox_volatile_hdd_save_failed()
++        ? EXIT_FAILURE : status;
++}
++
++bool xbox_volatile_hdd_attach(BlockBackend *blk, Error **errp)
++{
++    uint64_t dirty_bytes = XBOX_VOLATILE_HDD_MAX_DIRTY_BYTES;
++    size_t host_bytes = qemu_get_host_physmem();
++
++    if (host_bytes > 0) {
++        dirty_bytes = MIN(dirty_bytes, host_bytes / 4);
++    } else {
++        dirty_bytes = XBOX_VOLATILE_HDD_UNKNOWN_HOST_DIRTY_BYTES;
++    }
++    return xbox_volatile_hdd_attach_with_page_limit(
++        blk, dirty_bytes / XBOX_VOLATILE_HDD_PAGE_SIZE, errp);
++}
++
++bool xbox_volatile_hdd_attach_clean(BlockBackend *blk, Error **errp)
++{
++    uint64_t dirty_bytes = XBOX_VOLATILE_HDD_MAX_DIRTY_BYTES;
++    size_t host_bytes = qemu_get_host_physmem();
++
++    if (host_bytes > 0) {
++        dirty_bytes = MIN(dirty_bytes, host_bytes / 4);
++    } else {
++        dirty_bytes = XBOX_VOLATILE_HDD_UNKNOWN_HOST_DIRTY_BYTES;
++    }
++    return xbox_volatile_hdd_attach_internal(
++        blk, dirty_bytes / XBOX_VOLATILE_HDD_PAGE_SIZE, false, errp);
++}
++
++static void xbox_volatile_hdd_init(void)
++{
++    bdrv_register(&bdrv_xbox_volatile_hdd);
++}
++
++block_init(xbox_volatile_hdd_init);
+diff --git a/config_spec.yml b/config_spec.yml
+index dc8a449..98265cb 100644
+--- a/config_spec.yml
++++ b/config_spec.yml
+@@ -348,6 +348,9 @@ net:
+           default: tcp
+ 
+ sys:
++  volatile_hard_disk:
++    type: bool
++    default: true
+   mem_limit:
+     type: enum
+     values: ['64', '128']
+diff --git a/include/block/xbox-volatile-hdd.h b/include/block/xbox-volatile-hdd.h
+new file mode 100644
+index 0000000..f902814
+--- /dev/null
++++ b/include/block/xbox-volatile-hdd.h
+@@ -0,0 +1,39 @@
++/*
++ * Volatile Original Xbox hard disk
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef XBOX_VOLATILE_HDD_H
++#define XBOX_VOLATILE_HDD_H
++
++#include "qapi/error.h"
++#include "qemu/typedefs.h"
++#include "qemu/units.h"
++
++#define XBOX_VOLATILE_HDD_CACHE_START UINT64_C(0x00080000)
++#define XBOX_VOLATILE_HDD_CACHE_END   UINT64_C(0x8ca80000)
++#define XBOX_VOLATILE_HDD_E_START     UINT64_C(0xabe80000)
++#define XBOX_VOLATILE_HDD_E_END       UINT64_C(0x1dd156000)
++#define XBOX_VOLATILE_HDD_PAGE_SIZE (64 * KiB)
++#define XBOX_VOLATILE_HDD_MAX_PAGE_LIMIT 65536
++#define XBOX_VOLATILE_HDD_MAX_DIRTY_BYTES \
++    (UINT64_C(65536) * \
++     XBOX_VOLATILE_HDD_PAGE_SIZE)
++#define XBOX_VOLATILE_HDD_UNKNOWN_HOST_DIRTY_BYTES GiB
++
++bool xbox_volatile_hdd_attach(BlockBackend *blk, Error **errp);
++
++/* Migration uses a clean anonymous overlay without importing the live vault. */
++bool xbox_volatile_hdd_attach_clean(BlockBackend *blk, Error **errp);
++
++/* Unit tests use a smaller limit to exercise allocation failure handling. */
++bool xbox_volatile_hdd_attach_with_page_limit(BlockBackend *blk,
++                                               uint32_t page_limit,
++                                               Error **errp);
++
++/* Set only while the latest save checkpoint is not durably verified. */
++bool xbox_volatile_hdd_save_failed(void);
++int xbox_volatile_hdd_adjust_exit_status(int status);
++
++#endif
+diff --git a/system/vl.c b/system/vl.c
+index f45bdc3..86ecce3 100644
+--- a/system/vl.c
++++ b/system/vl.c
+@@ -79,6 +79,7 @@
+ #include "qemu/bitmap.h"
+ #include "qemu/log.h"
+ #include "system/blockdev.h"
++#include "block/xbox-volatile-hdd.h"
+ #include "hw/block/block.h"
+ #include "hw/i386/x86.h"
+ #include "hw/i386/pc.h"
+@@ -663,9 +664,18 @@ static int drive_init_func(void *opaque, QemuOpts *opts, Error **errp)
+     BlockInterfaceType *block_default_type = opaque;
+     const char *file_path = qemu_opt_get(opts, "file");
+     bool is_cdrom_with_file = !strcmp(qemu_opt_get(opts, "media"), "cdrom") && strlen(file_path) > 0;
++    bool volatile_hdd = g_config.sys.volatile_hard_disk &&
++                        !strcmp(qemu_opt_get(opts, "media"), "disk");
++
++    if (volatile_hdd &&
++        !qemu_opt_set_bool(opts, BDRV_OPT_READ_ONLY, true, errp)) {
++        return -1;
++    }
+ 
+     Error *error_warn = NULL;
+-    bool failed = drive_new(opts, *block_default_type, is_cdrom_with_file ? &error_warn : errp) == NULL;
++    DriveInfo *drive = drive_new(opts, *block_default_type,
++                                 is_cdrom_with_file ? &error_warn : errp);
++    bool failed = drive == NULL;
+     if (error_warn) {
+         warn_report_err(error_warn);
+     }
+@@ -675,7 +685,14 @@ static int drive_init_func(void *opaque, QemuOpts *opts, Error **errp)
+         xemu_queue_error_message(msg);
+         g_free(msg);
+         qemu_opt_set(opts, "file", "", errp);
+-        failed = drive_new(opts, *block_default_type, errp) == NULL;
++        drive = drive_new(opts, *block_default_type, errp);
++        failed = drive == NULL;
++    }
++
++    if (!failed && volatile_hdd &&
++        drive->type == IF_IDE && drive->bus == 0 && drive->unit == 0 &&
++        !drive->media_cd) {
++        failed = !xbox_volatile_hdd_attach(blk_by_legacy_dinfo(drive), errp);
+     }
+ 
+     return failed;

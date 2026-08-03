@@ -14,17 +14,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install shell linter
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck zstd
       - name: Validate release tooling and repository privacy
         run: |
+          make shellcheck
           python -m py_compile scripts/*.py
           python -m json.tool packaging/runtime-manifest.json >/dev/null
+          python -m json.tool packaging/xenia-compatibility.json >/dev/null
           for schema in docs/schemas/*.json; do
             python -m json.tool "$schema" >/dev/null
           done
-          bash -n packaging/install-device-access.sh
-          sh -n packaging/linux/gdox packaging/linux/install.sh
+          bash -n packaging/install-device-access.sh \
+            packaging/linux/xenia-native packaging/linux/xenia-proton
+          sh -n packaging/linux/gdox packaging/linux/install.sh \
+            packaging/linux/nbdfuse packaging/linux/xemu scripts/build_android.sh \
+            scripts/prepare_android_emulator.sh scripts/prepare_android_sdl2.sh
+          python scripts/fetch_runtime.py validate
+          python scripts/xenia_compatibility.py
+          python scripts/generate_xenia_policy.py --check
           python scripts/audit_architecture.py
-          python scripts/audit_original_xbox_release.py
+          python scripts/audit_xbox_release.py
           python scripts/audit_release.py
           python scripts/audit_version.py
           git diff --check
@@ -91,10 +103,12 @@ jobs:
           . android/dependencies.lock
           xemu_root=$(scripts/prepare_android_emulator.sh)
           sdl2_root=$(scripts/prepare_android_sdl2.sh)
+          mkdir -p "$RUNNER_TEMP/gdox-assets"
           cd "$xemu_root/android"
           ./gradlew --no-daemon testDebugUnitTest \
             -PgdoxVersion="$(python "$GITHUB_WORKSPACE/scripts/project_version.py")" \
             -PgdoxSourceDir="$GITHUB_WORKSPACE" \
+            -PgdoxAssetsDir="$RUNNER_TEMP/gdox-assets" \
             -PgdoxLibusbSourceDir="$RUNNER_TEMP/libusb" \
             -PgdoxSdl2SourceDir="$sdl2_root" \
             -Pkotlin.compiler.execution.strategy=in-process
@@ -128,11 +142,13 @@ jobs:
           python scripts/build_release.py
           --target "${{ matrix.target }}"
           --build-dir "dist/.build/${{ matrix.target }}"
+          --skip-host-neutral-tests
+          --clean
 
   windows:
     permissions:
       contents: read
-    runs-on: windows-latest
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build and test with MSVC
@@ -141,7 +157,29 @@ jobs:
           scripts\build_msvc.cmd
           "%CD%"
           "%CD%\dist\.build\x86_64-pc-windows-msvc"
+          --skip-host-neutral-tests
       - name: Audit executable
         run: >-
           python scripts/audit_release.py
           --artifact dist/.build/x86_64-pc-windows-msvc/gdox.exe
+
+  windows-gnu:
+    permissions:
+      contents: read
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build, test, and audit with MinGW
+        shell: pwsh
+        run: |
+          $mingw = 'C:\mingw64\bin'
+          if (-not (Test-Path "$mingw\gcc.exe")) {
+            throw 'MinGW compiler is unavailable'
+          }
+          $env:Path = "$mingw;$env:Path"
+          python scripts/build_release.py `
+            --target x86_64-pc-windows-gnu `
+            --build-dir dist/.build/x86_64-pc-windows-gnu `
+            --skip-host-neutral-tests `
+            --clean

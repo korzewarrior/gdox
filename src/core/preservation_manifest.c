@@ -14,6 +14,13 @@ typedef struct text_buffer {
     size_t capacity;
 } text_buffer;
 
+#if defined(__GNUC__) || defined(__clang__)
+#define GDOX_PRINTF_FORMAT(format_index, first_argument) \
+    __attribute__((format(printf, format_index, first_argument)))
+#else
+#define GDOX_PRINTF_FORMAT(format_index, first_argument)
+#endif
+
 static const char *format_slug(gdox_preservation_format format)
 {
     return format == GDOX_PRESERVATION_REDUMP ? "redump" : "xiso";
@@ -98,7 +105,11 @@ static bool text_append(text_buffer *text, const char *bytes)
     return true;
 }
 
-static bool text_format(text_buffer *text, const char *format, ...)
+static bool GDOX_PRINTF_FORMAT(2, 3) text_format(
+    text_buffer *text,
+    const char *format,
+    ...
+)
 {
     va_list arguments;
     va_list copy;

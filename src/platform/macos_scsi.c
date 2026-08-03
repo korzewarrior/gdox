@@ -425,16 +425,14 @@ static int disk_is_supported_drive(DADiskRef disk)
 {
     io_service_t media = DADiskCopyIOMedia(disk);
     io_service_t drive;
+    gdox_usb_bot_identity identity;
     int matches;
 
     if (media == IO_OBJECT_NULL) return 0;
     drive = find_dvd_service_ancestor(media);
     IOObjectRelease(media);
     if (drive == IO_OBJECT_NULL) return 0;
-    matches =
-        service_is_supported_drive(drive, kGdoxMacDriveGp63)
-        || service_is_supported_drive(drive, kGdoxMacDriveGp65)
-        || service_is_supported_drive(drive, kGdoxMacDriveGp08);
+    matches = service_supported_identity(drive, &identity);
     IOObjectRelease(drive);
     return matches;
 }
@@ -599,126 +597,6 @@ int gdox_macos_scsi_release_system_media(
         return 5;
     }
     return 0;
-}
-
-int gdox_macos_scsi_inquiry(
-    int requested,
-    uint8_t *output,
-    size_t output_length,
-    char *error,
-    size_t error_capacity)
-{
-    GdoxMacDriveIdentity identity =
-        requested_identity(requested);
-    if (identity == kGdoxMacDriveUnknown) {
-        set_error(error, error_capacity, "the requested optical service is unsupported");
-        return 1;
-    }
-    if (output == NULL || output_length < 36) {
-        set_error(error, error_capacity, "the INQUIRY buffer is too small");
-        return 1;
-    }
-    int guard = gdox_macos_scsi_start_mount_guard(error, error_capacity);
-    if (guard != 0) return guard;
-    MMCDeviceInterface **mmc = NULL;
-    int opened = open_mmc(identity, &mmc, error, error_capacity);
-    if (opened != 0) return opened;
-
-    SCSITaskStatus status = 0;
-    SCSI_Sense_Data sense = {0};
-    memset(output, 0, output_length);
-    IOReturn result = (*mmc)->Inquiry(
-        mmc,
-        (SCSICmd_INQUIRY_StandardData *)output,
-        36,
-        &status,
-        &sense);
-    (*mmc)->Release(mmc);
-    if (result != kIOReturnSuccess) {
-        if (error != NULL && error_capacity > 0) {
-            snprintf(error, error_capacity, "macOS INQUIRY failed (0x%08x)", result);
-        }
-        return 4;
-    }
-    if (status != kSCSITaskStatus_GOOD) {
-        if (error != NULL && error_capacity > 0) {
-            snprintf(
-                error,
-                error_capacity,
-                "INQUIRY returned SCSI status 0x%02x (%02x/%02x/%02x)",
-                status,
-                sense.SENSE_KEY & 0x0f,
-                sense.ADDITIONAL_SENSE_CODE,
-                sense.ADDITIONAL_SENSE_CODE_QUALIFIER);
-        }
-        return 5;
-    }
-    return 0;
-}
-
-int gdox_macos_scsi_media_present(
-    int requested,
-    int *present,
-    char *error,
-    size_t error_capacity)
-{
-    GdoxMacDriveIdentity identity =
-        requested_identity(requested);
-    if (identity == kGdoxMacDriveUnknown) {
-        set_error(error, error_capacity, "the requested optical service is unsupported");
-        return 1;
-    }
-    if (present == NULL) {
-        set_error(error, error_capacity, "the media-status output is missing");
-        return 1;
-    }
-    int guard = gdox_macos_scsi_start_mount_guard(error, error_capacity);
-    if (guard != 0) return guard;
-    MMCDeviceInterface **mmc = NULL;
-    int opened = open_mmc(identity, &mmc, error, error_capacity);
-    if (opened != 0) return opened;
-
-    SCSITaskStatus status = 0;
-    SCSI_Sense_Data sense = {0};
-    IOReturn result = (*mmc)->TestUnitReady(mmc, &status, &sense);
-    (*mmc)->Release(mmc);
-    if (result != kIOReturnSuccess) {
-        if (error != NULL && error_capacity > 0) {
-            snprintf(error, error_capacity, "macOS TEST UNIT READY failed (0x%08x)", result);
-        }
-        return 4;
-    }
-    if (status == kSCSITaskStatus_GOOD) {
-        *present = 1;
-        return 0;
-    }
-    if ((sense.SENSE_KEY & 0x0f) == 0x02
-        && sense.ADDITIONAL_SENSE_CODE == 0x3a) {
-        *present = 0;
-        return 0;
-    }
-    if ((sense.SENSE_KEY & 0x0f) == 0x02
-        && sense.ADDITIONAL_SENSE_CODE == 0x04
-        && sense.ADDITIONAL_SENSE_CODE_QUALIFIER == 0x01) {
-        /*
-         * The optical mechanism is becoming ready. This is an ordinary
-         * transition after startup, insertion, or releasing macOS's media
-         * session; the runtime will poll again.
-         */
-        *present = 0;
-        return 0;
-    }
-    if (error != NULL && error_capacity > 0) {
-        snprintf(
-            error,
-            error_capacity,
-            "TEST UNIT READY returned SCSI status 0x%02x (%02x/%02x/%02x)",
-            status,
-            sense.SENSE_KEY & 0x0f,
-            sense.ADDITIONAL_SENSE_CODE,
-            sense.ADDITIONAL_SENSE_CODE_QUALIFIER);
-    }
-    return 5;
 }
 
 int gdox_macos_scsi_open(

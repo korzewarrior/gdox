@@ -48,12 +48,44 @@ bool gdox_disc_read_at(
     );
 }
 
-bool gdox_disc_media_present(const gdox_random_disc *disc)
+bool gdox_disc_observe_media(
+    const gdox_random_disc *disc,
+    gdox_media_observation *output
+)
 {
+    if (output == NULL) {
+        return false;
+    }
+    output->readiness = GDOX_MEDIA_READINESS_UNKNOWN;
+    output->generation = 0U;
+    output->event = GDOX_MEDIA_EVENT_NONE;
     if (!gdox_disc_is_valid(disc)) {
         return false;
     }
-    return disc->ops->media_present == NULL || disc->ops->media_present(disc->context);
+    if (disc->ops->observe_media != NULL) {
+        disc->ops->observe_media(disc->context, output);
+        if (output->readiness < GDOX_MEDIA_READINESS_UNKNOWN
+            || output->readiness > GDOX_MEDIA_READINESS_PRESENT) {
+            output->readiness = GDOX_MEDIA_READINESS_UNKNOWN;
+        }
+        if (output->event < GDOX_MEDIA_EVENT_NONE
+            || output->event > GDOX_MEDIA_EVENT_CHANGED) {
+            output->event = GDOX_MEDIA_EVENT_NONE;
+        }
+        return true;
+    }
+    output->readiness = disc->ops->media_present == NULL
+        || disc->ops->media_present(disc->context)
+        ? GDOX_MEDIA_READINESS_PRESENT
+        : GDOX_MEDIA_READINESS_ABSENT;
+    return true;
+}
+
+bool gdox_disc_media_present(const gdox_random_disc *disc)
+{
+    gdox_media_observation observation;
+    return gdox_disc_observe_media(disc, &observation)
+        && observation.readiness == GDOX_MEDIA_READINESS_PRESENT;
 }
 
 bool gdox_disc_physical_read_stats(
@@ -79,6 +111,19 @@ void gdox_disc_abort(gdox_random_disc *disc)
     }
 }
 
+bool gdox_disc_prepare_close(gdox_random_disc *disc, gdox_error *error)
+{
+    gdox_error_clear(error);
+    if (!gdox_disc_is_valid(disc)) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "disc is not open");
+        return false;
+    }
+    if (disc->ops->prepare_close == NULL) {
+        return true;
+    }
+    return disc->ops->prepare_close(disc->context, error);
+}
+
 bool gdox_disc_close(gdox_random_disc *disc, gdox_error *error)
 {
     void *context;
@@ -89,19 +134,14 @@ bool gdox_disc_close(gdox_random_disc *disc, gdox_error *error)
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "disc is not open");
         return false;
     }
+    if (!gdox_disc_prepare_close(disc, error)) {
+        return false;
+    }
     context = disc->context;
     ops = disc->ops;
     disc->context = NULL;
     disc->ops = NULL;
     return ops->close(context, error);
-}
-
-void gdox_disc_destroy(gdox_random_disc *disc)
-{
-    gdox_error ignored;
-    if (gdox_disc_is_valid(disc)) {
-        (void)gdox_disc_close(disc, &ignored);
-    }
 }
 
 static bool source_length(
@@ -210,6 +250,15 @@ static bool direct_media_present(const void *context)
     return gdox_source_media_present(&direct->source);
 }
 
+static void direct_observe_media(
+    const void *context,
+    gdox_media_observation *output
+)
+{
+    const direct_disc_context *direct = context;
+    (void)gdox_source_observe_media(&direct->source, output);
+}
+
 static bool direct_physical_read_stats(
     const void *context,
     gdox_physical_read_stats *output
@@ -227,6 +276,12 @@ static bool direct_close(void *context, gdox_error *error)
     return closed;
 }
 
+static bool direct_prepare_close(void *context, gdox_error *error)
+{
+    direct_disc_context *direct = context;
+    return gdox_source_prepare_close(&direct->source, error);
+}
+
 static void direct_abort(void *context)
 {
     direct_disc_context *direct = context;
@@ -240,6 +295,8 @@ static const gdox_random_disc_ops direct_ops = {
     direct_close,
     direct_physical_read_stats,
     direct_abort,
+    direct_prepare_close,
+    direct_observe_media,
 };
 
 bool gdox_disc_from_source(
@@ -252,8 +309,9 @@ bool gdox_disc_from_source(
     uint64_t length;
 
     gdox_error_clear(error);
-    if (!gdox_source_is_valid(source) || disc == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "source and disc output are required");
+    if (!gdox_source_is_valid(source) || disc == NULL
+        || gdox_disc_is_valid(disc)) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "an open source and empty disc output are required");
         return false;
     }
     if (!source_length(source, &length, error)) {

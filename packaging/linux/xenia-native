@@ -1,0 +1,82 @@
+#!/bin/bash
+set -u
+
+runtime_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+xenia="$runtime_directory/@GDOX_XENIA_EXECUTABLE@"
+expected_size='@GDOX_XENIA_EXECUTABLE_SIZE@'
+expected_sha256='@GDOX_XENIA_EXECUTABLE_SHA256@'
+
+fail()
+{
+    printf 'GDOX Xenia launcher: %s\n' "$1" >&2
+    exit 1
+}
+
+if [ ! -f "$xenia" ]; then
+    fail "the bundled Xenia AppImage is missing"
+fi
+
+actual_size=$(wc -c < "$xenia") || fail "could not read the bundled Xenia AppImage"
+actual_size=${actual_size//[[:space:]]/}
+if [ "$actual_size" != "$expected_size" ]; then
+    fail "the bundled Xenia AppImage has the wrong size"
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+    actual_sha256=$(sha256sum -- "$xenia") || fail "could not hash the bundled Xenia AppImage"
+elif command -v shasum >/dev/null 2>&1; then
+    actual_sha256=$(shasum -a 256 -- "$xenia") || fail "could not hash the bundled Xenia AppImage"
+else
+    fail "sha256sum or shasum is required to verify Xenia"
+fi
+actual_sha256=${actual_sha256%%[[:space:]]*}
+if [ "$actual_sha256" != "$expected_sha256" ]; then
+    fail "the bundled Xenia AppImage failed its integrity check"
+fi
+
+if [ "${1:-}" = "--gdox-preflight" ] && [ "$#" -eq 1 ]; then
+    exit 0
+fi
+
+session_cache=
+for argument in "$@"; do
+    case "$argument" in
+        --cache_root=/*)
+            session_cache=${argument#*=}
+            ;;
+    esac
+done
+[ -n "$session_cache" ] || fail "the isolated session cache path is missing"
+
+unset GDOX_XENIA_DISCOVERY_HOME
+HOME="$session_cache/home"
+XDG_CACHE_HOME="$session_cache/xdg-cache"
+XDG_CONFIG_HOME="$session_cache/xdg-config"
+XDG_DATA_HOME="$session_cache/xdg-data"
+XDG_STATE_HOME="$session_cache/xdg-state"
+XDG_RUNTIME_DIR="$session_cache/xdg-runtime"
+TMPDIR="$session_cache/tmp"
+@GDOX_XENIA_INJECTION_ENVIRONMENT@
+MESA_SHADER_CACHE_DISABLE=1
+__GL_SHADER_DISK_CACHE=0
+VKD3D_SHADER_CACHE_PATH=0
+DXVK_SHADER_CACHE=0
+DXVK_STATE_CACHE=0
+DXVK_LOG_PATH=none
+export HOME XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME
+export XDG_RUNTIME_DIR TMPDIR
+export MESA_SHADER_CACHE_DISABLE __GL_SHADER_DISK_CACHE
+export VKD3D_SHADER_CACHE_PATH DXVK_SHADER_CACHE DXVK_STATE_CACHE DXVK_LOG_PATH
+mkdir -p -- \
+    "$HOME" \
+    "$XDG_CACHE_HOME" \
+    "$XDG_CONFIG_HOME" \
+    "$XDG_DATA_HOME" \
+    "$XDG_STATE_HOME" \
+    "$XDG_RUNTIME_DIR" \
+    "$TMPDIR" \
+    || fail "could not create isolated Xenia runtime directories"
+chmod 700 -- "$XDG_RUNTIME_DIR" || fail "could not secure the isolated runtime directory"
+cd -- "$session_cache" || fail "could not enter the isolated Xenia runtime directory"
+
+exec "$xenia" --appimage-extract-and-run "$@"

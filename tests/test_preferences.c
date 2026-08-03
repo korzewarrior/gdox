@@ -92,7 +92,6 @@ void gdox_test_preferences(void)
     GDOX_TEST_CHECK(loaded.window_width == 1280U);
     GDOX_TEST_CHECK(loaded.window_height == 720U);
     GDOX_TEST_CHECK(loaded.xemu_override[0] == '\0');
-    GDOX_TEST_CHECK(loaded.hdd_override[0] == '\0');
     GDOX_TEST_CHECK(loaded.preservation_directory[0] == '\0');
 
     invalid = fopen(path, "wb");
@@ -122,7 +121,6 @@ void gdox_test_preferences(void)
         1920U,
         1080U,
         "/opt/xemu/bin/xemu",
-        "/example/xbox_hdd.qcow2",
         "/example/Xbox Preservation",
     };
     GDOX_TEST_CHECK(gdox_preferences_save(&saved, &error));
@@ -141,14 +139,35 @@ void gdox_test_preferences(void)
         strcmp(loaded.xemu_override, saved.xemu_override) == 0
     );
     GDOX_TEST_CHECK(
-        strcmp(loaded.hdd_override, saved.hdd_override) == 0
-    );
-    GDOX_TEST_CHECK(
         strcmp(
             loaded.preservation_directory,
             saved.preservation_directory
         ) == 0
     );
+
+    invalid = fopen(path, "wb");
+    GDOX_TEST_CHECK(invalid != NULL);
+    GDOX_TEST_CHECK(
+        fputs(
+            "schema=1\n"
+            "hdd_override=/user-owned/xbox_hdd.qcow2\n",
+            invalid
+        ) >= 0
+    );
+    GDOX_TEST_CHECK(fclose(invalid) == 0);
+    GDOX_TEST_CHECK(gdox_preferences_load(&loaded, &error));
+    GDOX_TEST_CHECK(gdox_preferences_save(&loaded, &error));
+    invalid = fopen(path, "rb");
+    GDOX_TEST_CHECK(invalid != NULL);
+    {
+        char serialized[2048];
+        size_t serialized_bytes = fread(
+            serialized, 1U, sizeof(serialized) - 1U, invalid
+        );
+        serialized[serialized_bytes] = '\0';
+        GDOX_TEST_CHECK(strstr(serialized, "hdd_override=") == NULL);
+    }
+    GDOX_TEST_CHECK(fclose(invalid) == 0);
 
     invalid = fopen(path, "wb");
     GDOX_TEST_CHECK(invalid != NULL);

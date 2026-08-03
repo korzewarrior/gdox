@@ -31,6 +31,12 @@ typedef struct gdox_xdvdfs_entry {
     uint8_t attributes;
 } gdox_xdvdfs_entry;
 
+typedef struct gdox_xdvdfs_file_extent {
+    uint32_t start_sector;
+    uint32_t sector_count;
+    uint64_t prefix_max_end;
+} gdox_xdvdfs_file_extent;
+
 typedef struct gdox_xdvdfs_metadata {
     gdox_xdvdfs_volume volume;
     char *title;
@@ -39,14 +45,9 @@ typedef struct gdox_xdvdfs_metadata {
     gdox_xdvdfs_entry *xbe_files;
     size_t xbe_file_count;
     size_t default_xbe_index;
+    gdox_xdvdfs_file_extent *file_extents;
+    size_t file_extent_count;
 } gdox_xdvdfs_metadata;
-
-typedef struct gdox_xdvdfs_compact_stats {
-    uint64_t input_sectors;
-    uint64_t output_sectors;
-    uint64_t file_count;
-    uint64_t directory_count;
-} gdox_xdvdfs_compact_stats;
 
 bool gdox_xdvdfs_find_volume(
     gdox_sector_source *source,
@@ -70,20 +71,6 @@ bool gdox_xdvdfs_measure_trimmed_sectors(
     gdox_sector_source *partition,
     const gdox_xdvdfs_volume *volume,
     uint64_t *sectors,
-    gdox_error *error
-);
-
-/*
- * Moves `partition` into a seekable, compact virtual XISO. Directory tables
- * retain their original tree/name bytes; only extent sector fields and the
- * volume root pointer are changed. File contents remain streamed from the
- * inner source and are never extracted to the host filesystem.
- */
-bool gdox_source_make_compact_xiso(
-    gdox_sector_source *partition,
-    const gdox_xdvdfs_volume *volume,
-    gdox_sector_source *output,
-    gdox_xdvdfs_compact_stats *stats,
     gdox_error *error
 );
 

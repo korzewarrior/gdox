@@ -1,9 +1,17 @@
+#if defined(__linux__)
+#define _GNU_SOURCE
+#endif
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE
+#endif
 #define _POSIX_C_SOURCE 200809L
 
 #include "gdox/emulator.h"
 
 #include "core/emulator_configuration.h"
 #include "platform/portable_sync.h"
+#include "platform/session_storage.h"
+#include "platform/xemu_runtime_session.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -31,13 +39,21 @@
 #include <mach-o/dyld.h>
 #endif
 
-extern char **environ;
-
 struct gdox_emulator_process {
     pid_t pid;
     bool reaped;
     int exit_code;
+    gdox_session_storage session;
 };
+
+static bool cleanup_process_session(
+    gdox_emulator_process *process,
+    gdox_error *error
+)
+{
+    return !process->session.active
+        || gdox_session_storage_cleanup(&process->session, error);
+}
 
 static bool regular_file(const char *path)
 {
@@ -134,7 +150,7 @@ static const char *bundled_xemu_suffix(void)
 #if defined(__APPLE__)
     return "xemu/xemu.app/Contents/MacOS/xemu";
 #else
-    return "xemu/AppDir/AppRun";
+    return "xemu/xemu";
 #endif
 }
 
@@ -143,9 +159,21 @@ static bool runtime_candidate(
     char output[GDOX_EMULATOR_PATH_CAPACITY]
 )
 {
-    return runtime_root != NULL && runtime_root[0] != '\0'
-        && join_path(runtime_root, bundled_xemu_suffix(), output)
-        && executable_file(output);
+    if (runtime_root == NULL || runtime_root[0] == '\0'
+        || !join_path(runtime_root, bundled_xemu_suffix(), output)
+        || !executable_file(output)) {
+        return false;
+    }
+#if defined(__APPLE__)
+    return true;
+#else
+    {
+        char app_run[GDOX_EMULATOR_PATH_CAPACITY];
+
+        return join_path(runtime_root, "xemu/AppDir/AppRun", app_run)
+            && executable_file(app_run);
+    }
+#endif
 }
 
 static bool bundled_xemu(
@@ -199,100 +227,12 @@ static bool bundled_xemu(
 #endif
 }
 
-static bool managed_configuration_path(
-    const char *home,
-    char output[GDOX_EMULATOR_PATH_CAPACITY]
-)
-{
-    if (home == NULL || home[0] == '\0') {
-        return false;
-    }
-#if defined(__APPLE__)
-    return join_home(
-        home,
-        "Library/Application Support/org.gdox.gdox/xemu/xemu.toml",
-        output
-    );
-#else
-    {
-        const char *data = getenv("XDG_DATA_HOME");
-        if (data != NULL && data[0] == '/') {
-            return join_path(data, "gdox/xemu/xemu.toml", output);
-        }
-        return join_home(home, ".local/share/gdox/xemu/xemu.toml", output);
-    }
-#endif
-}
-
-static bool managed_configuration(
-    const char *home,
-    char output[GDOX_EMULATOR_PATH_CAPACITY]
-)
-{
-    return managed_configuration_path(home, output) && regular_file(output);
-}
-
-static bool create_parent_directories(const char *path)
-{
-    char partial[GDOX_EMULATOR_PATH_CAPACITY];
-    size_t index;
-    const size_t bytes = strlen(path);
-
-    if (bytes >= sizeof(partial)) {
-        return false;
-    }
-    memcpy(partial, path, bytes + 1U);
-    for (index = 1U; index < bytes; ++index) {
-        if (partial[index] != '/') {
-            continue;
-        }
-        partial[index] = '\0';
-        if (mkdir(partial, 0700) != 0 && errno != EEXIST) {
-            return false;
-        }
-        partial[index] = '/';
-    }
-    return true;
-}
-
 static bool write_private_atomic(
     const char *path,
     const char *text,
     gdox_error *error
 );
 static bool read_text_file(const char *path, char **text, gdox_error *error);
-
-/*
- * GDOX never edits an external xemu installation's own configuration. The
- * first time one is discovered, its configuration is copied into GDOX's
- * managed location and all later updates apply to the copy.
- */
-static bool adopt_external_configuration(
-    const char *home,
-    const char *source_path,
-    char output[GDOX_EMULATOR_PATH_CAPACITY],
-    gdox_error *error
-)
-{
-    char *text = NULL;
-    bool copied;
-
-    if (!managed_configuration_path(home, output)
-        || !create_parent_directories(output)) {
-        gdox_error_set(
-            error,
-            GDOX_ERROR_IO,
-            "could not prepare the managed xemu configuration location"
-        );
-        return false;
-    }
-    if (!read_text_file(source_path, &text, error)) {
-        return false;
-    }
-    copied = write_private_atomic(output, text, error);
-    free(text);
-    return copied;
-}
 
 static bool resolve_in_path(
     const char *name,
@@ -382,48 +322,51 @@ bool gdox_emulator_validate_executable(
     return true;
 }
 
-bool gdox_emulator_discover(gdox_emulator_paths *paths, gdox_error *error)
+bool gdox_emulator_discover_configuration(
+    const char *executable,
+    char output[GDOX_EMULATOR_PATH_CAPACITY],
+    bool *required,
+    gdox_error *error
+)
 {
     const char *explicit_configuration;
-    const char *configuration;
     const char *home;
-    char candidate[GDOX_EMULATOR_PATH_CAPACITY];
 
     gdox_error_clear(error);
-    if (paths == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "emulator path output is required");
+    (void)executable;
+    if (output == NULL || required == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "emulator configuration outputs are required"
+        );
         return false;
     }
-    memset(paths, 0, sizeof(*paths));
+    output[0] = '\0';
+    *required = false;
     home = getenv("HOME");
-    if (!gdox_emulator_discover_executable(paths->executable, error)) {
-        return false;
-    }
-
     explicit_configuration = getenv("GDOX_XEMU_CONFIG");
-    if (explicit_configuration != NULL && regular_file(explicit_configuration)) {
-        configuration = explicit_configuration;
-    } else if (managed_configuration(home, candidate)) {
-        configuration = candidate;
-    } else {
-        char external[GDOX_EMULATOR_PATH_CAPACITY];
-
-        if (home == NULL
-            || !join_home(home, GDOX_XEMU_CONFIGURATION_RELATIVE, external)
-            || !regular_file(external)) {
-            gdox_error_set(
-                error,
-                GDOX_ERROR_NOT_FOUND,
-                "xemu configuration was not found"
-            );
-            return false;
-        }
-        if (!adopt_external_configuration(home, external, candidate, error)) {
-            return false;
-        }
-        configuration = candidate;
+    if (explicit_configuration != NULL
+        && explicit_configuration[0] != '\0') {
+        *required = true;
+        return copy_path(output, explicit_configuration, error);
     }
-    return copy_path(paths->configuration, configuration, error);
+    if (home != NULL
+        && join_home(
+            home,
+            GDOX_XEMU_CONFIGURATION_RELATIVE,
+            output
+        )
+        && regular_file(output)) {
+        return true;
+    }
+    output[0] = '\0';
+    gdox_error_set(
+        error,
+        GDOX_ERROR_NOT_FOUND,
+        "xemu configuration was not found"
+    );
+    return false;
 }
 
 static bool read_text_file(const char *path, char **text, gdox_error *error)
@@ -531,6 +474,7 @@ bool gdox_emulator_prepare(
 {
     char *original = NULL;
     char *updated = NULL;
+    bool persistent_save_export;
     bool success = false;
 
     gdox_error_clear(error);
@@ -539,6 +483,19 @@ bool gdox_emulator_prepare(
         || options->configuration[0] == '\0') {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "valid xemu paths are required");
         return false;
+    }
+    if (!gdox_emulator_query_storage_capabilities(
+            options->executable, &persistent_save_export, error
+        )) {
+        goto cleanup;
+    }
+    if (!persistent_save_export) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_UNSUPPORTED,
+            "xemu does not provide persistent logical save export"
+        );
+        goto cleanup;
     }
     if (!read_text_file(options->configuration, &original, error)
         || !gdox_emulator_configuration_update(
@@ -568,30 +525,92 @@ bool gdox_emulator_launch(
     gdox_error *error
 )
 {
-    gdox_emulator_process *process;
+    gdox_emulator_process *process = NULL;
     posix_spawn_file_actions_t actions;
-    char *arguments[9];
+    posix_spawnattr_t attributes;
+    gdox_xemu_environment environment = {0};
+    char executable[GDOX_EMULATOR_PATH_CAPACITY];
+    char configuration[GDOX_EMULATOR_PATH_CAPACITY];
+    char save_vault[GDOX_EMULATOR_PATH_CAPACITY];
+    char *arguments[11];
     size_t argument = 0U;
-    int spawn_result;
-    int actions_result;
+    int spawn_result = 0;
+    int actions_result = 0;
+    bool actions_initialized = false;
+    bool attributes_initialized = false;
+    bool success = false;
 
     gdox_error_clear(error);
-    if (options == NULL || dvd_uri == NULL || dvd_uri[0] == '\0'
+    if (process_output != NULL) {
+        *process_output = NULL;
+    }
+    if (options == NULL || options->save_vault == NULL
+        || options->save_vault[0] == '\0'
+        || dvd_uri == NULL || dvd_uri[0] == '\0'
         || process_output == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "emulator options, disc URI, and process output are required");
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "emulator options, save vault, disc URI, and process output are required");
         return false;
     }
     if (!gdox_emulator_prepare(options, error)) {
         return false;
+    }
+    if (realpath(options->executable, executable) == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_SOURCE,
+            "xemu executable path is unavailable"
+        );
+        return false;
+    }
+    if (realpath(options->configuration, configuration) == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_SOURCE,
+            "xemu configuration path is unavailable"
+        );
+        return false;
+    }
+    if (realpath(options->save_vault, save_vault) == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_SOURCE,
+            "xemu save vault is unavailable"
+        );
+        return false;
+    }
+    {
+        struct stat status;
+        struct stat named;
+
+        if (lstat(options->save_vault, &named) != 0
+            || !S_ISDIR(named.st_mode) || named.st_uid != geteuid()
+            || (named.st_mode & 077U) != 0U
+            || stat(save_vault, &status) != 0 || !S_ISDIR(status.st_mode)) {
+            gdox_error_set(
+                error,
+                GDOX_ERROR_INVALID_SOURCE,
+                "xemu save vault is not a private current-user directory"
+            );
+            return false;
+        }
     }
     process = calloc(1U, sizeof(*process));
     if (process == NULL) {
         gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate emulator process");
         return false;
     }
-    arguments[argument++] = (char *)options->executable;
+    if (!gdox_xemu_runtime_session_open(&process->session, error)
+        || !gdox_xemu_environment_create(
+            process->session.root, &environment, error
+        )) {
+        goto cleanup;
+    }
+    arguments[argument++] = executable;
+    arguments[argument++] = "--gdox-runtime";
+    arguments[argument++] = "--gdox-save-vault";
+    arguments[argument++] = save_vault;
     arguments[argument++] = "-config_path";
-    arguments[argument++] = (char *)options->configuration;
+    arguments[argument++] = configuration;
     if (options->fullscreen) {
         arguments[argument++] = "-full-screen";
     }
@@ -600,12 +619,15 @@ bool gdox_emulator_launch(
     arguments[argument] = NULL;
 
     actions_result = posix_spawn_file_actions_init(&actions);
+    actions_initialized = actions_result == 0;
     if (actions_result != 0) {
-        free(process);
         gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not initialize xemu process actions");
-        return false;
+        goto cleanup;
     }
-    if (!options->console_output) {
+    actions_result = posix_spawn_file_actions_addchdir_np(
+        &actions, process->session.root
+    );
+    if (actions_result == 0 && !options->console_output) {
         actions_result = posix_spawn_file_actions_addopen(
             &actions,
             STDOUT_FILENO,
@@ -624,29 +646,74 @@ bool gdox_emulator_launch(
         }
     }
     if (actions_result != 0) {
-        (void)posix_spawn_file_actions_destroy(&actions);
-        free(process);
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not configure xemu process output");
-        return false;
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INTERNAL,
+            "could not configure isolated xemu process actions"
+        );
+        goto cleanup;
+    }
+    actions_result = posix_spawnattr_init(&attributes);
+    attributes_initialized = actions_result == 0;
+    if (actions_result == 0) {
+        actions_result = posix_spawnattr_setflags(
+            &attributes, (short)POSIX_SPAWN_SETPGROUP
+        );
+    }
+    if (actions_result == 0) {
+        actions_result = posix_spawnattr_setpgroup(&attributes, 0);
+    }
+    if (actions_result != 0) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INTERNAL,
+            "could not isolate the xemu process group"
+        );
+        goto cleanup;
     }
     spawn_result = posix_spawn(
         &process->pid,
-        options->executable,
+        executable,
         &actions,
-        NULL,
+        &attributes,
         arguments,
-        environ
+        environment.values
     );
-    (void)posix_spawn_file_actions_destroy(&actions);
     if (spawn_result != 0) {
         char message[GDOX_ERROR_MESSAGE_CAPACITY];
         (void)snprintf(message, sizeof(message), "could not launch xemu: %s", strerror(spawn_result));
-        free(process);
         gdox_error_set(error, GDOX_ERROR_IO, message);
-        return false;
+        goto cleanup;
     }
+    success = true;
     *process_output = process;
-    return true;
+
+cleanup:
+    if (attributes_initialized) {
+        (void)posix_spawnattr_destroy(&attributes);
+    }
+    if (actions_initialized) {
+        (void)posix_spawn_file_actions_destroy(&actions);
+    }
+    gdox_xemu_environment_destroy(&environment);
+    if (!success && process != NULL) {
+        gdox_error cleanup_error;
+
+        if (!cleanup_process_session(process, &cleanup_error)) {
+            char message[GDOX_ERROR_MESSAGE_CAPACITY];
+
+            (void)snprintf(
+                message,
+                sizeof(message),
+                "%.96s; xemu session cleanup failed: %.96s",
+                gdox_error_is_set(error) ? error->message : "xemu launch failed",
+                cleanup_error.message
+            );
+            gdox_error_set(error, GDOX_ERROR_IO, message);
+        }
+        free(process);
+    }
+    return success;
 }
 
 static int status_exit_code(int status)
@@ -660,7 +727,19 @@ static int status_exit_code(int status)
     return -1;
 }
 
-bool gdox_emulator_poll(
+enum {
+    GDOX_EMULATOR_STOP_POLL_MS = 50U,
+    GDOX_EMULATOR_FORCED_REAP_MS = 5000U,
+};
+
+static void mark_reaped(gdox_emulator_process *process, int exit_code)
+{
+    process->pid = 0;
+    process->reaped = true;
+    process->exit_code = exit_code;
+}
+
+static bool query_process(
     gdox_emulator_process *process,
     bool *running,
     int *exit_code,
@@ -670,31 +749,215 @@ bool gdox_emulator_poll(
     int status;
     pid_t result;
 
-    gdox_error_clear(error);
-    if (process == NULL || running == NULL || exit_code == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "process and status outputs are required");
-        return false;
-    }
     if (process->reaped) {
+        if (!cleanup_process_session(process, error)) {
+            return false;
+        }
         *running = false;
         *exit_code = process->exit_code;
         return true;
     }
-    result = waitpid(process->pid, &status, WNOHANG);
+    if (process->pid <= 0) {
+        mark_reaped(process, -1);
+        if (!cleanup_process_session(process, error)) {
+            return false;
+        }
+        *running = false;
+        *exit_code = process->exit_code;
+        return true;
+    }
+    do {
+        result = waitpid(process->pid, &status, WNOHANG);
+    } while (result < 0 && errno == EINTR);
     if (result == 0) {
         *running = true;
         *exit_code = 0;
         return true;
     }
     if (result == process->pid) {
-        process->reaped = true;
-        process->exit_code = status_exit_code(status);
+        mark_reaped(process, status_exit_code(status));
+        if (!cleanup_process_session(process, error)) {
+            return false;
+        }
+        *running = false;
+        *exit_code = process->exit_code;
+        return true;
+    }
+    if (result < 0 && errno == ECHILD) {
+        mark_reaped(process, -1);
+        if (!cleanup_process_session(process, error)) {
+            return false;
+        }
         *running = false;
         *exit_code = process->exit_code;
         return true;
     }
     gdox_error_set(error, GDOX_ERROR_IO, "could not query xemu process");
     return false;
+}
+
+bool gdox_emulator_poll(
+    gdox_emulator_process *process,
+    bool *running,
+    int *exit_code,
+    gdox_error *error
+)
+{
+    gdox_error_clear(error);
+    if (process == NULL || running == NULL || exit_code == NULL) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "process and status outputs are required");
+        return false;
+    }
+    return query_process(process, running, exit_code, error);
+}
+
+static void remember_error(gdox_error *saved, const gdox_error *candidate)
+{
+    if (!gdox_error_is_set(saved) && gdox_error_is_set(candidate)) {
+        *saved = *candidate;
+    }
+}
+
+static bool wait_for_exit(
+    gdox_emulator_process *process,
+    uint32_t timeout_ms,
+    int *exit_code,
+    gdox_error *saved_error
+)
+{
+    uint32_t waited = 0U;
+
+    for (;;) {
+        gdox_error query_error;
+        bool running = true;
+        int observed_exit = -1;
+
+        gdox_error_clear(&query_error);
+        if (query_process(
+                process, &running, &observed_exit, &query_error
+            )) {
+            if (!running) {
+                *exit_code = observed_exit;
+                return true;
+            }
+        } else {
+            remember_error(saved_error, &query_error);
+        }
+        if (waited >= timeout_ms) {
+            return false;
+        }
+        {
+            const uint32_t remaining = timeout_ms - waited;
+            const uint32_t delay = remaining < GDOX_EMULATOR_STOP_POLL_MS
+                ? remaining
+                : GDOX_EMULATOR_STOP_POLL_MS;
+
+            gdox_sleep_ms(delay);
+            waited += delay;
+        }
+    }
+}
+
+static void request_signal(
+    gdox_emulator_process *process,
+    int signal_number,
+    const char *message,
+    gdox_error *saved_error
+)
+{
+    gdox_error signal_error;
+    int group_error;
+
+    if (process->reaped || process->pid <= 0) {
+        return;
+    }
+    if (kill(-process->pid, signal_number) == 0) {
+        return;
+    }
+    group_error = errno;
+    if (group_error == ESRCH
+        && (kill(process->pid, signal_number) == 0 || errno == ESRCH)) {
+        return;
+    }
+    gdox_error_set(&signal_error, GDOX_ERROR_IO, message);
+    remember_error(saved_error, &signal_error);
+}
+
+static bool terminate_owned_process(
+    gdox_emulator_process *process,
+    uint32_t grace_ms,
+    int *exit_code,
+    gdox_error *error
+)
+{
+    gdox_error saved_error;
+
+    gdox_error_clear(&saved_error);
+    if (wait_for_exit(process, 0U, exit_code, &saved_error)) {
+        gdox_error_clear(error);
+        return true;
+    }
+    request_signal(
+        process,
+        SIGTERM,
+        "could not request xemu shutdown",
+        &saved_error
+    );
+    if (wait_for_exit(process, grace_ms, exit_code, &saved_error)) {
+        gdox_error_clear(error);
+        return true;
+    }
+    request_signal(
+        process, SIGKILL, "could not force xemu to stop", &saved_error
+    );
+    if (wait_for_exit(
+            process,
+            GDOX_EMULATOR_FORCED_REAP_MS,
+            exit_code,
+            &saved_error
+        )) {
+        gdox_error_clear(error);
+        return true;
+    }
+    if (gdox_error_is_set(&saved_error)) {
+        *error = saved_error;
+    } else {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_IO,
+            "xemu did not exit after forced termination"
+        );
+    }
+    *exit_code = -1;
+    return false;
+}
+
+static void force_terminal_cleanup(gdox_emulator_process *process)
+{
+    int status;
+
+    if (process->reaped || process->pid <= 0) {
+        return;
+    }
+    (void)kill(-process->pid, SIGKILL);
+    (void)kill(process->pid, SIGKILL);
+    for (;;) {
+        const pid_t result = waitpid(process->pid, &status, 0);
+
+        if (result == process->pid) {
+            mark_reaped(process, status_exit_code(status));
+            return;
+        }
+        if (result < 0 && errno == ECHILD) {
+            mark_reaped(process, -1);
+            return;
+        }
+        if (result < 0 && errno != EINTR) {
+            (void)kill(-process->pid, SIGKILL);
+            (void)kill(process->pid, SIGKILL);
+            gdox_sleep_ms(10U);
+        }
+    }
 }
 
 bool gdox_emulator_stop(
@@ -704,38 +967,12 @@ bool gdox_emulator_stop(
     gdox_error *error
 )
 {
-    uint32_t waited = 0U;
-    bool running;
-
     gdox_error_clear(error);
     if (process == NULL || exit_code == NULL) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "process and exit code are required");
         return false;
     }
-    if (!gdox_emulator_poll(process, &running, exit_code, error) || !running) {
-        return !gdox_error_is_set(error);
-    }
-    if (kill(process->pid, SIGTERM) != 0 && errno != ESRCH) {
-        gdox_error_set(error, GDOX_ERROR_IO, "could not request xemu shutdown");
-        return false;
-    }
-    while (waited < grace_ms) {
-        gdox_sleep_ms(50U);
-        waited += 50U;
-        if (!gdox_emulator_poll(process, &running, exit_code, error) || !running) {
-            return !gdox_error_is_set(error);
-        }
-    }
-    if (kill(process->pid, SIGKILL) != 0 && errno != ESRCH) {
-        gdox_error_set(error, GDOX_ERROR_IO, "could not stop xemu");
-        return false;
-    }
-    for (;;) {
-        if (!gdox_emulator_poll(process, &running, exit_code, error) || !running) {
-            return !gdox_error_is_set(error);
-        }
-        gdox_sleep_ms(10U);
-    }
+    return terminate_owned_process(process, grace_ms, exit_code, error);
 }
 
 void gdox_emulator_process_destroy(gdox_emulator_process *process)
@@ -743,9 +980,13 @@ void gdox_emulator_process_destroy(gdox_emulator_process *process)
     if (process != NULL) {
         int exit_code;
         gdox_error ignored;
-        if (!process->reaped) {
-            (void)gdox_emulator_stop(process, 1000U, &exit_code, &ignored);
+        if (!process->reaped && process->pid > 0
+            && !terminate_owned_process(
+                process, 1000U, &exit_code, &ignored
+            )) {
+            force_terminal_cleanup(process);
         }
+        (void)cleanup_process_session(process, &ignored);
         free(process);
     }
 }

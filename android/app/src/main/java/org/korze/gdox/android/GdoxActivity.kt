@@ -204,7 +204,7 @@ class GdoxActivity : Activity() {
 
     content.addView(GdoxUi.body(
       this,
-      "Made by Korze, with love, for game preservation everywhere."
+      "made by korze, with love, for gaming preservation everywhere"
     ).apply {
       gravity = Gravity.CENTER
       textSize = 12f
@@ -333,6 +333,12 @@ class GdoxActivity : Activity() {
             }
             detail.text = recoveryDetail(drive.productName)
           }
+          GdoxDiscMonitor.State.UNSUPPORTED -> {
+            discTitle = null
+            status.text = "Xbox 360 disc detected"
+            detail.text = media.error
+              ?: "Xbox 360 playback is unavailable on Android."
+          }
           GdoxDiscMonitor.State.ERROR -> {
             status.text = "Drive needs attention"
             detail.text = "Reconnect the drive if it does not recover."
@@ -359,14 +365,20 @@ class GdoxActivity : Activity() {
             primary.text = "Start game"
             primary.isEnabled = !emulatorLaunching
           }
+          media.state == GdoxDiscMonitor.State.UNSUPPORTED -> {
+            primary.text = "Unavailable on Android"
+            primary.isEnabled = false
+          }
           else -> {
             primary.text =
               if (emulatorLaunching) "Starting game" else "Checking drive"
             primary.isEnabled = false
           }
         }
-        eject.isEnabled =
-          media.state == GdoxDiscMonitor.State.READY && !emulatorLaunching
+        eject.isEnabled = (
+          media.state == GdoxDiscMonitor.State.READY ||
+            media.state == GdoxDiscMonitor.State.UNSUPPORTED
+          ) && !emulatorLaunching
       }
     }
   }

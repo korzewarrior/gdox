@@ -79,6 +79,7 @@ Java_org_korze_gdox_android_GdoxDiscMonitor_identifyNative(
 {
     gdox_android_disc_info info;
     gdox_error error;
+    jbyte payload[GDOX_ANDROID_DISC_TITLE_CAPACITY + 1U];
     size_t title_length;
     jbyteArray title;
 
@@ -92,17 +93,21 @@ Java_org_korze_gdox_android_GdoxDiscMonitor_identifyNative(
         return NULL;
     }
     title_length = strlen(info.title);
+    payload[0] = (jbyte)info.platform;
+    if (title_length != 0U) {
+        memcpy(payload + 1U, info.title, title_length);
+    }
     title = (*environment)->NewByteArray(
         environment,
-        (jsize)title_length
+        (jsize)(title_length + 1U)
     );
-    if (title != NULL && title_length != 0U) {
+    if (title != NULL) {
         (*environment)->SetByteArrayRegion(
             environment,
             title,
             0,
-            (jsize)title_length,
-            (const jbyte *)info.title
+            (jsize)(title_length + 1U),
+            payload
         );
     }
     if (title == NULL && !(*environment)->ExceptionCheck(environment)) {

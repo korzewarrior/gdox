@@ -5,15 +5,14 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 sys.dont_write_bytecode = True
-from release_paths import cache_root, output_root
 from project_version import validated_project_version
-
+from release_paths import cache_root, output_root
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE = "localhost/gdox-linux-builder:24.04"
@@ -32,6 +31,22 @@ def container_runtime() -> str:
         if executable is not None:
             return executable
     raise SystemExit("Podman or Docker is required for portable Linux packages")
+
+
+def linked_worktree_git_directory() -> Path | None:
+    if not (ROOT / ".git").is_file():
+        return None
+    result = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    directory = Path(result.stdout.strip())
+    if not directory.is_dir():
+        raise SystemExit(f"Git common directory does not exist: {directory}")
+    return directory
 
 
 def run_in_builder(runtime: str, arguments: list[str]) -> None:
@@ -58,6 +73,11 @@ def run_in_builder(runtime: str, arguments: list[str]) -> None:
         "--env",
         "GDOX_CACHE_ROOT=/cache",
     ]
+    git_directory = linked_worktree_git_directory()
+    if git_directory is not None:
+        invocation.extend(
+            ["--volume", f"{git_directory}:{git_directory}:ro"]
+        )
     if Path(runtime).name == "podman":
         invocation.append("--userns=keep-id")
     else:
@@ -102,6 +122,7 @@ def main() -> None:
             "scripts/build_release.py",
             "--target",
             LINUX_TARGET,
+            "--clean",
         ],
     )
     artifact = f"/output/build/{LINUX_TARGET}/gdox"

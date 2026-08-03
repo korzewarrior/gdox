@@ -12,9 +12,12 @@ void status_line(const char *label, bool value)
     ImGui::TextColored(value ? ready : muted, "%s", value ? "Ready" : "Needed");
 }
 
-const char *image_layout_name(gdox_media_image_layout layout)
+const char *image_layout_name(const gdox_app_snapshot &snapshot)
 {
-    switch (layout) {
+    if (snapshot.media_platform == GDOX_MEDIA_PLATFORM_XBOX_360) {
+        return gdox_x360_image_layout_name(snapshot.x360_image_layout);
+    }
+    switch (snapshot.image_layout) {
         case GDOX_MEDIA_IMAGE_PLAYABLE_XISO:
             return "Playable XISO";
         case GDOX_MEDIA_IMAGE_WHOLE_DISC:
@@ -51,11 +54,20 @@ void draw_details(const gdox_app_snapshot &snapshot)
     );
     ImGui::TextWrapped("%s", snapshot.drive);
     ImGui::TextWrapped("%s", snapshot.disc);
+    if (snapshot.media_platform != GDOX_MEDIA_PLATFORM_NONE) {
+        ImGui::TextColored(
+            muted,
+            "%s",
+            snapshot.media_platform == GDOX_MEDIA_PLATFORM_XBOX_360
+                ? "Xbox 360"
+                : "Original Xbox"
+        );
+    }
     if (snapshot.media_source == GDOX_MEDIA_DISC_IMAGE) {
         ImGui::TextColored(
             muted,
             "%s",
-            image_layout_name(snapshot.image_layout)
+            image_layout_name(snapshot)
         );
         ImGui::TextWrapped("%s", snapshot.disc_image_path);
     }
@@ -116,25 +128,101 @@ void draw_details(const gdox_app_snapshot &snapshot)
             muted,
             "Counts only successful hardware reads; virtual metadata is excluded."
         );
+        if (snapshot.nbd_read_stats.requests != 0U) {
+            const gdox_nbd_read_stats &reads = snapshot.nbd_read_stats;
+            const double no_drive_percent = reads.successful_requests != 0U
+                ? static_cast<double>(
+                    reads.served_without_drive_io_requests
+                ) * 100.0
+                    / static_cast<double>(reads.successful_requests)
+                : 0.0;
+            const double average_service_ms = reads.requests != 0U
+                ? static_cast<double>(reads.service_milliseconds)
+                    / static_cast<double>(reads.requests)
+                : 0.0;
+
+            ImGui::Dummy(ImVec2(0.0F, 8.0F));
+            ImGui::TextUnformatted("Live playback reads");
+            ImGui::Text(
+                "Guest requests      %llu (%.2f MiB)",
+                static_cast<unsigned long long>(reads.requests),
+                static_cast<double>(reads.requested_bytes)
+                    / (1024.0 * 1024.0)
+            );
+            ImGui::Text(
+                "Served without drive I/O  %llu / %llu (%.1f%%)",
+                static_cast<unsigned long long>(
+                    reads.served_without_drive_io_requests
+                ),
+                static_cast<unsigned long long>(
+                    reads.successful_requests
+                ),
+                no_drive_percent
+            );
+            ImGui::Text(
+                "Drive-backed reads  %llu",
+                static_cast<unsigned long long>(
+                    reads.requests_with_drive_io
+                )
+            );
+            ImGui::Text(
+                "Guest optical I/O   %llu commands / %.2f MiB",
+                static_cast<unsigned long long>(reads.physical_commands),
+                static_cast<double>(reads.physical_bytes)
+                    / (1024.0 * 1024.0)
+            );
+            ImGui::Text(
+                "Sequential / discontinuous  %llu / %llu",
+                static_cast<unsigned long long>(
+                    reads.sequential_requests
+                ),
+                static_cast<unsigned long long>(
+                    reads.discontinuous_requests
+                )
+            );
+            ImGui::Text(
+                "Read service avg / max  %.1f / %llu ms",
+                average_service_ms,
+                static_cast<unsigned long long>(
+                    reads.maximum_service_milliseconds
+                )
+            );
+            if (reads.failed_requests != 0U) {
+                ImGui::TextColored(
+                    warning,
+                    "Failed guest reads  %llu",
+                    static_cast<unsigned long long>(
+                        reads.failed_requests
+                    )
+                );
+            }
+        }
     }
     ImGui::Dummy(ImVec2(0.0F, 14.0F));
 
     ImGui::TextUnformatted("Runtime");
     ImGui::Separator();
-    status_line("xemu", snapshot.xemu_ready);
-    status_line("MCPX boot ROM", snapshot.mcpx_ready);
-    status_line("Xbox BIOS", snapshot.flash_ready);
-    status_line("Xbox hard disk", snapshot.hdd_ready);
-    ImGui::TextUnformatted("Xbox X/Y/Z cache");
-    ImGui::SameLine(190.0F);
-    ImGui::TextColored(
-        snapshot.hdd_cache_reset ? ready : muted,
-        "%s",
-        snapshot.hdd_cache_reset
-            ? "Reset on launch"
-            : "User-managed HDD"
-    );
-    ImGui::TextColored(muted, "%s", snapshot.xemu_setup);
+    if (snapshot.media_backend == GDOX_MEDIA_BACKEND_XENIA) {
+        status_line("Xenia", snapshot.xenia_ready);
+        if (snapshot.xenia_policy != nullptr
+            && snapshot.xenia_policy->runtime != nullptr) {
+            ImGui::Text(
+                "Revision            %s",
+                snapshot.xenia_policy->runtime->revision
+            );
+            ImGui::Text(
+                "Launch module       %s",
+                snapshot.xenia_policy->launch_module
+            );
+        }
+        ImGui::TextColored(muted, "%s", snapshot.xenia_setup);
+    } else {
+        status_line("xemu", snapshot.xemu_ready);
+        status_line("MCPX boot ROM", snapshot.mcpx_ready);
+        status_line("Xbox BIOS", snapshot.flash_ready);
+        status_line("Xbox hard disk", snapshot.hdd_ready);
+        ImGui::TextColored(muted, "%s", snapshot.xemu_setup);
+    }
     ImGui::Dummy(ImVec2(0.0F, 14.0F));
 
     ImGui::TextUnformatted("Current state");

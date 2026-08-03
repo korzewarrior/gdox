@@ -63,17 +63,3 @@ bool gdox_usb_bot_present_all(
     );
     return false;
 }
-
-bool gdox_usb_bot_restore_kernel_driver(
-    gdox_usb_bot_identity identity,
-    bool *reattached,
-    gdox_error *error
-)
-{
-    (void)identity;
-    if (reattached != NULL) {
-        *reattached = false;
-    }
-    gdox_error_set(error, GDOX_ERROR_UNSUPPORTED, "this build has no libusb transport");
-    return false;
-}

@@ -2,12 +2,13 @@
 
 set -eu
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-gdox_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+gdox_root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 output_root=${GDOX_OUTPUT_ROOT:-${GDOX_OUTPUT_DIR:-"$gdox_root/../gdox-output"}}
 patch_root=$gdox_root/android/emulator/patches
 series_file=$patch_root/series
 
+# shellcheck source=android/dependencies.lock
 . "$gdox_root/android/dependencies.lock"
 
 require_command()
@@ -19,6 +20,7 @@ require_command()
 }
 
 require_command git
+require_command python
 require_command sha256sum
 
 if [ ! -f "$series_file" ]; then
@@ -66,25 +68,24 @@ if [ -f "$stamp" ]; then
         echo "$checkout_root contains a different Android patch set" >&2
         exit 1
     fi
-    printf '%s\n' "$checkout_root"
-    exit 0
 fi
 
-if ! git -C "$checkout_root" diff --quiet \
-    || ! git -C "$checkout_root" diff --cached --quiet; then
-    echo "$checkout_root contains unrecorded changes" >&2
+python "$gdox_root/scripts/android_patchset.py" \
+    "$checkout_root" "$patch_root"
+
+wrapper_properties=$checkout_root/android/gradle/wrapper/gradle-wrapper.properties
+wrapper_jar=$checkout_root/android/gradle/wrapper/gradle-wrapper.jar
+if ! grep -Fqx \
+    "distributionSha256Sum=$GRADLE_DISTRIBUTION_SHA256" \
+    "$wrapper_properties"; then
+    echo "$wrapper_properties does not pin the expected Gradle distribution" >&2
+    exit 1
+fi
+wrapper_jar_sha256=$(sha256sum "$wrapper_jar" | cut -d ' ' -f 1)
+if [ "$wrapper_jar_sha256" != "$GRADLE_WRAPPER_JAR_SHA256" ]; then
+    echo "$wrapper_jar does not match the pinned Gradle wrapper" >&2
     exit 1
 fi
 
-while IFS= read -r patch; do
-    case "$patch" in
-        ""|\#*) continue ;;
-    esac
-    git -C "$checkout_root" apply --check --whitespace=error-all \
-        "$patch_root/$patch"
-    git -C "$checkout_root" apply "$patch_root/$patch"
-done < "$series_file"
-
-git -C "$checkout_root" diff --check
 printf '%s\n' "$patch_set" > "$stamp"
 printf '%s\n' "$checkout_root"

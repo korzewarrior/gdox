@@ -13,6 +13,13 @@ typedef struct fake_mmc {
     size_t cdb_bytes;
     uint32_t timeout_ms;
     unsigned int command_count;
+    bool fail_ready;
+    uint8_t cached_sense[18];
+    size_t cached_sense_bytes;
+    bool fail_media_event;
+    uint8_t media_events[20];
+    size_t media_event_count;
+    size_t media_event_index;
 } fake_mmc;
 
 static bool command_in(
@@ -38,6 +45,25 @@ static bool command_in(
     fake->cdb_bytes = cdb_bytes;
     fake->timeout_ms = timeout_ms;
     ++fake->command_count;
+    if (fake->fail_media_event && cdb_bytes != 0U
+        && cdb[0] == 0x4aU) {
+        gdox_error_set(error, GDOX_ERROR_TRANSPORT, "event poll failed");
+        return false;
+    }
+    if (cdb_bytes != 0U && cdb[0] == 0x4aU
+        && fake->media_event_index < fake->media_event_count) {
+        const uint8_t event =
+            fake->media_events[fake->media_event_index++];
+
+        memset(output, 0, output_bytes);
+        if (output_bytes >= 8U) {
+            output[1] = 6U;
+            output[2] = event == 0U ? 0x84U : 0x04U;
+            output[4] = event;
+            *transferred = 8U;
+            return true;
+        }
+    }
     memset(output, 0, output_bytes);
     memcpy(output, fake->response, copied);
     *transferred = fake->reported_bytes == SIZE_MAX
@@ -87,6 +113,10 @@ static bool command_none(
     fake->cdb_bytes = cdb_bytes;
     fake->timeout_ms = timeout_ms;
     ++fake->command_count;
+    if (fake->fail_ready && cdb_bytes != 0U && cdb[0] == 0U) {
+        gdox_error_set(error, GDOX_ERROR_TRANSPORT, "not ready");
+        return false;
+    }
     return true;
 }
 
@@ -104,12 +134,35 @@ static bool close_transport(void *context, gdox_error *error)
     return true;
 }
 
+static bool last_sense(
+    const void *raw_context,
+    uint8_t *output,
+    size_t output_bytes,
+    size_t *sense_bytes
+)
+{
+    const fake_mmc *fake = raw_context;
+    const size_t copied = fake->cached_sense_bytes < output_bytes
+        ? fake->cached_sense_bytes
+        : output_bytes;
+
+    if (copied == 0U) {
+        *sense_bytes = 0U;
+        return false;
+    }
+    memcpy(output, fake->cached_sense, copied);
+    *sense_bytes = copied;
+    return true;
+}
+
 static const gdox_scsi_transport_ops fake_ops = {
     command_in,
     command_out,
     command_none,
     reset,
     close_transport,
+    NULL,
+    last_sense,
 };
 
 static void test_inquiry(void)
@@ -267,6 +320,279 @@ static void test_reads_and_control(void)
     GDOX_TEST_CHECK(fake.timeout_ms == UINT32_C(1500));
 }
 
+static void test_media_observation(void)
+{
+    fake_mmc fake = {0};
+    gdox_scsi_transport transport = {&fake, &fake_ops};
+    gdox_mmc_media_tracker tracker = {0};
+    gdox_mmc_media_tracker recovery_tracker = {0};
+    gdox_mmc_media_tracker fallback_tracker = {0};
+    gdox_media_observation observation;
+
+    gdox_mmc_observe_media(
+        &transport,
+        UINT32_C(1000),
+        &tracker,
+        &observation
+    );
+    GDOX_TEST_CHECK(
+        observation.readiness == GDOX_MEDIA_READINESS_PRESENT
+    );
+    GDOX_TEST_CHECK(observation.generation == 0U);
+
+    fake.fail_ready = true;
+    fake.command_count = 0U;
+    memcpy(
+        fake.response,
+        (const uint8_t[]){
+            0x70U, 0U, 0x02U, 0U, 0U, 0U, 0U, 0U,
+            0U, 0U, 0U, 0U, 0x3aU, 0U, 0U, 0U, 0U, 0U,
+        },
+        18U
+    );
+    fake.response_bytes = 18U;
+    fake.reported_bytes = 18U;
+    gdox_mmc_observe_media(
+        &transport,
+        UINT32_C(1000),
+        &tracker,
+        &observation
+    );
+    GDOX_TEST_CHECK(
+        observation.readiness == GDOX_MEDIA_READINESS_ABSENT
+    );
+    GDOX_TEST_CHECK(observation.generation == UINT64_C(1));
+    GDOX_TEST_CHECK(fake.command_count == 3U);
+    gdox_mmc_observe_media(
+        &transport,
+        UINT32_C(1000),
+        &tracker,
+        &observation
+    );
+    GDOX_TEST_CHECK(observation.generation == UINT64_C(1));
+
+    fake.fail_ready = false;
+    gdox_mmc_observe_media(
+        &transport,
+        UINT32_C(1000),
+        &tracker,
+        &observation
+    );
+    GDOX_TEST_CHECK(
+        observation.readiness == GDOX_MEDIA_READINESS_PRESENT
+    );
+    GDOX_TEST_CHECK(observation.generation == UINT64_C(1));
+
+    fake.fail_ready = true;
+    memset(fake.response, 0, sizeof(fake.response));
+    fake.response[0] = 0x72U;
+    fake.response[1] = 0x06U;
+    fake.response[2] = 0x28U;
+    fake.response_bytes = 4U;
+    fake.reported_bytes = 4U;
+    gdox_mmc_observe_media(
+        &transport,
+        UINT32_C(1000),
+        &tracker,
+        &observation
+    );
+    GDOX_TEST_CHECK(
+        observation.readiness == GDOX_MEDIA_READINESS_UNKNOWN
+    );
+    GDOX_TEST_CHECK(observation.generation == UINT64_C(2));
+    gdox_mmc_observe_media(
+        &transport,
+        UINT32_C(1000),
+        &tracker,
+        &observation
+    );
+    GDOX_TEST_CHECK(observation.generation == UINT64_C(2));
+
+    memset(fake.response, 0, sizeof(fake.response));
+    fake.response[0] = 0x70U;
+    fake.response[2] = 0x02U;
+    fake.response[12] = 0x04U;
+    fake.response[13] = 0x01U;
+    fake.response_bytes = 18U;
+    fake.reported_bytes = 18U;
+    gdox_mmc_observe_media(
+        &transport,
+        UINT32_C(1000),
+        &tracker,
+        &observation
+    );
+    GDOX_TEST_CHECK(
+        observation.readiness == GDOX_MEDIA_READINESS_UNKNOWN
+    );
+    GDOX_TEST_CHECK(observation.generation == UINT64_C(2));
+
+    fake.command_count = 0U;
+    memcpy(
+        fake.cached_sense,
+        (const uint8_t[]){
+            0x70U, 0U, 0x02U, 0U, 0U, 0U, 0U, 0U,
+            0U, 0U, 0U, 0U, 0x3aU, 0U, 0U, 0U, 0U, 0U,
+        },
+        18U
+    );
+    fake.cached_sense_bytes = 18U;
+    gdox_mmc_observe_media(
+        &transport,
+        UINT32_C(1000),
+        &tracker,
+        &observation
+    );
+    GDOX_TEST_CHECK(
+        observation.readiness == GDOX_MEDIA_READINESS_ABSENT
+    );
+    GDOX_TEST_CHECK(observation.generation == UINT64_C(2));
+    GDOX_TEST_CHECK(fake.command_count == 2U);
+
+    memset(fake.cached_sense, 0, sizeof(fake.cached_sense));
+    fake.cached_sense[0] = 0x72U;
+    fake.cached_sense[1] = 0x06U;
+    fake.cached_sense[2] = 0x28U;
+    fake.cached_sense_bytes = 4U;
+    GDOX_TEST_CHECK(gdox_mmc_media_tracker_capture_transport_sense(
+        &transport,
+        UINT32_C(1000),
+        &recovery_tracker
+    ));
+    GDOX_TEST_CHECK(recovery_tracker.generation == UINT64_C(1));
+    GDOX_TEST_CHECK(gdox_mmc_media_tracker_capture_transport_sense(
+        &transport,
+        UINT32_C(1000),
+        &recovery_tracker
+    ));
+    GDOX_TEST_CHECK(recovery_tracker.generation == UINT64_C(1));
+
+    fake.cached_sense_bytes = 0U;
+    memcpy(
+        fake.response,
+        (const uint8_t[]){
+            0x70U, 0U, 0x06U, 0U, 0U, 0U, 0U, 0U,
+            0U, 0U, 0U, 0U, 0x28U, 0U, 0U, 0U, 0U, 0U,
+        },
+        18U
+    );
+    fake.response_bytes = 18U;
+    fake.reported_bytes = 18U;
+    fake.command_count = 0U;
+    GDOX_TEST_CHECK(gdox_mmc_media_tracker_capture_transport_sense(
+        &transport,
+        UINT32_C(1000),
+        &fallback_tracker
+    ));
+    GDOX_TEST_CHECK(fallback_tracker.generation == UINT64_C(1));
+    GDOX_TEST_CHECK(fake.command_count == 1U);
+}
+
+static void test_media_events(void)
+{
+    fake_mmc fake = {0};
+    gdox_scsi_transport transport = {&fake, &fake_ops};
+    gdox_mmc_media_tracker tracker = {0};
+    gdox_mmc_media_tracker change_tracker = {0};
+    gdox_mmc_media_tracker failed_tracker = {0};
+    gdox_media_event event = GDOX_MEDIA_EVENT_CHANGED;
+
+    GDOX_TEST_CHECK(gdox_mmc_parse_media_event(
+        (const uint8_t[]){0U, 6U, 0x04U, 0U, 0x01U, 0U, 0U, 0U},
+        8U,
+        &event
+    ));
+    GDOX_TEST_CHECK(event == GDOX_MEDIA_EVENT_EJECT_REQUEST);
+    GDOX_TEST_CHECK(gdox_mmc_parse_media_event(
+        (const uint8_t[]){0U, 6U, 0x84U, 0U, 0U, 0U, 0U, 0U},
+        8U,
+        &event
+    ));
+    GDOX_TEST_CHECK(event == GDOX_MEDIA_EVENT_NONE);
+    GDOX_TEST_CHECK(!gdox_mmc_parse_media_event(
+        (const uint8_t[]){0U, 6U, 0x02U, 0U, 0x01U, 0U, 0U, 0U},
+        8U,
+        &event
+    ));
+    GDOX_TEST_CHECK(!gdox_mmc_parse_media_event(
+        (const uint8_t[]){0U, 6U, 0x04U, 0U, 0x01U, 0U, 0U},
+        7U,
+        &event
+    ));
+
+    memcpy(
+        fake.response,
+        (const uint8_t[]){0U, 6U, 0x04U, 0U, 0x01U, 0U, 0U, 0U},
+        8U
+    );
+    fake.response_bytes = 8U;
+    fake.reported_bytes = 8U;
+    GDOX_TEST_CHECK(gdox_mmc_poll_media_event(
+        &transport, UINT32_C(1500), &tracker
+    ));
+    GDOX_TEST_CHECK(fake.cdb_bytes == 10U && fake.cdb[0] == 0x4aU);
+    GDOX_TEST_CHECK(fake.cdb[1] == 1U && fake.cdb[4] == 0x10U);
+    GDOX_TEST_CHECK(fake.cdb[7] == 0U && fake.cdb[8] == 8U);
+    GDOX_TEST_CHECK(tracker.pending_event
+        == GDOX_MEDIA_EVENT_EJECT_REQUEST);
+    GDOX_TEST_CHECK(gdox_mmc_media_tracker_transitioned(&tracker, 0U));
+
+    fake.response[4] = 0x02U;
+    GDOX_TEST_CHECK(gdox_mmc_poll_media_event(
+        &transport, UINT32_C(1500), &tracker
+    ));
+    GDOX_TEST_CHECK(tracker.generation == UINT64_C(1));
+    GDOX_TEST_CHECK(tracker.pending_event == GDOX_MEDIA_EVENT_NONE);
+
+    GDOX_TEST_CHECK(gdox_mmc_poll_media_event(
+        &transport, UINT32_C(1500), &change_tracker
+    ));
+    GDOX_TEST_CHECK(change_tracker.generation == UINT64_C(1));
+    GDOX_TEST_CHECK(change_tracker.pending_event == GDOX_MEDIA_EVENT_NONE);
+    GDOX_TEST_CHECK(gdox_mmc_media_tracker_transitioned(
+        &change_tracker, 0U
+    ));
+
+    memcpy(
+        fake.cached_sense,
+        (const uint8_t[]){0x72U, 0x06U, 0x28U, 0U},
+        4U
+    );
+    fake.cached_sense_bytes = 4U;
+    fake.fail_media_event = true;
+    GDOX_TEST_CHECK(!gdox_mmc_poll_media_event(
+        &transport, UINT32_C(1500), &failed_tracker
+    ));
+    GDOX_TEST_CHECK(failed_tracker.generation == UINT64_C(1));
+    fake.fail_media_event = false;
+    fake.cached_sense_bytes = 0U;
+    fake.response[4] = 0x01U;
+    GDOX_TEST_CHECK(gdox_mmc_poll_media_event(
+        &transport, UINT32_C(1500), &failed_tracker
+    ));
+    GDOX_TEST_CHECK(failed_tracker.pending_event
+        == GDOX_MEDIA_EVENT_EJECT_REQUEST);
+
+    tracker = (gdox_mmc_media_tracker){0};
+    memcpy(
+        fake.media_events,
+        (const uint8_t[]){0x01U, 0x03U, 0x02U, 0U, 0x01U},
+        5U
+    );
+    fake.media_event_count = 4U;
+    fake.media_event_index = 0U;
+    gdox_mmc_media_tracker_begin_session(
+        &transport, UINT32_C(1500), &tracker
+    );
+    GDOX_TEST_CHECK(tracker.pending_event == GDOX_MEDIA_EVENT_NONE);
+    GDOX_TEST_CHECK(fake.media_event_index == 4U);
+    fake.media_event_count = 5U;
+    GDOX_TEST_CHECK(gdox_mmc_poll_media_event(
+        &transport, UINT32_C(1500), &tracker
+    ));
+    GDOX_TEST_CHECK(tracker.pending_event
+        == GDOX_MEDIA_EVENT_EJECT_REQUEST);
+}
+
 int gdox_test_failures = 0;
 
 int main(void)
@@ -274,5 +600,7 @@ int main(void)
     test_inquiry();
     test_capacity_and_structure();
     test_reads_and_control();
+    test_media_observation();
+    test_media_events();
     return gdox_test_failures == 0 ? 0 : 1;
 }

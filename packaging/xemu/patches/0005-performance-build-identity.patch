@@ -1,0 +1,64 @@
+diff --git a/hw/xbox/nv2a/pgraph/gl/shaders.c b/hw/xbox/nv2a/pgraph/gl/shaders.c
+index 0c36d0f..994cebe 100644
+--- a/hw/xbox/nv2a/pgraph/gl/shaders.c
++++ b/hw/xbox/nv2a/pgraph/gl/shaders.c
+@@ -544,7 +544,9 @@ void pgraph_gl_init_shaders(PGRAPHState *pg)
+         shader_gl_vendor = (const char *) glGetString(GL_VENDOR);
+     }
+ 
+-    shader_create_cache_folder();
++    if (g_config.perf.cache_shaders) {
++        shader_create_cache_folder();
++    }
+ 
+     /* FIXME: Make this configurable */
+     const size_t shader_cache_size = 50*1024;
+@@ -559,8 +561,12 @@ void pgraph_gl_init_shaders(PGRAPHState *pg)
+     r->shader_cache.compare_nodes = shader_cache_entry_compare;
+     r->shader_cache.post_node_evict = shader_cache_entry_post_evict;
+ 
+-    qemu_thread_create(&r->shader_disk_thread, "pgraph.renderer_state->shader_cache",
+-                       shader_reload_lru_from_disk, pg, QEMU_THREAD_JOINABLE);
++    if (g_config.perf.cache_shaders) {
++        qemu_thread_create(&r->shader_disk_thread,
++                           "pgraph.renderer_state->shader_cache",
++                           shader_reload_lru_from_disk, pg,
++                           QEMU_THREAD_JOINABLE);
++    }
+ 
+     /* FIXME: Make this configurable */
+     const size_t shader_module_cache_size = 50*1024;
+diff --git a/scripts/xemu-version.sh b/scripts/xemu-version.sh
+index 906330f..ff2320a 100755
+--- a/scripts/xemu-version.sh
++++ b/scripts/xemu-version.sh
+@@ -3,7 +3,28 @@
+ set -eu
+ 
+ dir="$1"
+-XEMU_DATE=$(date -u)
++if test "${SOURCE_DATE_EPOCH+x}" = x; then
++  case "$SOURCE_DATE_EPOCH" in
++    ''|*[!0-9]*)
++      echo "SOURCE_DATE_EPOCH must be a non-negative integer" >&2
++      exit 1
++      ;;
++  esac
++
++  timestamp_format='+%Y-%m-%dT%H:%M:%SZ'
++  if XEMU_DATE=$(date -u -d "@$SOURCE_DATE_EPOCH" \
++      "$timestamp_format" 2>/dev/null); then
++    :
++  elif XEMU_DATE=$(date -u -r "$SOURCE_DATE_EPOCH" \
++      "$timestamp_format" 2>/dev/null); then
++    :
++  else
++    echo "SOURCE_DATE_EPOCH is outside the range supported by date" >&2
++    exit 1
++  fi
++else
++  XEMU_DATE=$(date -u)
++fi
+ XEMU_COMMIT=$( \
+   cd "$dir"; \
+   if test -e .git; then \

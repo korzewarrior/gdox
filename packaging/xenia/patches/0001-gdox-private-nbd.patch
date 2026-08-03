@@ -1,0 +1,1306 @@
+diff --git a/src/xenia/app/xenia_main.cc b/src/xenia/app/xenia_main.cc
+index 2dbefb92..b3fc138b 100644
+--- a/src/xenia/app/xenia_main.cc
++++ b/src/xenia/app/xenia_main.cc
+@@ -116,6 +116,9 @@ DECLARE_bool(force_mount_devkit);
+ DEFINE_transient_path(target, "",
+                       "Specifies the target .xex or .iso to execute.",
+                       "General");
++DEFINE_transient_string(
++    gdox_disc, "", "Specifies a private, read-only GDOX loopback disc session.",
++    "General");
+ #ifndef XE_PLATFORM_WIN32
+ DEFINE_transient_bool(portable, false,
+                       "Specifies if Xenia should run in portable mode.",
+@@ -737,13 +740,27 @@ void EmulatorApp::EmulatorThread() {
+   app_context().CallInUIThread(
+       [this]() { emulator_window_->OnEmulatorInitialized(); });
+ 
++  if (!cvars::gdox_disc.empty() && !cvars::target.empty()) {
++    xe::FatalError("Specify either a target path or a GDOX disc, not both.");
++    app_context().RequestDeferredQuit();
++    return;
++  }
++  if (!cvars::gdox_disc.empty()) {
++    result = emulator_->LaunchGdoxDisc(cvars::gdox_disc);
++    if (XFAILED(result)) {
++      xe::FatalError(fmt::format("Failed to launch GDOX disc: {:08X}", result));
++      app_context().RequestDeferredQuit();
++      return;
++    }
++  }
++
+   // Grab path from the flag or unnamed argument.
+   std::filesystem::path path;
+   if (!cvars::target.empty()) {
+     path = cvars::target;
+   }
+ 
+-  if (!path.empty()) {
++  if (cvars::gdox_disc.empty() && !path.empty()) {
+     // Normalize the path and make absolute.
+     auto abs_path = std::filesystem::absolute(path);
+ 
+diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+index 22cd2522..5166c0ad 100644
+--- a/src/xenia/emulator.cc
++++ b/src/xenia/emulator.cc
+@@ -56,6 +56,7 @@
+ #include "xenia/vfs/device.h"
+ #include "xenia/vfs/devices/disc_image_device.h"
+ #include "xenia/vfs/devices/disc_zarchive_device.h"
++#include "xenia/vfs/devices/disc_image_reader.h"
+ #include "xenia/vfs/devices/host_path_device.h"
+ #include "xenia/vfs/devices/null_device.h"
+ #include "xenia/vfs/devices/xcontent_container_device.h"
+@@ -631,6 +632,38 @@ X_STATUS Emulator::LaunchDiscArchive(const std::filesystem::path& path) {
+   return result;
+ }
+ 
++X_STATUS Emulator::LaunchGdoxDisc(std::string_view uri) {
++  auto mount_path = "\\Device\\Cdrom0";
++
++  auto reader = vfs::DiscImageReader::OpenGdoxNbd(uri);
++  if (!reader) {
++    xe::FatalError("Unable to connect to the local GDOX disc session.");
++    return X_STATUS_NO_SUCH_FILE;
++  }
++  auto device =
++      std::make_unique<vfs::DiscImageDevice>(mount_path, std::move(reader));
++  if (!device->Initialize()) {
++    xe::FatalError("Unable to mount the GDOX disc session.");
++    return X_STATUS_NO_SUCH_FILE;
++  }
++  if (!file_system_->RegisterDevice(std::move(device))) {
++    xe::FatalError("Unable to register the GDOX disc session.");
++    return X_STATUS_NO_SUCH_FILE;
++  }
++
++  file_system_->RegisterSymbolicLink("game:", mount_path);
++  file_system_->RegisterSymbolicLink("d:", mount_path);
++
++  auto module_path(FindLaunchModule());
++  X_STATUS result = CompleteLaunch("GDOX live disc", module_path);
++
++  if (result == X_STATUS_NOT_FOUND && !cvars::launch_module.empty()) {
++    return LaunchDefaultModule("GDOX live disc");
++  }
++  kernel_state_->deployment_type_ = XDeploymentType::kOpticalDisc;
++  return result;
++}
++
+ X_STATUS Emulator::LaunchStfsContainer(const std::filesystem::path& path) {
+   std::string module_path = FindLaunchModule();
+   X_STATUS result = CompleteLaunch(path, module_path);
+diff --git a/src/xenia/emulator.h b/src/xenia/emulator.h
+index f6c94536..2f358543 100644
+--- a/src/xenia/emulator.h
++++ b/src/xenia/emulator.h
+@@ -15,6 +15,7 @@
+ #include <functional>
+ #include <optional>
+ #include <string>
++#include <string_view>
+ #include <vector>
+ 
+ #include "xenia/apu/audio_media_player.h"
+@@ -231,6 +232,9 @@ class Emulator {
+   // Launches a game from a disc archive file (.zar, etc).
+   X_STATUS LaunchDiscArchive(const std::filesystem::path& path);
+ 
++  // Launches a game from a private, read-only GDOX loopback disc session.
++  X_STATUS LaunchGdoxDisc(std::string_view uri);
++
+   // Launches a game from an STFS container file.
+   X_STATUS LaunchStfsContainer(const std::filesystem::path& path);
+ 
+diff --git a/src/xenia/vfs/devices/disc_image_device.cc b/src/xenia/vfs/devices/disc_image_device.cc
+index 123d5a26..67361deb 100644
+--- a/src/xenia/vfs/devices/disc_image_device.cc
++++ b/src/xenia/vfs/devices/disc_image_device.cc
+@@ -9,6 +9,11 @@
+ 
+ #include "xenia/vfs/devices/disc_image_device.h"
+ 
++#include <array>
++#include <cstring>
++#include <limits>
++#include <vector>
++
+ #include "xenia/base/literals.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/base/math.h"
+@@ -20,25 +25,33 @@ namespace vfs {
+ using namespace xe::literals;
+ 
+ constexpr size_t kXESectorSize = 2_KiB;
++constexpr size_t kMaxDirectoryDepth = 64;
++constexpr size_t kMaxDirectoryTreeDepth = 1024;
++constexpr size_t kMaxGdfxEntries = 65536;
+ 
+ DiscImageDevice::DiscImageDevice(const std::string_view mount_path,
+                                  const std::filesystem::path& host_path)
+     : Device(mount_path), name_("GDFX"), host_path_(host_path) {}
+ 
++DiscImageDevice::DiscImageDevice(const std::string_view mount_path,
++                                 std::unique_ptr<DiscImageReader> reader)
++    : Device(mount_path), name_("GDFX"), reader_(std::move(reader)) {}
++
+ DiscImageDevice::~DiscImageDevice() = default;
+ 
+ bool DiscImageDevice::Initialize() {
+-  mmap_ = MappedMemory::Open(host_path_, MappedMemory::Mode::kRead);
+-  if (!mmap_) {
+-    XELOGE("Disc image could not be mapped");
++  if (!reader_) {
++    reader_ = DiscImageReader::OpenFile(host_path_);
++  }
++  if (!reader_) {
++    XELOGE("Disc image could not be opened");
+     return false;
+   } else {
+     XELOGFS("DiscImageDevice::Initialize");
+   }
+ 
+-  ParseState state = {0};
+-  state.ptr = mmap_->data();
+-  state.size = mmap_->size();
++  ParseState state = {};
++  state.size = reader_->size();
+   auto result = Verify(&state);
+   if (result != Error::kSuccess) {
+     XELOGE("Failed to verify disc image header: {}",
+@@ -46,7 +59,7 @@ bool DiscImageDevice::Initialize() {
+     return false;
+   }
+ 
+-  result = ReadAllEntries(&state, state.ptr + state.root_offset);
++  result = ReadAllEntries(&state);
+   if (result != Error::kSuccess) {
+     XELOGE("Failed to read all GDFX entries: {}", static_cast<int32_t>(result));
+     return false;
+@@ -86,16 +99,25 @@ DiscImageDevice::Error DiscImageDevice::Verify(ParseState* state) {
+     return Error::kErrorFileMismatch;
+   }
+ 
+-  // Read sector 32 to get FS state.
+-  if (state->size < state->game_offset + (32 * kXESectorSize)) {
++  size_t descriptor_offset = state->game_offset + (32 * kXESectorSize);
++  std::array<uint8_t, 28> descriptor = {};
++  if (descriptor_offset > state->size ||
++      descriptor.size() > state->size - descriptor_offset ||
++      !reader_->Read(descriptor_offset, descriptor.data(), descriptor.size())) {
+     return Error::kErrorReadError;
+   }
+-  uint8_t* fs_ptr = state->ptr + state->game_offset + (32 * kXESectorSize);
+-  state->root_sector = xe::load<uint32_t>(fs_ptr + 20);
+-  state->root_size = xe::load<uint32_t>(fs_ptr + 24);
++  state->root_sector = xe::load<uint32_t>(descriptor.data() + 20);
++  state->root_size = xe::load<uint32_t>(descriptor.data() + 24);
++  if (state->root_sector >
++      (std::numeric_limits<size_t>::max() - state->game_offset) /
++          kXESectorSize) {
++    return Error::kErrorDamagedFile;
++  }
+   state->root_offset =
+       state->game_offset + (state->root_sector * kXESectorSize);
+-  if (state->root_size < 13 || state->root_size > 32_MiB) {
++  if (state->root_size < 14 || state->root_size > 32_MiB ||
++      state->root_offset > state->size ||
++      state->root_size > state->size - state->root_offset) {
+     return Error::kErrorDamagedFile;
+   }
+ 
+@@ -103,31 +125,59 @@ DiscImageDevice::Error DiscImageDevice::Verify(ParseState* state) {
+ }
+ 
+ bool DiscImageDevice::VerifyMagic(ParseState* state, size_t offset) {
+-  if (offset >= state->size) {
++  std::array<uint8_t, 20> magic = {};
++  if (offset > state->size || magic.size() > state->size - offset ||
++      !reader_->Read(offset, magic.data(), magic.size())) {
+     return false;
+   }
+ 
+   // Simple check to see if the given offset contains the magic value.
+-  return std::memcmp(state->ptr + offset, "MICROSOFT*XBOX*MEDIA", 20) == 0;
++  return std::memcmp(magic.data(), "MICROSOFT*XBOX*MEDIA", 20) == 0;
+ }
+ 
+-DiscImageDevice::Error DiscImageDevice::ReadAllEntries(
+-    ParseState* state, const uint8_t* root_buffer) {
+-  auto root_entry = new DiscImageEntry(this, nullptr, "", mmap_.get());
++DiscImageDevice::Error DiscImageDevice::ReadAllEntries(ParseState* state) {
++  auto root_entry = new DiscImageEntry(this, nullptr, "", reader_.get());
+   root_entry->attributes_ = kFileAttributeDirectory;
+   root_entry_ = std::unique_ptr<Entry>(root_entry);
+ 
+-  if (!ReadEntry(state, root_buffer, 0, root_entry)) {
+-    return Error::kErrorOutOfMemory;
++  if (!ReadDirectory(state, state->root_offset, state->root_size, root_entry)) {
++    return Error::kErrorReadError;
+   }
+ 
+   return Error::kSuccess;
+ }
+ 
++bool DiscImageDevice::ReadDirectory(ParseState* state, size_t offset,
++                                    size_t length, DiscImageEntry* parent) {
++  if (length < 14 || length > 32_MiB || offset > state->size ||
++      length > state->size - offset ||
++      state->directory_depth >= kMaxDirectoryDepth) {
++    return false;
++  }
++  ++state->directory_depth;
++  std::vector<uint8_t> buffer(length);
++  std::vector<bool> visited((buffer.size() + 3) / 4);
++  bool result =
++      reader_->Read(offset, buffer.data(), buffer.size()) &&
++      ReadEntry(state, buffer.data(), buffer.size(), 0, parent, &visited, 0);
++  --state->directory_depth;
++  return result;
++}
++
+ bool DiscImageDevice::ReadEntry(ParseState* state, const uint8_t* buffer,
+-                                uint16_t entry_ordinal,
+-                                DiscImageEntry* parent) {
+-  const uint8_t* p = buffer + (entry_ordinal * 4);
++                                size_t buffer_size, uint16_t entry_ordinal,
++                                DiscImageEntry* parent,
++                                std::vector<bool>* visited, size_t tree_depth) {
++  size_t entry_offset = size_t(entry_ordinal) * 4;
++  if (entry_offset > buffer_size || buffer_size - entry_offset < 14 ||
++      entry_ordinal >= visited->size() || (*visited)[entry_ordinal] ||
++      tree_depth >= kMaxDirectoryTreeDepth ||
++      state->entry_count >= kMaxGdfxEntries) {
++    return false;
++  }
++  (*visited)[entry_ordinal] = true;
++  ++state->entry_count;
++  const uint8_t* p = buffer + entry_offset;
+ 
+   uint16_t node_l = xe::load<uint16_t>(p + 0);
+   uint16_t node_r = xe::load<uint16_t>(p + 2);
+@@ -135,9 +185,13 @@ bool DiscImageDevice::ReadEntry(ParseState* state, const uint8_t* buffer,
+   size_t length = xe::load<uint32_t>(p + 8);
+   uint8_t attributes = xe::load<uint8_t>(p + 12);
+   uint8_t name_length = xe::load<uint8_t>(p + 13);
++  if (name_length == 0 || name_length > buffer_size - entry_offset - 14) {
++    return false;
++  }
+   auto name_buffer = reinterpret_cast<const char*>(p + 14);
+ 
+-  if (node_l && !ReadEntry(state, buffer, node_l, parent)) {
++  if (node_l && !ReadEntry(state, buffer, buffer_size, node_l, parent, visited,
++                           tree_depth + 1)) {
+     return false;
+   }
+ 
+@@ -150,7 +204,7 @@ bool DiscImageDevice::ReadEntry(ParseState* state, const uint8_t* buffer,
+     name = ansi_name;
+   }
+ 
+-  auto entry = DiscImageEntry::Create(this, parent, name, mmap_.get());
++  auto entry = DiscImageEntry::Create(this, parent, name, reader_.get());
+   entry->attributes_ = attributes | kFileAttributeReadOnly;
+   entry->size_ = length;
+   entry->allocation_size_ = xe::round_up(length, bytes_per_sector());
+@@ -160,26 +214,27 @@ bool DiscImageDevice::ReadEntry(ParseState* state, const uint8_t* buffer,
+   entry->access_timestamp_ = 10000 * 11644473600000LL;
+   entry->write_timestamp_ = 10000 * 11644473600000LL;
+ 
++  if (sector > (std::numeric_limits<size_t>::max() - state->game_offset) /
++                   kXESectorSize) {
++    return false;
++  }
++  size_t data_offset = state->game_offset + (sector * kXESectorSize);
++  if (data_offset > state->size || length > state->size - data_offset) {
++    return false;
++  }
++
+   if (attributes & kFileAttributeDirectory) {
+     // Folder.
+     entry->data_offset_ = 0;
+     entry->data_size_ = 0;
+     if (length) {
+-      // Not a leaf - read in children.
+-      if (state->size < state->game_offset + (sector * kXESectorSize)) {
+-        // Out of bounds read.
+-        return false;
+-      }
+-      // Read child list.
+-      uint8_t* folder_ptr =
+-          state->ptr + state->game_offset + (sector * kXESectorSize);
+-      if (!ReadEntry(state, folder_ptr, 0, entry.get())) {
++      if (!ReadDirectory(state, data_offset, length, entry.get())) {
+         return false;
+       }
+     }
+   } else {
+     // File.
+-    entry->data_offset_ = state->game_offset + (sector * kXESectorSize);
++    entry->data_offset_ = data_offset;
+     entry->data_size_ = length;
+   }
+ 
+@@ -187,7 +242,8 @@ bool DiscImageDevice::ReadEntry(ParseState* state, const uint8_t* buffer,
+   parent->children_.emplace_back(std::move(entry));
+ 
+   // Read next file in the list.
+-  if (node_r && !ReadEntry(state, buffer, node_r, parent)) {
++  if (node_r && !ReadEntry(state, buffer, buffer_size, node_r, parent, visited,
++                           tree_depth + 1)) {
+     return false;
+   }
+ 
+diff --git a/src/xenia/vfs/devices/disc_image_device.h b/src/xenia/vfs/devices/disc_image_device.h
+index 3b098944..4a2deca5 100644
+--- a/src/xenia/vfs/devices/disc_image_device.h
++++ b/src/xenia/vfs/devices/disc_image_device.h
+@@ -12,9 +12,10 @@
+ 
+ #include <memory>
+ #include <string>
++#include <vector>
+ 
+-#include "xenia/base/mapped_memory.h"
+ #include "xenia/vfs/device.h"
++#include "xenia/vfs/devices/disc_image_reader.h"
+ 
+ namespace xe {
+ namespace vfs {
+@@ -27,6 +28,8 @@ class DiscImageDevice : public Device {
+  public:
+   DiscImageDevice(const std::string_view mount_path,
+                   const std::filesystem::path& host_path);
++  DiscImageDevice(const std::string_view mount_path,
++                  std::unique_ptr<DiscImageReader> reader);
+   ~DiscImageDevice() override;
+ 
+   bool Initialize() override;
+@@ -38,7 +41,7 @@ class DiscImageDevice : public Device {
+   uint32_t component_name_max_length() const override { return 255; }
+ 
+   uint32_t total_allocation_units() const override {
+-    return uint32_t(mmap_->size() / sectors_per_allocation_unit() /
++    return uint32_t(reader_->size() / sectors_per_allocation_unit() /
+                     bytes_per_sector());
+   }
+   uint32_t available_allocation_units() const override { return 0; }
+@@ -57,22 +60,26 @@ class DiscImageDevice : public Device {
+   std::string name_;
+   std::filesystem::path host_path_;
+   std::unique_ptr<Entry> root_entry_;
+-  std::unique_ptr<MappedMemory> mmap_;
++  std::unique_ptr<DiscImageReader> reader_;
+ 
+   typedef struct {
+-    uint8_t* ptr;
+     size_t size;         // Size (bytes) of total image.
+     size_t game_offset;  // Offset (bytes) of game partition.
+     size_t root_sector;  // Offset (sector) of root.
+     size_t root_offset;  // Offset (bytes) of root.
+     size_t root_size;    // Size (bytes) of root.
++    size_t directory_depth;
++    size_t entry_count;
+   } ParseState;
+ 
+   Error Verify(ParseState* state);
+   bool VerifyMagic(ParseState* state, size_t offset);
+-  Error ReadAllEntries(ParseState* state, const uint8_t* root_buffer);
+-  bool ReadEntry(ParseState* state, const uint8_t* buffer,
+-                 uint16_t entry_ordinal, DiscImageEntry* parent);
++  Error ReadAllEntries(ParseState* state);
++  bool ReadDirectory(ParseState* state, size_t offset, size_t length,
++                     DiscImageEntry* parent);
++  bool ReadEntry(ParseState* state, const uint8_t* buffer, size_t buffer_size,
++                 uint16_t entry_ordinal, DiscImageEntry* parent,
++                 std::vector<bool>* visited, size_t tree_depth);
+ };
+ 
+ }  // namespace vfs
+diff --git a/src/xenia/vfs/devices/disc_image_entry.cc b/src/xenia/vfs/devices/disc_image_entry.cc
+index 7c71c2f7..33727c4a 100644
+--- a/src/xenia/vfs/devices/disc_image_entry.cc
++++ b/src/xenia/vfs/devices/disc_image_entry.cc
+@@ -16,9 +16,10 @@ namespace xe {
+ namespace vfs {
+ 
+ DiscImageEntry::DiscImageEntry(Device* device, Entry* parent,
+-                               const std::string_view path, MappedMemory* mmap)
++                               const std::string_view path,
++                               DiscImageReader* reader)
+     : Entry(device, parent, path),
+-      mmap_(mmap),
++      reader_(reader),
+       data_offset_(0),
+       data_size_(0) {}
+ 
+@@ -26,9 +27,9 @@ DiscImageEntry::~DiscImageEntry() = default;
+ 
+ std::unique_ptr<DiscImageEntry> DiscImageEntry::Create(
+     Device* device, Entry* parent, const std::string_view name,
+-    MappedMemory* mmap) {
++    DiscImageReader* reader) {
+   auto path = xe::utf8::join_guest_paths(parent->path(), name);
+-  auto entry = std::make_unique<DiscImageEntry>(device, parent, path, mmap);
++  auto entry = std::make_unique<DiscImageEntry>(device, parent, path, reader);
+   return std::move(entry);
+ }
+ 
+@@ -44,9 +45,12 @@ std::unique_ptr<MappedMemory> DiscImageEntry::OpenMapped(
+     return nullptr;
+   }
+ 
+-  size_t real_offset = data_offset_ + offset;
+-  size_t real_length = length ? std::min(length, data_size_) : data_size_;
+-  return mmap_->Slice(real_offset, real_length);
++  if (offset > data_size_) {
++    return nullptr;
++  }
++  size_t available = data_size_ - offset;
++  size_t real_length = length ? std::min(length, available) : available;
++  return reader_->Map(data_offset_ + offset, real_length);
+ }
+ 
+ bool DiscImageEntry::DeleteEntryInternal(Entry* entry) { return false; }
+diff --git a/src/xenia/vfs/devices/disc_image_entry.h b/src/xenia/vfs/devices/disc_image_entry.h
+index fd458d84..f4856b9d 100644
+--- a/src/xenia/vfs/devices/disc_image_entry.h
++++ b/src/xenia/vfs/devices/disc_image_entry.h
+@@ -13,7 +13,7 @@
+ #include <string>
+ #include <vector>
+ 
+-#include "xenia/base/mapped_memory.h"
++#include "xenia/vfs/devices/disc_image_reader.h"
+ #include "xenia/vfs/entry.h"
+ 
+ namespace xe {
+@@ -24,20 +24,20 @@ class DiscImageDevice;
+ class DiscImageEntry : public Entry {
+  public:
+   DiscImageEntry(Device* device, Entry* parent, const std::string_view path,
+-                 MappedMemory* mmap);
++                 DiscImageReader* reader);
+   ~DiscImageEntry() override;
+ 
+   static std::unique_ptr<DiscImageEntry> Create(Device* device, Entry* parent,
+                                                 const std::string_view name,
+-                                                MappedMemory* mmap);
++                                                DiscImageReader* reader);
+ 
+-  MappedMemory* mmap() const { return mmap_; }
++  DiscImageReader* reader() const { return reader_; }
+   size_t data_offset() const { return data_offset_; }
+   size_t data_size() const { return data_size_; }
+ 
+   X_STATUS Open(uint32_t desired_access, File** out_file) override;
+ 
+-  bool can_map() const override { return true; }
++  bool can_map() const override { return reader_->can_map(); }
+   std::unique_ptr<MappedMemory> OpenMapped(MappedMemory::Mode mode,
+                                            size_t offset,
+                                            size_t length) override;
+@@ -47,7 +47,7 @@ class DiscImageEntry : public Entry {
+ 
+   bool DeleteEntryInternal(Entry* entry) override;
+ 
+-  MappedMemory* mmap_;
++  DiscImageReader* reader_;
+   size_t data_offset_;
+   size_t data_size_;
+ };
+diff --git a/src/xenia/vfs/devices/disc_image_file.cc b/src/xenia/vfs/devices/disc_image_file.cc
+index d1db59d6..4d2b6f9f 100644
+--- a/src/xenia/vfs/devices/disc_image_file.cc
++++ b/src/xenia/vfs/devices/disc_image_file.cc
+@@ -27,7 +27,7 @@ X_STATUS DiscImageFile::ReadSync(std::span<uint8_t> buffer, size_t byte_offset,
+     return X_STATUS_END_OF_FILE;
+   }
+ 
+-  if (entry_->data_offset() >= entry_->mmap()->size()) {
++  if (entry_->data_offset() >= entry_->reader()->size()) {
+     xe::FatalError("This ISO image is corrupted and cannot be played.");
+     return X_STATUS_END_OF_FILE;
+   }
+@@ -35,7 +35,10 @@ X_STATUS DiscImageFile::ReadSync(std::span<uint8_t> buffer, size_t byte_offset,
+   size_t real_offset = entry_->data_offset() + byte_offset;
+   size_t real_length =
+       std::min(buffer.size(), entry_->data_size() - byte_offset);
+-  std::memcpy(buffer.data(), entry_->mmap()->data() + real_offset, real_length);
++  if (!entry_->reader()->Read(
++          real_offset, buffer.data(), real_length)) {
++    return X_STATUS_UNSUCCESSFUL;
++  }
+   *out_bytes_read = real_length;
+   return X_STATUS_SUCCESS;
+ }
+diff --git a/src/xenia/vfs/devices/disc_image_reader.cc b/src/xenia/vfs/devices/disc_image_reader.cc
+new file mode 100644
+index 00000000..61068ab3
+--- /dev/null
++++ b/src/xenia/vfs/devices/disc_image_reader.cc
+@@ -0,0 +1,68 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Signal Spike Games. All rights reserved.                    *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#include "xenia/vfs/devices/disc_image_reader.h"
++
++#include <algorithm>
++#include <cstring>
++
++#include "xenia/vfs/devices/gdox_nbd_disc_image_reader.h"
++
++namespace xe {
++namespace vfs {
++
++class MappedDiscImageReader final : public DiscImageReader {
++ public:
++  explicit MappedDiscImageReader(std::unique_ptr<MappedMemory> mapping)
++      : mapping_(std::move(mapping)) {}
++
++  size_t size() const override { return mapping_->size(); }
++
++  bool Read(size_t offset, void* buffer, size_t length) override {
++    if (offset > size() || length > size() - offset ||
++        (length != 0 && buffer == nullptr)) {
++      return false;
++    }
++    if (length != 0) {
++      std::memcpy(buffer, mapping_->data() + offset, length);
++    }
++    return true;
++  }
++
++  bool can_map() const override { return true; }
++
++  std::unique_ptr<MappedMemory> Map(size_t offset, size_t length) override {
++    if (offset > size()) {
++      return nullptr;
++    }
++    size_t available = size() - offset;
++    size_t mapped_length = length ? std::min(length, available) : available;
++    return mapping_->Slice(offset, mapped_length);
++  }
++
++ private:
++  std::unique_ptr<MappedMemory> mapping_;
++};
++
++std::unique_ptr<DiscImageReader> DiscImageReader::OpenFile(
++    const std::filesystem::path& path) {
++  auto mapping = MappedMemory::Open(path, MappedMemory::Mode::kRead);
++  if (!mapping) {
++    return nullptr;
++  }
++  return std::make_unique<MappedDiscImageReader>(std::move(mapping));
++}
++
++std::unique_ptr<DiscImageReader> DiscImageReader::OpenGdoxNbd(
++    std::string_view uri) {
++  return GdoxNbdDiscImageReader::Open(uri);
++}
++
++}  // namespace vfs
++}  // namespace xe
+diff --git a/src/xenia/vfs/devices/disc_image_reader.h b/src/xenia/vfs/devices/disc_image_reader.h
+new file mode 100644
+index 00000000..c091ee52
+--- /dev/null
++++ b/src/xenia/vfs/devices/disc_image_reader.h
+@@ -0,0 +1,40 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Signal Spike Games. All rights reserved.                    *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#ifndef XENIA_VFS_DEVICES_DISC_IMAGE_READER_H_
++#define XENIA_VFS_DEVICES_DISC_IMAGE_READER_H_
++
++#include <cstddef>
++#include <filesystem>
++#include <memory>
++#include <string_view>
++
++#include "xenia/base/mapped_memory.h"
++
++namespace xe {
++namespace vfs {
++
++class DiscImageReader {
++ public:
++  virtual ~DiscImageReader() = default;
++
++  virtual size_t size() const = 0;
++  virtual bool Read(size_t offset, void* buffer, size_t length) = 0;
++  virtual bool can_map() const = 0;
++  virtual std::unique_ptr<MappedMemory> Map(size_t offset, size_t length) = 0;
++
++  static std::unique_ptr<DiscImageReader> OpenFile(
++      const std::filesystem::path& path);
++  static std::unique_ptr<DiscImageReader> OpenGdoxNbd(std::string_view uri);
++};
++
++}  // namespace vfs
++}  // namespace xe
++
++#endif  // XENIA_VFS_DEVICES_DISC_IMAGE_READER_H_
+diff --git a/src/xenia/vfs/devices/gdox_nbd_disc_image_reader.h b/src/xenia/vfs/devices/gdox_nbd_disc_image_reader.h
+new file mode 100644
+index 00000000..c8d80a96
+--- /dev/null
++++ b/src/xenia/vfs/devices/gdox_nbd_disc_image_reader.h
+@@ -0,0 +1,68 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Signal Spike Games. All rights reserved.                    *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#ifndef XENIA_VFS_DEVICES_GDOX_NBD_DISC_IMAGE_READER_H_
++#define XENIA_VFS_DEVICES_GDOX_NBD_DISC_IMAGE_READER_H_
++
++#include <atomic>
++#include <cstdint>
++#include <memory>
++#include <mutex>
++#include <string>
++#include <string_view>
++
++#include "xenia/vfs/devices/disc_image_reader.h"
++#include "xenia/vfs/devices/gdox_nbd_stream.h"
++
++namespace xe {
++namespace vfs {
++
++struct GdoxNbdEndpoint {
++  uint16_t port = 0;
++  std::string export_name;
++};
++
++bool ParseGdoxNbdUri(std::string_view uri, GdoxNbdEndpoint* endpoint);
++
++class GdoxNbdDiscImageReader final : public DiscImageReader {
++ public:
++  static std::unique_ptr<GdoxNbdDiscImageReader> Open(std::string_view uri);
++
++  // Protocol-test seam. Production callers must use the URI overload.
++  static std::unique_ptr<GdoxNbdDiscImageReader> Open(
++      std::unique_ptr<GdoxNbdStream> stream, std::string export_name);
++
++  ~GdoxNbdDiscImageReader() override;
++
++  size_t size() const override {
++    return size_.load(std::memory_order_acquire);
++  }
++  bool Read(size_t offset, void* buffer, size_t length) override;
++  bool can_map() const override { return false; }
++  std::unique_ptr<MappedMemory> Map(size_t offset, size_t length) override;
++
++ private:
++  explicit GdoxNbdDiscImageReader(std::unique_ptr<GdoxNbdStream> stream);
++
++  bool Negotiate(std::string_view export_name);
++  bool ReadChunk(uint64_t offset, uint8_t* output, uint32_t length);
++  void Fail();
++  void Disconnect();
++
++  std::unique_ptr<GdoxNbdStream> stream_;
++  std::atomic<size_t> size_ = 0;
++  uint64_t next_handle_ = 1;
++  bool negotiated_ = false;
++  std::mutex mutex_;
++};
++
++}  // namespace vfs
++}  // namespace xe
++
++#endif  // XENIA_VFS_DEVICES_GDOX_NBD_DISC_IMAGE_READER_H_
+diff --git a/src/xenia/vfs/devices/gdox_nbd_reader.cc b/src/xenia/vfs/devices/gdox_nbd_reader.cc
+new file mode 100644
+index 00000000..cdb04ca2
+--- /dev/null
++++ b/src/xenia/vfs/devices/gdox_nbd_reader.cc
+@@ -0,0 +1,271 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Signal Spike Games. All rights reserved.                    *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#include "xenia/vfs/devices/gdox_nbd_disc_image_reader.h"
++
++#include <algorithm>
++#include <array>
++#include <charconv>
++#include <limits>
++
++#include "xenia/base/logging.h"
++
++namespace xe {
++namespace vfs {
++
++namespace {
++
++constexpr uint64_t kNbdInitMagic = UINT64_C(0x4e42444d41474943);
++constexpr uint64_t kNbdOptsMagic = UINT64_C(0x49484156454f5054);
++constexpr uint32_t kNbdRequestMagic = UINT32_C(0x25609513);
++constexpr uint32_t kNbdSimpleReplyMagic = UINT32_C(0x67446698);
++constexpr uint16_t kNbdFlagFixedNewstyle = UINT16_C(0x0001);
++constexpr uint16_t kNbdFlagNoZeroes = UINT16_C(0x0002);
++constexpr uint16_t kNbdFlagHasFlags = UINT16_C(0x0001);
++constexpr uint16_t kNbdFlagReadOnly = UINT16_C(0x0002);
++constexpr uint32_t kNbdClientFlagFixedNewstyle = UINT32_C(0x00000001);
++constexpr uint32_t kNbdClientFlagNoZeroes = UINT32_C(0x00000002);
++constexpr uint32_t kNbdOptionExportName = UINT32_C(1);
++constexpr uint16_t kNbdCommandRead = UINT16_C(0);
++constexpr uint16_t kNbdCommandDisconnect = UINT16_C(2);
++constexpr uint32_t kMaxReadBytes = 64U * 1024U;
++constexpr size_t kExportNameBytes = 32;
++
++uint16_t LoadBe16(const uint8_t* input) {
++  return uint16_t(uint16_t(input[0]) << 8 | uint16_t(input[1]));
++}
++
++uint32_t LoadBe32(const uint8_t* input) {
++  return uint32_t(input[0]) << 24 | uint32_t(input[1]) << 16 |
++         uint32_t(input[2]) << 8 | uint32_t(input[3]);
++}
++
++uint64_t LoadBe64(const uint8_t* input) {
++  return uint64_t(LoadBe32(input)) << 32 | LoadBe32(input + 4);
++}
++
++void StoreBe16(uint8_t* output, uint16_t value) {
++  output[0] = uint8_t(value >> 8);
++  output[1] = uint8_t(value);
++}
++
++void StoreBe32(uint8_t* output, uint32_t value) {
++  output[0] = uint8_t(value >> 24);
++  output[1] = uint8_t(value >> 16);
++  output[2] = uint8_t(value >> 8);
++  output[3] = uint8_t(value);
++}
++
++void StoreBe64(uint8_t* output, uint64_t value) {
++  StoreBe32(output, uint32_t(value >> 32));
++  StoreBe32(output + 4, uint32_t(value));
++}
++
++bool IsLowerHex(char value) {
++  return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
++}
++
++}  // namespace
++
++bool ParseGdoxNbdUri(std::string_view uri, GdoxNbdEndpoint* endpoint) {
++  constexpr std::string_view kPrefix = "nbd://127.0.0.1:";
++  if (!endpoint || uri.size() < kPrefix.size() ||
++      uri.substr(0, kPrefix.size()) != kPrefix) {
++    return false;
++  }
++  std::string_view remainder = uri.substr(kPrefix.size());
++  size_t slash = remainder.find('/');
++  if (slash == std::string_view::npos || slash == 0) {
++    return false;
++  }
++  std::string_view port_text = remainder.substr(0, slash);
++  std::string_view export_name = remainder.substr(slash + 1);
++  if (port_text.size() > 5 ||
++      (port_text.size() > 1 && port_text.front() == '0') ||
++      export_name.size() != kExportNameBytes ||
++      !std::all_of(export_name.begin(), export_name.end(), IsLowerHex)) {
++    return false;
++  }
++  uint32_t port = 0;
++  auto parsed = std::from_chars(port_text.data(),
++                                port_text.data() + port_text.size(), port, 10);
++  if (parsed.ec != std::errc() ||
++      parsed.ptr != port_text.data() + port_text.size() || port == 0 ||
++      port > std::numeric_limits<uint16_t>::max()) {
++    return false;
++  }
++  endpoint->port = uint16_t(port);
++  endpoint->export_name.assign(export_name);
++  return true;
++}
++
++GdoxNbdDiscImageReader::GdoxNbdDiscImageReader(
++    std::unique_ptr<GdoxNbdStream> stream)
++    : stream_(std::move(stream)) {}
++
++GdoxNbdDiscImageReader::~GdoxNbdDiscImageReader() {
++  std::lock_guard<std::mutex> lock(mutex_);
++  Disconnect();
++}
++
++std::unique_ptr<GdoxNbdDiscImageReader> GdoxNbdDiscImageReader::Open(
++    std::string_view uri) {
++  GdoxNbdEndpoint endpoint;
++  if (!ParseGdoxNbdUri(uri, &endpoint)) {
++    XELOGE("GDOX disc URI is invalid");
++    return nullptr;
++  }
++  auto stream = GdoxNbdStream::ConnectLoopback(endpoint.port);
++  if (!stream) {
++    XELOGE("Could not connect to the local GDOX disc session");
++    return nullptr;
++  }
++  return Open(std::move(stream), std::move(endpoint.export_name));
++}
++
++std::unique_ptr<GdoxNbdDiscImageReader> GdoxNbdDiscImageReader::Open(
++    std::unique_ptr<GdoxNbdStream> stream, std::string export_name) {
++  if (!stream || export_name.size() != kExportNameBytes ||
++      !std::all_of(export_name.begin(), export_name.end(), IsLowerHex)) {
++    return nullptr;
++  }
++  auto reader = std::unique_ptr<GdoxNbdDiscImageReader>(
++      new GdoxNbdDiscImageReader(std::move(stream)));
++  if (!reader->Negotiate(export_name)) {
++    return nullptr;
++  }
++  return reader;
++}
++
++bool GdoxNbdDiscImageReader::Negotiate(std::string_view export_name) {
++  std::array<uint8_t, 18> greeting = {};
++  if (!stream_->ReadExact(greeting.data(), greeting.size()) ||
++      LoadBe64(greeting.data()) != kNbdInitMagic ||
++      LoadBe64(greeting.data() + 8) != kNbdOptsMagic) {
++    Fail();
++    return false;
++  }
++  uint16_t server_flags = LoadBe16(greeting.data() + 16);
++  if ((server_flags & (kNbdFlagFixedNewstyle | kNbdFlagNoZeroes)) !=
++      (kNbdFlagFixedNewstyle | kNbdFlagNoZeroes)) {
++    Fail();
++    return false;
++  }
++
++  std::array<uint8_t, 4> client_flags = {};
++  StoreBe32(client_flags.data(),
++            kNbdClientFlagFixedNewstyle | kNbdClientFlagNoZeroes);
++  std::array<uint8_t, 16> option = {};
++  StoreBe64(option.data(), kNbdOptsMagic);
++  StoreBe32(option.data() + 8, kNbdOptionExportName);
++  StoreBe32(option.data() + 12, uint32_t(export_name.size()));
++  if (!stream_->WriteAll(client_flags.data(), client_flags.size()) ||
++      !stream_->WriteAll(option.data(), option.size()) ||
++      !stream_->WriteAll(export_name.data(), export_name.size())) {
++    Fail();
++    return false;
++  }
++
++  std::array<uint8_t, 10> export_info = {};
++  if (!stream_->ReadExact(export_info.data(), export_info.size())) {
++    Fail();
++    return false;
++  }
++  uint64_t export_size = LoadBe64(export_info.data());
++  uint16_t export_flags = LoadBe16(export_info.data() + 8);
++  if (export_size == 0 ||
++      export_size > uint64_t(std::numeric_limits<size_t>::max()) ||
++      (export_flags & (kNbdFlagHasFlags | kNbdFlagReadOnly)) !=
++          (kNbdFlagHasFlags | kNbdFlagReadOnly)) {
++    Fail();
++    return false;
++  }
++  size_.store(size_t(export_size), std::memory_order_release);
++  negotiated_ = true;
++  return true;
++}
++
++bool GdoxNbdDiscImageReader::Read(size_t offset, void* buffer, size_t length) {
++  std::lock_guard<std::mutex> lock(mutex_);
++  const size_t image_size = size_.load(std::memory_order_relaxed);
++  if (!negotiated_ || (length != 0 && buffer == nullptr) ||
++      offset > image_size || length > image_size - offset) {
++    return false;
++  }
++  auto output = static_cast<uint8_t*>(buffer);
++  size_t completed = 0;
++  while (completed < length) {
++    uint32_t chunk =
++        uint32_t(std::min(length - completed, size_t(kMaxReadBytes)));
++    if (!ReadChunk(uint64_t(offset) + completed, output + completed, chunk)) {
++      Fail();
++      return false;
++    }
++    completed += chunk;
++  }
++  return true;
++}
++
++bool GdoxNbdDiscImageReader::ReadChunk(uint64_t offset, uint8_t* output,
++                                       uint32_t length) {
++  uint64_t handle = next_handle_++;
++  std::array<uint8_t, 28> request = {};
++  StoreBe32(request.data(), kNbdRequestMagic);
++  StoreBe16(request.data() + 4, 0);
++  StoreBe16(request.data() + 6, kNbdCommandRead);
++  StoreBe64(request.data() + 8, handle);
++  StoreBe64(request.data() + 16, offset);
++  StoreBe32(request.data() + 24, length);
++  if (!stream_->WriteAll(request.data(), request.size())) {
++    return false;
++  }
++
++  std::array<uint8_t, 16> reply = {};
++  if (!stream_->ReadExact(reply.data(), reply.size()) ||
++      LoadBe32(reply.data()) != kNbdSimpleReplyMagic ||
++      LoadBe32(reply.data() + 4) != 0 || LoadBe64(reply.data() + 8) != handle) {
++    return false;
++  }
++  return length == 0 || stream_->ReadExact(output, length);
++}
++
++std::unique_ptr<MappedMemory> GdoxNbdDiscImageReader::Map(size_t offset,
++                                                          size_t length) {
++  (void)offset;
++  (void)length;
++  return nullptr;
++}
++
++void GdoxNbdDiscImageReader::Fail() {
++  negotiated_ = false;
++  size_.store(0, std::memory_order_release);
++  if (stream_) {
++    stream_->Close();
++  }
++}
++
++void GdoxNbdDiscImageReader::Disconnect() {
++  if (!stream_) {
++    return;
++  }
++  if (negotiated_) {
++    std::array<uint8_t, 28> request = {};
++    StoreBe32(request.data(), kNbdRequestMagic);
++    StoreBe16(request.data() + 4, 0);
++    StoreBe16(request.data() + 6, kNbdCommandDisconnect);
++    StoreBe64(request.data() + 8, next_handle_++);
++    stream_->WriteAll(request.data(), request.size());
++  }
++  stream_->Close();
++  negotiated_ = false;
++  size_.store(0, std::memory_order_release);
++}
++
++}  // namespace vfs
++}  // namespace xe
+diff --git a/src/xenia/vfs/devices/gdox_nbd_stream.h b/src/xenia/vfs/devices/gdox_nbd_stream.h
+new file mode 100644
+index 00000000..763d97e5
+--- /dev/null
++++ b/src/xenia/vfs/devices/gdox_nbd_stream.h
+@@ -0,0 +1,34 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Signal Spike Games. All rights reserved.                    *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#ifndef XENIA_VFS_DEVICES_GDOX_NBD_STREAM_H_
++#define XENIA_VFS_DEVICES_GDOX_NBD_STREAM_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++
++namespace xe {
++namespace vfs {
++
++class GdoxNbdStream {
++ public:
++  virtual ~GdoxNbdStream() = default;
++
++  virtual bool ReadExact(void* buffer, size_t length) = 0;
++  virtual bool WriteAll(const void* buffer, size_t length) = 0;
++  virtual void Close() = 0;
++
++  static std::unique_ptr<GdoxNbdStream> ConnectLoopback(uint16_t port);
++};
++
++}  // namespace vfs
++}  // namespace xe
++
++#endif  // XENIA_VFS_DEVICES_GDOX_NBD_STREAM_H_
+diff --git a/src/xenia/vfs/devices/gdox_nbd_stream_posix.cc b/src/xenia/vfs/devices/gdox_nbd_stream_posix.cc
+new file mode 100644
+index 00000000..98951559
+--- /dev/null
++++ b/src/xenia/vfs/devices/gdox_nbd_stream_posix.cc
+@@ -0,0 +1,114 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Signal Spike Games. All rights reserved.                    *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#include "xenia/vfs/devices/gdox_nbd_stream.h"
++
++#include <arpa/inet.h>
++#include <errno.h>
++#include <sys/socket.h>
++#include <unistd.h>
++
++#include <algorithm>
++#include <limits>
++
++namespace xe {
++namespace vfs {
++
++constexpr int kGdoxNbdIoTimeoutSeconds = 30;
++
++class PosixGdoxNbdStream final : public GdoxNbdStream {
++ public:
++  explicit PosixGdoxNbdStream(int socket) : socket_(socket) {}
++  ~PosixGdoxNbdStream() override { Close(); }
++
++  bool ReadExact(void* buffer, size_t length) override {
++    auto output = static_cast<uint8_t*>(buffer);
++    size_t completed = 0;
++    while (completed < length) {
++      size_t request = std::min(length - completed,
++                                size_t(std::numeric_limits<ssize_t>::max()));
++      ssize_t received = recv(socket_, output + completed, request, 0);
++      if (received > 0) {
++        completed += size_t(received);
++      } else if (received == 0) {
++        Close();
++        return false;
++      } else if (errno != EINTR) {
++        Close();
++        return false;
++      }
++    }
++    return true;
++  }
++
++  bool WriteAll(const void* buffer, size_t length) override {
++    auto input = static_cast<const uint8_t*>(buffer);
++    size_t completed = 0;
++    while (completed < length) {
++      size_t request = std::min(length - completed,
++                                size_t(std::numeric_limits<ssize_t>::max()));
++#ifdef MSG_NOSIGNAL
++      ssize_t sent = send(socket_, input + completed, request, MSG_NOSIGNAL);
++#else
++      ssize_t sent = send(socket_, input + completed, request, 0);
++#endif
++      if (sent > 0) {
++        completed += size_t(sent);
++      } else if (sent == 0) {
++        Close();
++        return false;
++      } else if (errno != EINTR) {
++        Close();
++        return false;
++      }
++    }
++    return true;
++  }
++
++  void Close() override {
++    if (socket_ >= 0) {
++      int socket = socket_;
++      socket_ = -1;
++      shutdown(socket, SHUT_RDWR);
++      close(socket);
++    }
++  }
++
++ private:
++  int socket_ = -1;
++};
++
++std::unique_ptr<GdoxNbdStream> GdoxNbdStream::ConnectLoopback(uint16_t port) {
++  int socket_handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++  if (socket_handle < 0) {
++    return nullptr;
++  }
++  sockaddr_in address = {};
++  address.sin_family = AF_INET;
++  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++  address.sin_port = htons(port);
++  if (connect(socket_handle, reinterpret_cast<const sockaddr*>(&address),
++              sizeof(address)) != 0) {
++    close(socket_handle);
++    return nullptr;
++  }
++  timeval timeout = {};
++  timeout.tv_sec = kGdoxNbdIoTimeoutSeconds;
++  if (setsockopt(socket_handle, SOL_SOCKET, SO_RCVTIMEO, &timeout,
++                 sizeof(timeout)) != 0 ||
++      setsockopt(socket_handle, SOL_SOCKET, SO_SNDTIMEO, &timeout,
++                 sizeof(timeout)) != 0) {
++    close(socket_handle);
++    return nullptr;
++  }
++  return std::make_unique<PosixGdoxNbdStream>(socket_handle);
++}
++
++}  // namespace vfs
++}  // namespace xe
+diff --git a/src/xenia/vfs/devices/gdox_nbd_stream_win.cc b/src/xenia/vfs/devices/gdox_nbd_stream_win.cc
+new file mode 100644
+index 00000000..872bdd81
+--- /dev/null
++++ b/src/xenia/vfs/devices/gdox_nbd_stream_win.cc
+@@ -0,0 +1,131 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Signal Spike Games. All rights reserved.                    *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#include "xenia/vfs/devices/gdox_nbd_stream.h"
++
++#include <algorithm>
++#include <limits>
++#include <mutex>
++
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <winsock2.h>
++#include <ws2tcpip.h>
++
++namespace xe {
++namespace vfs {
++
++constexpr DWORD kGdoxNbdIoTimeoutMilliseconds = 30000;
++
++static bool InitializeGdoxWinsock() {
++  static std::once_flag initialized;
++  static bool success = false;
++  std::call_once(initialized, []() {
++    WSADATA data;
++    success = WSAStartup(MAKEWORD(2, 2), &data) == 0;
++  });
++  return success;
++}
++
++class WinGdoxNbdStream final : public GdoxNbdStream {
++ public:
++  explicit WinGdoxNbdStream(SOCKET socket) : socket_(socket) {}
++  ~WinGdoxNbdStream() override { Close(); }
++
++  bool ReadExact(void* buffer, size_t length) override {
++    auto output = static_cast<uint8_t*>(buffer);
++    size_t completed = 0;
++    while (completed < length) {
++      int request = int(std::min(length - completed,
++                                 size_t(std::numeric_limits<int>::max())));
++      int received = recv(socket_, reinterpret_cast<char*>(output + completed),
++                          request, 0);
++      if (received > 0) {
++        completed += size_t(received);
++      } else if (received == 0) {
++        Close();
++        return false;
++      } else if (WSAGetLastError() != WSAEINTR) {
++        Close();
++        return false;
++      }
++    }
++    return true;
++  }
++
++  bool WriteAll(const void* buffer, size_t length) override {
++    auto input = static_cast<const uint8_t*>(buffer);
++    size_t completed = 0;
++    while (completed < length) {
++      int request = int(std::min(length - completed,
++                                 size_t(std::numeric_limits<int>::max())));
++      int sent = send(socket_, reinterpret_cast<const char*>(input + completed),
++                      request, 0);
++      if (sent > 0) {
++        completed += size_t(sent);
++      } else if (sent == 0) {
++        Close();
++        return false;
++      } else if (WSAGetLastError() != WSAEINTR) {
++        Close();
++        return false;
++      }
++    }
++    return true;
++  }
++
++  void Close() override {
++    if (socket_ != INVALID_SOCKET) {
++      SOCKET socket = socket_;
++      socket_ = INVALID_SOCKET;
++      shutdown(socket, SD_BOTH);
++      closesocket(socket);
++    }
++  }
++
++ private:
++  SOCKET socket_ = INVALID_SOCKET;
++};
++
++std::unique_ptr<GdoxNbdStream> GdoxNbdStream::ConnectLoopback(uint16_t port) {
++  if (!InitializeGdoxWinsock()) {
++    return nullptr;
++  }
++  SOCKET socket_handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++  if (socket_handle == INVALID_SOCKET) {
++    return nullptr;
++  }
++  sockaddr_in address = {};
++  address.sin_family = AF_INET;
++  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++  address.sin_port = htons(port);
++  if (connect(socket_handle, reinterpret_cast<const sockaddr*>(&address),
++              sizeof(address)) == SOCKET_ERROR) {
++    closesocket(socket_handle);
++    return nullptr;
++  }
++  DWORD timeout = kGdoxNbdIoTimeoutMilliseconds;
++  if (setsockopt(socket_handle, SOL_SOCKET, SO_RCVTIMEO,
++                 reinterpret_cast<const char*>(&timeout),
++                 sizeof(timeout)) == SOCKET_ERROR ||
++      setsockopt(socket_handle, SOL_SOCKET, SO_SNDTIMEO,
++                 reinterpret_cast<const char*>(&timeout),
++                 sizeof(timeout)) == SOCKET_ERROR) {
++    closesocket(socket_handle);
++    return nullptr;
++  }
++  return std::make_unique<WinGdoxNbdStream>(socket_handle);
++}
++
++}  // namespace vfs
++}  // namespace xe

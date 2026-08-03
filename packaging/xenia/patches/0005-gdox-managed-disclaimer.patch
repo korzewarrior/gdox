@@ -1,0 +1,37 @@
+diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+--- a/src/xenia/emulator.cc
++++ b/src/xenia/emulator.cc
+@@ -80,6 +80,11 @@ DEFINE_bool(allow_game_relative_writes, false,
+             "generating test data to compare with original hardware. ",
+             "General");
+ 
++DEFINE_transient_bool(
++    gdox_disclaimer_acknowledged, false,
++    "Acknowledge the Xenia usage disclaimer without opening an external link.",
++    "General");
++
+ DECLARE_bool(allow_plugins);
+ 
+ DEFINE_int32(priority_class, 0,
+@@ -139,7 +144,8 @@ Emulator::Emulator(const std::filesystem::path& command_line,
+   // Show a disclaimer that links to the quickstart
+   // guide the first time they ever open the emulator
+   uint64_t persistent_flags = GetPersistentEmulatorFlags();
+-  if (!(persistent_flags & EmulatorFlagDisclaimerAcknowledged)) {
++  if (!cvars::gdox_disclaimer_acknowledged &&
++      !(persistent_flags & EmulatorFlagDisclaimerAcknowledged)) {
+     if ((MessageBoxW(
+              nullptr,
+              L"DISCLAIMER: Xenia is not for enabling illegal activity, and "
+diff --git a/src/xenia/base/gdox_storage_capability.h b/src/xenia/base/gdox_storage_capability.h
+--- a/src/xenia/base/gdox_storage_capability.h
++++ b/src/xenia/base/gdox_storage_capability.h
+@@ -20,6 +20,7 @@ inline constexpr char kGdoxStorageCapabilityResponse[] =
+     "{\"schema\":1,\"runtime\":\"xenia\",\"storage\":{"
+     "\"persistent\":\"saves-profiles-only\","
+-    "\"game_content\":\"ephemeral\"}}\n";
++    "\"game_content\":\"ephemeral\"},\"session\":{"
++    "\"disclaimer\":\"acknowledged-no-external-link\"}}\n";
+ 
+ inline bool IsGdoxStorageCapabilityQuery(int argc, char* const* argv) {
+   return argc == 2 && argv != nullptr && argv[1] != nullptr &&

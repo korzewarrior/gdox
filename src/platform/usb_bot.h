@@ -67,10 +67,5 @@ bool gdox_usb_bot_present_all(
     bool drive_present[GDOX_USB_BOT_IDENTITY_COUNT],
     gdox_error *error
 );
-bool gdox_usb_bot_restore_kernel_driver(
-    gdox_usb_bot_identity identity,
-    bool *reattached,
-    gdox_error *error
-);
 
 #endif
