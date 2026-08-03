@@ -19,6 +19,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.RelativeLayout
 import android.widget.TextView
+import android.widget.Toast
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import androidx.core.view.ViewCompat
@@ -99,6 +100,15 @@ class GdoxEmulatorActivity : SDLActivity(), InputManager.InputDeviceListener {
         requestEmulatorFrameRate(profile.displayFrameRate)
         gameReportedReady = true
         reportGameState(isLoading = false)
+      }
+    }
+  }
+
+  @Suppress("unused")
+  fun gdoxShowStorageStatus(message: String) {
+    runOnUiThread {
+      if (!destroyed) {
+        Toast.makeText(applicationContext, message, Toast.LENGTH_LONG).show()
       }
     }
   }

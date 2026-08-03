@@ -10,6 +10,13 @@ bool gdox_optical_open_gp63(
     gdox_sector_source *source,
     gdox_error *error
 );
+bool gdox_optical_open_gp63_media(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_optical_media_info *info,
+    gdox_error *error
+);
 bool gdox_optical_eject_gp63(gdox_error *error);
 bool gdox_optical_open_gp65(
     uint8_t read_retries,
@@ -31,7 +38,13 @@ bool gdox_optical_open_asus_nr09(
     gdox_sector_source *source,
     gdox_error *error
 );
-
+bool gdox_optical_open_asus_nr09_media(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_optical_media_info *info,
+    gdox_error *error
+);
 bool gdox_optical_select_presence(
     const gdox_usb_bot_observation
         observations[GDOX_USB_BOT_IDENTITY_COUNT],

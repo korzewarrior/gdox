@@ -2,10 +2,21 @@ add_library(
     gdox_desktop_runtime
     STATIC
         src/app/app.c
+        src/app/physical_media_monitor.c
         src/app/runtime.c
+        src/app/runtime_actions.c
+        src/app/runtime_bundle.c
         src/app/runtime_controls.c
         src/app/runtime_media.c
+        src/app/runtime_playback.c
+        src/app/runtime_physical.c
         src/app/runtime_preservation.c
+        src/app/runtime_session.c
+        src/app/runtime_state.c
+        src/app/runtime_xemu.c
+        src/app/xemu_process_stop.c
+        src/app/runtime_xenia.c
+        src/app/xenia_process_stop.c
         $<TARGET_OBJECTS:gdox_application_support>
 )
 add_library(gdox::runtime ALIAS gdox_desktop_runtime)
@@ -20,5 +31,6 @@ target_link_libraries(
     PUBLIC
         gdox::services
         gdox::optical
+        gdox::xenia
 )
 gdox_enable_c_warnings(gdox_desktop_runtime)

@@ -11,7 +11,7 @@ inline constexpr ImVec4 muted = {0.48F, 0.52F, 0.55F, 1.0F};
 inline constexpr ImVec4 accent = {0.36F, 0.76F, 0.12F, 1.0F};
 inline constexpr ImVec4 ready = {0.31F, 0.70F, 0.20F, 1.0F};
 inline constexpr ImVec4 warning = {0.91F, 0.56F, 0.42F, 1.0F};
-inline constexpr float footer_height = 54.0F;
+inline constexpr float footer_height = 28.0F;
 
 bool initialize_dialogs();
 void shutdown_dialogs();

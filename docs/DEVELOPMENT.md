@@ -8,6 +8,8 @@ This document describes the current gdox source tree.
 - Ninja;
 - a C17 and C++20 compiler;
 - Python 3.11 or newer for release tooling;
+- ShellCheck for launcher and build-script validation;
+- zstd for corresponding-source archive inspection;
 - libusb and OpenSSL development files on Linux.
 
 Configure, build, and test:
@@ -26,8 +28,8 @@ cmake --build --preset core --parallel
 ctest --preset core --output-on-failure
 ```
 
-`make check` runs both configurations, script syntax checks, the privacy audit,
-and whitespace validation.
+`make check` runs both configurations, ShellCheck and shell syntax validation,
+the privacy audit, and whitespace validation.
 
 ## Source layout
 
@@ -66,9 +68,9 @@ MSVC builds use:
 scripts\build_msvc.cmd "%CD%" "%CD%\..\gdox-output\build\x86_64-pc-windows-msvc"
 ```
 
-Every release build starts from an empty target directory unless `--reuse` is
-specified, enables warnings as errors, runs tests, remaps build paths, and
-audits the executable.
+Release builds reuse an existing target directory by default, enable warnings
+as errors, run tests, remap build paths, and audit the executable. Pass
+`--clean` for an independent build; official release workflows always do so.
 
 ## Tests
 

@@ -36,6 +36,11 @@ typedef struct gdox_usb_bot_location {
 const gdox_usb_bot_identity_spec *gdox_usb_bot_identity_get(
     gdox_usb_bot_identity identity
 );
+bool gdox_usb_bot_recovery_identity(
+    uint16_t vendor_id,
+    uint16_t product_id,
+    gdox_usb_bot_identity *identity
+);
 bool gdox_usb_bot_identity_matches(
     gdox_usb_bot_identity requested,
     const gdox_usb_bot_observed_identity *observed

@@ -2,6 +2,68 @@
   "schema": 1,
   "xemu": {
     "version": "0.8.136",
+    "embedded_build_path_files": [
+      {
+        "member": "runtime/xemu/AppDir/usr/share/icons/hicolor/scalable/apps/xemu.svg",
+        "sha256": "18840d9065be2f390b0ffb41e0130be092f03eb3127741016375622a2d7a3aca",
+        "size": 3327
+      },
+      {
+        "member": "runtime/xemu/xemu.app/Contents/MacOS/xemu",
+        "sha256": "ed5008de0dfaa553d87043521a838164b6511050b5c06bf90e29dc7ead559801",
+        "size": 19104576
+      }
+    ],
+    "embedded_privacy_files": [
+      {"member": "runtime/xemu/AppDir/usr/bin/xemu", "sha256": "19d64e54d35bd8bd7a1eec0adf44a775b36a4ba2ae7fb52a0dd663197f1771eb", "size": 15306400},
+      {"member": "runtime/xemu/AppDir/usr/lib/libcrypto.so.3", "sha256": "d4a25fede0fee13b81ce4b317f11d00d22aad888ac7a35ce4c510b8ed8022223", "size": 4611672},
+      {"member": "runtime/xemu/AppDir/usr/lib/libcurl-gnutls.so.4", "sha256": "c8bc8e313a1134a7ce57f1b1fed53daa599096936dbf9fc42302cf211d46a37d", "size": 669456},
+      {"member": "runtime/xemu/AppDir/usr/lib/libgnutls.so.30", "sha256": "073c16a6bccefd026a4e5aeb56ec7e096110f30b828ba26f8cef2ad73b961bce", "size": 2071960},
+      {"member": "runtime/xemu/AppDir/usr/lib/libpsl.so.5", "sha256": "88ff48b87eae6a0b8a24fb2b8f042558f8d844b978938800850cec5460d693f9", "size": 79528},
+      {"member": "runtime/xemu/AppDir/usr/lib/libsamplerate.so.0", "sha256": "a3f494838886b6669bf9cf5312b63e744a7f3734c4d82130d158f7bb6520bb41", "size": 1500560},
+      {"member": "runtime/xemu/AppDir/usr/lib/libssh.so.4", "sha256": "5412f3456e3c92b1952c13b03ae49eeb498706d7058f4c733c81e5a6fb513c07", "size": 465064},
+      {"member": "runtime/xemu/xemu.app/Contents/Libraries/arm64/libiconv.2.dylib", "sha256": "f31f87abe07ab6a5ee945b9e27267c2bf9f5a2e989913a67595c7f6eb4a7d24b", "size": 1184240},
+      {"member": "runtime/xemu/xemu.app/Contents/Libraries/arm64/libsamplerate.0.dylib", "sha256": "b4b8a3932f4f2a6d6bbd5e74bd58924ad7b374a4595f6da04c533150c088b94b", "size": 1550320},
+      {"member": "runtime/xemu/xemu.app/Contents/Libraries/x86_64/libiconv.2.dylib", "sha256": "e36852fb2498c122e6bf161aafe934d93685cb23babbe607b33e98474540e650", "size": 1191088},
+      {"member": "runtime/xemu/xemu.app/Contents/Libraries/x86_64/libsamplerate.0.dylib", "sha256": "0b7b09dee08ad1c98cff2cfd0d59c6625abd2edd1cb787ef742dd9416815b5ad", "size": 1559264},
+      {"member": "runtime/xemu/xemu.exe", "sha256": "fcda4d37ce66236e9843d8624de9c9f87295964fe272b00067384476cacde596", "size": 31763961}
+    ],
+    "embedded_notice_files": [
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libbrotli1/copyright", "sha256": "24a64e5bb83d0960d1835696a1e23c0896ad6055b0ca47c66ab0eb9a766324b1", "size": 1354},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libcurl3-gnutls/copyright", "sha256": "d8fef27baefaf797112424a88959cfc1122b884cdfe215e84e4c07df49a35189", "size": 11400},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libepoxy0/copyright", "sha256": "a8be83fe8a66a6ecc1a9fbcec9cf1b43aacca69d38220a94fb37632f090b611e", "size": 1352},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libffi8/copyright", "sha256": "7258c8acc378030d8dbe1fcdf394e915769fa31dcbaf3d2991d9a79891f3bcdc", "size": 3440},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libgcrypt20/copyright", "sha256": "8bf0ea526b7b497bf7b31842e799c37caa69090cc53fd080c76403cc8b79f659", "size": 24424},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libglib2.0-0/copyright", "sha256": "607a2dbcf41b82733bc93345da5470995a7f80515774fbabc4689158fae956c2", "size": 4119},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libgnutls30/copyright", "sha256": "c2a08ee31ea9f0a4fc0f4d590c5481f5b7fc2d325b04ae74c719fa7894dcbdd7", "size": 49592},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libgssapi-krb5-2/copyright", "sha256": "4a2d321ab57260e8de4b67bde8cff76c07d28be69c2d8b22dfc2bfa42f5c41b9", "size": 61825},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libhogweed6/copyright", "sha256": "d8b51ce04d337e49df2f6258a5c8558f3080ff2cf629deb9f07c0361d1757e7b", "size": 20902},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libidn2-0/copyright", "sha256": "41702469f28e8ff406345e3d1dd0c741f11bdfca319264f67036efd6aaa79e4b", "size": 5348},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libk5crypto3/copyright", "sha256": "4a2d321ab57260e8de4b67bde8cff76c07d28be69c2d8b22dfc2bfa42f5c41b9", "size": 61825},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libkrb5-3/copyright", "sha256": "4a2d321ab57260e8de4b67bde8cff76c07d28be69c2d8b22dfc2bfa42f5c41b9", "size": 61825},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libkrb5support0/copyright", "sha256": "4a2d321ab57260e8de4b67bde8cff76c07d28be69c2d8b22dfc2bfa42f5c41b9", "size": 61825},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libldap-2.5-0/copyright", "sha256": "0690f1ee382f98e95b446743db55395641d5e258de65939e9cb1c660d67a43a8", "size": 20216},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/liblz4-1/copyright", "sha256": "a82c5d50439c6d9f32b874dbc75ae5292ba5a3e50318bed80e82a8f5254689ca", "size": 3574},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libnettle8/copyright", "sha256": "d8b51ce04d337e49df2f6258a5c8558f3080ff2cf629deb9f07c0361d1757e7b", "size": 20902},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libnghttp2-14/copyright", "sha256": "2310a85e31051d9d60e22be1b35e20ee447ad1de8b80a88bb46711154374318e", "size": 11911},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libp11-kit0/copyright", "sha256": "b19d4f3a62c6257c770607ba0e872ac21ba22806710ede0384c622882f84d61b", "size": 8646},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libpcap0.8/copyright", "sha256": "6b0e609cf98f7abd39d3b81100fdb2bed24dcaee6656b500fcecb392db70dc60", "size": 4480},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libpsl5/copyright", "sha256": "a530da63c89b707cb51a9c84667aecd0f2a138b0503734cbc8e73ea7cc6fbae0", "size": 2943},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/librtmp1/copyright", "sha256": "4302abcc1ea1b6cbe8d19c79b892acf78878030220210707c19006828866207c", "size": 2726},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libsamplerate0/copyright", "sha256": "870b641e1bbc7459889f632a691d410e8be634cdd1d33e187b27bcbb2290ea73", "size": 4259},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libsasl2-2/copyright", "sha256": "071d60cc8a42129b80fd2b8b6a8873971a0a06738eabdf5c87bc1df2424e7fd1", "size": 29707},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libslirp0/copyright", "sha256": "72bbbaf2539f2ad3a568da80758a6417b119bee5b19b988f8d99e2b3b80ae4a3", "size": 4660},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libssh-4/copyright", "sha256": "7e8414e138a9170e3a463e80020a8a7e168a6e736bac37a4f38fdb1ce4180d65", "size": 12383},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libssl3/copyright", "sha256": "6a7da622fe0637a334d2a8fc470852d2ffb77d9a2b2f930f854e32a41ad6ef35", "size": 2543},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libsystemd0/copyright", "sha256": "8541750aba2193c885f0c77df20870ef454c2ae8f905077105922bf3130108ad", "size": 10893},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libtasn1-6/copyright", "sha256": "88a94e40a34bb28145805747cad4018e7eb976b5fd0bf2329dedf90088ebc6e4", "size": 3451},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libudev1/copyright", "sha256": "8541750aba2193c885f0c77df20870ef454c2ae8f905077105922bf3130108ad", "size": 10893},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libunistring2/copyright", "sha256": "0035f89e5317f3cec389383e8727788521b0fde3e75cea881fa0e92e1d48cb57", "size": 6068},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/libzstd1/copyright", "sha256": "8cf66791fbe72801cb1d701c832b7e395dad0000bb9699dc42df94b49d699e91", "size": 5268},
+      {"member": "runtime/xemu/AppDir/usr/share/doc/xemu/copyright", "sha256": "7d3bec5ad76cb7b5e29815cd6bf9bd4fa94e398c8ae7db4dd73684ea8bb1ba85", "size": 123465},
+      {"member": "runtime/xemu/LICENSE.txt", "sha256": "259f719e66f6d063f00045f404fb471d06a2154e3f9abb9f7c3e980473c50757", "size": 237137},
+      {"member": "runtime/xemu/LICENSE.txt", "sha256": "86dc345e46033d7474eceb82863004fe9f27b8850578a9140b5066434ea49f16", "size": 221179}
+    ],
     "source": {
       "url": "https://github.com/xemu-project/xemu/releases/download/v0.8.136/xemu-0.8.136.tar.zst",
       "sha256": "92a09305a87d7dabaecc335fa54ca888117aab10fe22af6ad73fc0d3cdd20c1f",
@@ -30,28 +92,209 @@
     ],
     "targets": {
       "x86_64-unknown-linux-gnu": {
-        "url": "https://github.com/xemu-project/xemu/releases/download/v0.8.136/xemu-0.8.136-x86_64.AppImage",
-        "sha256": "ac77363a599109194ba2af3caa695348d199f515cf1d0fde091beb629e0c3103",
-        "size": 16402936,
+        "url": "https://github.com/korzewarrior/gdox/releases/download/runtime-0.2.0/xemu-0.8.136-gdox-save-v2-x86_64.AppImage",
+        "sha256": "0612c735d1aba98b19bccd2528bd0666625e3898659c6135587bc0c4e0a7da66",
+        "size": 15436280,
         "format": "appimage"
       },
       "x86_64-pc-windows-msvc": {
-        "url": "https://github.com/xemu-project/xemu/releases/download/v0.8.136/xemu-0.8.136-windows-x86_64.zip",
-        "sha256": "b25a6c24a2c2c36a0843a153cd9ee59ca6833ef87bdcd855ba0824930e4ddd1d",
-        "size": 9358209,
+        "url": "https://github.com/korzewarrior/gdox/releases/download/runtime-0.2.0/xemu-0.8.136-gdox-save-v2-windows-x86_64.zip",
+        "sha256": "2d0e730a35474aad67a4cb3c092f70aacd3a5a4cbc1c45eb7cce11f3d16012bf",
+        "size": 11621823,
         "format": "windows-zip"
       },
       "x86_64-apple-darwin": {
-        "url": "https://github.com/xemu-project/xemu/releases/download/v0.8.136/xemu-0.8.136-macos-universal.zip",
-        "sha256": "9b5f52240b12ff0d6ab3852b38a820dc92b99124db8a981ccf2ed2cb893f446e",
-        "size": 18526030,
+        "url": "https://github.com/korzewarrior/gdox/releases/download/runtime-0.2.0/xemu-0.8.136-gdox-storage-macos-universal-adhoc.zip",
+        "sha256": "0f2c80aa50fd67f8ad2ab3348c64445de93f63f5edcc28666259a1e5f1d6b097",
+        "size": 16605427,
         "format": "macos-zip"
       },
       "aarch64-apple-darwin": {
-        "url": "https://github.com/xemu-project/xemu/releases/download/v0.8.136/xemu-0.8.136-macos-universal.zip",
-        "sha256": "9b5f52240b12ff0d6ab3852b38a820dc92b99124db8a981ccf2ed2cb893f446e",
-        "size": 18526030,
+        "url": "https://github.com/korzewarrior/gdox/releases/download/runtime-0.2.0/xemu-0.8.136-gdox-storage-macos-universal-adhoc.zip",
+        "sha256": "0f2c80aa50fd67f8ad2ab3348c64445de93f63f5edcc28666259a1e5f1d6b097",
+        "size": 16605427,
         "format": "macos-zip"
+      }
+    }
+  },
+  "linux_bridge": {
+    "version": "1.22.1",
+    "license": "LGPL-2.1-or-later",
+    "source": {
+      "url": "https://download.libguestfs.org/libnbd/1.22-stable/libnbd-1.22.1.tar.gz",
+      "sha256": "f68549ad4d987171a729a0dff12a07286b46eefa47e77e79fc3288898adc8472",
+      "size": 1565817,
+      "name": "libnbd-1.22.1.tar.gz",
+      "license_member": "libnbd-1.22.1/COPYING.LIB"
+    },
+    "recipe": {
+      "url": "https://gitlab.archlinux.org/archlinux/packaging/packages/libnbd/-/raw/a5a1d2927c4fd6b69a8b0cfd46b396232f5087be/PKGBUILD",
+      "sha256": "11d4acc06730c591d64d56c5b050d061adf85d44a5231cae5e8f31f206ed859b",
+      "size": 1130,
+      "name": "libnbd-1.22.1-2-PKGBUILD"
+    },
+    "targets": {
+      "x86_64-steamdeck-linux-gnu": {
+        "url": "https://steamdeck-packages.steamos.cloud/archlinux-mirror/extra-3.8.1x/os/x86_64/libnbd-1.22.1-2-x86_64.pkg.tar.zst",
+        "sha256": "f925310048deb9fd0f7cf585a5e0804f774a792b640bc3920a2fff3b204bf5ee",
+        "size": 783042,
+        "format": "arch-package-zstd",
+        "files": {
+          "executable": {
+            "member": "usr/bin/nbdfuse",
+            "sha256": "9d8fcb3ac654af2e0104fd481161744dcac909209a122fd9f64671dc1d8d3a02",
+            "size": 31088
+          },
+          "library": {
+            "member": "usr/lib/libnbd.so.0.0.0",
+            "sha256": "3c84def561c0638e1ce75a88cb293a771ab54b1cfee0b6b13612b17222b6dd5d",
+            "size": 297120
+          }
+        }
+      }
+    }
+  },
+  "xenia": {
+    "default_revision": "72ce13097",
+    "integration": {
+      "upstream_repository": "https://github.com/xenia-canary/xenia-canary.git",
+      "patches": [
+        {
+          "path": "packaging/xenia/patches/0001-gdox-private-nbd.patch",
+          "sha256": "113e7a24f8a787f1585a193d90f994f4283cc5402773a889d115adb455b4a90a",
+          "size": 46316
+        },
+        {
+          "path": "packaging/xenia/patches/0002-gdox-private-nbd-export-length.patch",
+          "sha256": "8f5dcf835ec967ad1027a5a2d5fdfe7ce016d5d2db47530bcb0654fb585ba700",
+          "size": 10346
+        },
+        {
+          "path": "packaging/xenia/patches/0003-gdox-private-nbd-read-cache.patch",
+          "sha256": "aa2a26fb0aaa489b2c1ce983ded881cfb616ef31b19b2684b9ba54808e0a773f",
+          "size": 4985
+        },
+        {
+          "path": "packaging/xenia/patches/0004-gdox-ephemeral-game-content.patch",
+          "sha256": "51335f4bc005e9a3e188249ea66c63533a7ffb26fbf42e8cf1edc1776b80777f",
+          "size": 11800
+        },
+        {
+          "path": "packaging/xenia/patches/0005-gdox-managed-disclaimer.patch",
+          "sha256": "92b9894b74273e202b9e90e17d408ed2691d78115fe12174ee03f561440e9aaf",
+          "size": 1734
+        }
+      ],
+      "windows_build": {
+        "visual_studio": "Visual Studio 2022 Build Tools (v143)",
+        "vc_tools": "14.44.35207",
+        "msvc_compiler": "Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35228 for x64",
+        "windows_sdk": "10.0.26100.0",
+        "git": "git version 2.54.0.windows.1",
+        "python": "Python 3.13.5",
+        "cmake": "cmake version 3.31.8",
+        "ninja": "1.12.1",
+        "vulkan_sdk": {
+          "version": "1.4.357.0",
+          "url": "https://sdk.lunarg.com/sdk/download/1.4.357.0/windows/vulkansdk-windows-X64-1.4.357.0.exe",
+          "sha256": "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d",
+          "size": 287971024
+        },
+        "recipe": {
+          "path": "packaging/xenia/build-windows.ps1",
+          "sha256": "9f7178dd0edbc995916d48451a2e3d264bc71a8738f2844384fb0dcea51de5e9",
+          "size": 14461
+        },
+        "packager": {
+          "path": "scripts/package_xenia_windows_runtime.py",
+          "sha256": "f5d0e32dd22eeaf71c8207873e2835df818d5f3ce2b2494534beaf76c709c3ed",
+          "size": 3296
+        }
+      }
+    },
+    "license": "BSD-3-Clause",
+    "revisions": {
+      "72ce13097": {
+        "commit": "72ce1309715b30d07035c8511dffc13c0b92a2d9",
+        "source": "https://github.com/xenia-canary/xenia-canary/tree/72ce1309715b30d07035c8511dffc13c0b92a2d9",
+        "release": "https://github.com/xenia-canary/xenia-canary/releases/tag/72ce130",
+        "license": {
+          "url": "https://raw.githubusercontent.com/xenia-canary/xenia-canary/72ce1309715b30d07035c8511dffc13c0b92a2d9/LICENSE",
+          "sha256": "369ea6b0f7ba57544067e9d470ca82a927da787fb0a749b11cb55f1fd0ba47ae",
+          "size": 1481,
+          "name": "LICENSE"
+        },
+        "targets": {
+          "x86_64-unknown-linux-gnu": {
+            "archive_name": "gdox-xenia-canary-72ce13097-windows-x86_64.zip",
+            "url": "https://github.com/korzewarrior/gdox/releases/download/runtime-0.2.0/gdox-xenia-canary-72ce13097-windows-x86_64.zip",
+            "sha256": "13adce84311ca08ff51dadb62328d9610ba3ddfeb7d616e6f381934645f3b54b",
+            "size": 15785637,
+            "format": "windows-zip-proton",
+            "executable": "xenia_canary.exe",
+            "executable_sha256": "cbaeb15d890ba7bcc6d8140041bb29c6df3a47f339729ab975bcb3fd633930a5",
+            "executable_size": 15783936,
+            "disc_transport": "image-path-v1",
+            "origin": "gdox-patched",
+            "release_state": "published",
+            "managed_options": ["apu_max_queued_frames", "async_shader_compilation", "cache_root", "content_root", "custom_internal_display_resolution", "d3d12_pipeline_creation_threads", "disable_instruction_infocache", "flush_log", "framerate_limit", "gdox_disclaimer_acknowledged", "gdox_persistent_content_saves_only", "host_present_from_non_ui_thread", "ignore_thread_affinities", "log_file", "log_level", "mount_cache", "mount_scratch", "storage_root", "store_shaders"]
+          },
+          "x86_64-pc-windows-msvc": {
+            "archive_name": "gdox-xenia-canary-72ce13097-windows-x86_64.zip",
+            "url": "https://github.com/korzewarrior/gdox/releases/download/runtime-0.2.0/gdox-xenia-canary-72ce13097-windows-x86_64.zip",
+            "sha256": "13adce84311ca08ff51dadb62328d9610ba3ddfeb7d616e6f381934645f3b54b",
+            "size": 15785637,
+            "format": "windows-zip",
+            "executable": "xenia_canary.exe",
+            "executable_sha256": "cbaeb15d890ba7bcc6d8140041bb29c6df3a47f339729ab975bcb3fd633930a5",
+            "executable_size": 15783936,
+            "disc_transport": "gdox-private-nbd-v1",
+            "origin": "gdox-patched",
+            "release_state": "published",
+            "managed_options": ["apu_max_queued_frames", "async_shader_compilation", "cache_root", "content_root", "custom_internal_display_resolution", "d3d12_pipeline_creation_threads", "disable_instruction_infocache", "flush_log", "framerate_limit", "gdox_disclaimer_acknowledged", "gdox_persistent_content_saves_only", "host_present_from_non_ui_thread", "ignore_thread_affinities", "log_file", "log_level", "mount_cache", "mount_scratch", "storage_root", "store_shaders"]
+          }
+        }
+      },
+      "7d8be7f17": {
+        "commit": "7d8be7f17e3e868a0a9f97c6f89f44981c6d1ae0",
+        "source": "https://github.com/xenia-canary/xenia-canary/tree/7d8be7f17e3e868a0a9f97c6f89f44981c6d1ae0",
+        "release": "https://github.com/xenia-canary/xenia-canary/releases/tag/7d8be7f",
+        "license": {
+          "url": "https://raw.githubusercontent.com/xenia-canary/xenia-canary/7d8be7f17e3e868a0a9f97c6f89f44981c6d1ae0/LICENSE",
+          "sha256": "369ea6b0f7ba57544067e9d470ca82a927da787fb0a749b11cb55f1fd0ba47ae",
+          "size": 1481,
+          "name": "LICENSE"
+        },
+        "targets": {
+          "x86_64-unknown-linux-gnu": {
+            "archive_name": "gdox-xenia-canary-7d8be7f17-windows-x86_64.zip",
+            "url": "https://github.com/korzewarrior/gdox/releases/download/runtime-0.2.0/gdox-xenia-canary-7d8be7f17-windows-x86_64.zip",
+            "sha256": "0d03d73d2e95678ae7d37c0e04faeaa75ff437c2d69e61e19034ae85aef30602",
+            "size": 16758437,
+            "format": "windows-zip-proton",
+            "executable": "xenia_canary.exe",
+            "executable_sha256": "cd0a9c6bddf0d0b960cb24f63efa5d56ecd34fdf20a838c0b567aacbb6f638cf",
+            "executable_size": 16756736,
+            "disc_transport": "image-path-v1",
+            "origin": "gdox-patched",
+            "release_state": "published",
+            "managed_options": ["async_shader_compilation", "cache_root", "content_root", "custom_internal_display_resolution", "d3d12_pipeline_creation_threads", "disable_instruction_infocache", "flush_log", "framerate_limit", "gdox_disclaimer_acknowledged", "gdox_persistent_content_saves_only", "host_present_from_non_ui_thread", "ignore_thread_affinities", "log_file", "log_level", "mount_cache", "mount_scratch", "storage_root", "store_shaders"]
+          },
+          "x86_64-pc-windows-msvc": {
+            "archive_name": "gdox-xenia-canary-7d8be7f17-windows-x86_64.zip",
+            "url": "https://github.com/korzewarrior/gdox/releases/download/runtime-0.2.0/gdox-xenia-canary-7d8be7f17-windows-x86_64.zip",
+            "sha256": "0d03d73d2e95678ae7d37c0e04faeaa75ff437c2d69e61e19034ae85aef30602",
+            "size": 16758437,
+            "format": "windows-zip",
+            "executable": "xenia_canary.exe",
+            "executable_sha256": "cd0a9c6bddf0d0b960cb24f63efa5d56ecd34fdf20a838c0b567aacbb6f638cf",
+            "executable_size": 16756736,
+            "disc_transport": "gdox-private-nbd-v1",
+            "origin": "gdox-patched",
+            "release_state": "published",
+            "managed_options": ["async_shader_compilation", "cache_root", "content_root", "custom_internal_display_resolution", "d3d12_pipeline_creation_threads", "disable_instruction_infocache", "flush_log", "framerate_limit", "gdox_disclaimer_acknowledged", "gdox_persistent_content_saves_only", "host_present_from_non_ui_thread", "ignore_thread_affinities", "log_file", "log_level", "mount_cache", "mount_scratch", "storage_root", "store_shaders"]
+          }
+        }
       }
     }
   },

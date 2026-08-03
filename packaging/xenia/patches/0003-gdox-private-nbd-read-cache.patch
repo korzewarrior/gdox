@@ -1,0 +1,143 @@
+diff --git a/src/xenia/vfs/devices/gdox_nbd_disc_image_reader.h b/src/xenia/vfs/devices/gdox_nbd_disc_image_reader.h
+index 047d5efa..83eb9829 100644
+--- a/src/xenia/vfs/devices/gdox_nbd_disc_image_reader.h
++++ b/src/xenia/vfs/devices/gdox_nbd_disc_image_reader.h
+@@ -10,12 +10,14 @@
+ #ifndef XENIA_VFS_DEVICES_GDOX_NBD_DISC_IMAGE_READER_H_
+ #define XENIA_VFS_DEVICES_GDOX_NBD_DISC_IMAGE_READER_H_
+ 
++#include <array>
+ #include <atomic>
+ #include <cstdint>
+ #include <memory>
+ #include <mutex>
+ #include <string>
+ #include <string_view>
++#include <vector>
+ 
+ #include "xenia/vfs/devices/disc_image_reader.h"
+ #include "xenia/vfs/devices/gdox_nbd_stream.h"
+@@ -48,9 +50,22 @@ class GdoxNbdDiscImageReader final : public DiscImageReader {
+   std::unique_ptr<MappedMemory> Map(size_t offset, size_t length) override;
+ 
+  private:
++  static constexpr size_t kCacheLineBytes = 64 * 1024;
++  static constexpr size_t kCacheLineCount = 32;
++
++  struct CacheLine {
++    size_t offset = 0;
++    size_t length = 0;
++    uint64_t last_used = 0;
++    std::vector<uint8_t> data;
++  };
++
+   explicit GdoxNbdDiscImageReader(std::unique_ptr<GdoxNbdStream> stream);
+ 
+   bool Negotiate(std::string_view export_name, uint64_t expected_export_size);
++  CacheLine* FindCacheLine(size_t offset);
++  CacheLine* SelectCacheLine();
++  bool FillCacheLine(size_t offset, size_t image_size, CacheLine** line);
+   bool ReadChunk(uint64_t offset, uint8_t* output, uint32_t length);
+   void Fail();
+   void Disconnect();
+@@ -58,7 +73,9 @@ class GdoxNbdDiscImageReader final : public DiscImageReader {
+   std::unique_ptr<GdoxNbdStream> stream_;
+   std::atomic<size_t> size_ = 0;
+   uint64_t next_handle_ = 1;
++  uint64_t cache_clock_ = 0;
+   bool negotiated_ = false;
++  std::array<CacheLine, kCacheLineCount> cache_;
+   std::mutex mutex_;
+ };
+ 
+diff --git a/src/xenia/vfs/devices/gdox_nbd_reader.cc b/src/xenia/vfs/devices/gdox_nbd_reader.cc
+index ac44efe9..3e11a25e 100644
+--- a/src/xenia/vfs/devices/gdox_nbd_reader.cc
++++ b/src/xenia/vfs/devices/gdox_nbd_reader.cc
+@@ -12,6 +12,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <charconv>
++#include <cstring>
+ #include <limits>
+ 
+ #include "xenia/base/logging.h"
+@@ -34,7 +35,6 @@ constexpr uint32_t kNbdClientFlagNoZeroes = UINT32_C(0x00000002);
+ constexpr uint32_t kNbdOptionExportName = UINT32_C(1);
+ constexpr uint16_t kNbdCommandRead = UINT16_C(0);
+ constexpr uint16_t kNbdCommandDisconnect = UINT16_C(2);
+-constexpr uint32_t kMaxReadBytes = 64U * 1024U;
+ constexpr size_t kExportNameBytes = 32;
+ 
+ uint16_t LoadBe16(const uint8_t* input) {
+@@ -209,17 +209,66 @@ bool GdoxNbdDiscImageReader::Read(size_t offset, void* buffer, size_t length) {
+   auto output = static_cast<uint8_t*>(buffer);
+   size_t completed = 0;
+   while (completed < length) {
+-    uint32_t chunk =
+-        uint32_t(std::min(length - completed, size_t(kMaxReadBytes)));
+-    if (!ReadChunk(uint64_t(offset) + completed, output + completed, chunk)) {
++    const size_t current_offset = offset + completed;
++    const size_t cache_offset =
++        current_offset - current_offset % kCacheLineBytes;
++    CacheLine* line = FindCacheLine(cache_offset);
++    if (!line && !FillCacheLine(cache_offset, image_size, &line)) {
+       Fail();
+       return false;
+     }
+-    completed += chunk;
++    const size_t within_line = current_offset - line->offset;
++    const size_t available = line->length - within_line;
++    const size_t copied = std::min(length - completed, available);
++    std::memcpy(output + completed, line->data.data() + within_line, copied);
++    completed += copied;
+   }
+   return true;
+ }
+ 
++GdoxNbdDiscImageReader::CacheLine* GdoxNbdDiscImageReader::FindCacheLine(
++    size_t offset) {
++  for (CacheLine& line : cache_) {
++    if (line.length != 0 && line.offset == offset) {
++      line.last_used = ++cache_clock_;
++      return &line;
++    }
++  }
++  return nullptr;
++}
++
++GdoxNbdDiscImageReader::CacheLine* GdoxNbdDiscImageReader::SelectCacheLine() {
++  CacheLine* oldest = &cache_.front();
++  for (CacheLine& line : cache_) {
++    if (line.length == 0) {
++      return &line;
++    }
++    if (line.last_used < oldest->last_used) {
++      oldest = &line;
++    }
++  }
++  return oldest;
++}
++
++bool GdoxNbdDiscImageReader::FillCacheLine(size_t offset, size_t image_size,
++                                           CacheLine** output) {
++  if (!output || offset >= image_size) {
++    return false;
++  }
++  CacheLine* line = SelectCacheLine();
++  const size_t length = std::min(kCacheLineBytes, image_size - offset);
++  line->length = 0;
++  line->data.resize(length);
++  if (!ReadChunk(uint64_t(offset), line->data.data(), uint32_t(length))) {
++    return false;
++  }
++  line->offset = offset;
++  line->length = length;
++  line->last_used = ++cache_clock_;
++  *output = line;
++  return true;
++}
++
+ bool GdoxNbdDiscImageReader::ReadChunk(uint64_t offset, uint8_t* output,
+                                        uint32_t length) {
+   uint64_t handle = next_handle_++;

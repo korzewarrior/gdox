@@ -33,7 +33,6 @@ typedef struct gdox_error {
 void gdox_error_clear(gdox_error *error);
 void gdox_error_set(gdox_error *error, gdox_error_code code, const char *message);
 bool gdox_error_is_set(const gdox_error *error);
-const char *gdox_error_code_name(gdox_error_code code);
 
 #ifdef __cplusplus
 }

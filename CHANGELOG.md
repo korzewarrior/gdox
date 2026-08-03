@@ -1,15 +1,49 @@
 # changes
 
+## 0.2.0
+
+- add reviewed, storage-isolated Xbox 360 image playback on Windows x86-64,
+  Linux x86-64, and Steam Deck
+- add exact-profile GP63EX70/RF02 Xbox 360 physical playback for XGD2 on
+  Windows, Linux, and Steam Deck and XGD3 on Linux and Steam Deck, with bounded
+  read-only access and exact drive restoration
+- validate GDFX and XEX identity before launch, select the reviewed per-title
+  policy, isolate managed state, and disable rich presence
+- add a Steam Deck performance profile while keeping title compatibility and
+  desktop rendering policy independent
+- keep disc monitoring and automatic playback available from the Windows
+  notification area, macOS menu bar, and compatible Linux desktop hosts
+- keep Original Xbox guest writes behind a volatile HDD layer and disable
+  persistent emulator shader caches; persist HDD configuration and profiles,
+  the logical E:\UDATA save tree, and only explicitly reviewed E:\TDATA save
+  paths through an atomic vault separate from the hard-disk image
+- align the Android arm64 physical-disc path with the volatile HDD and managed
+  save-vault boundary while keeping the Android package in development
+- migrate only the fixed historical GDOX-managed xemu HDD through a read-only,
+  independently verified save projection; preserve the source on any mismatch
+  and remove the obsolete custom-HDD runtime setting
+- give xemu an orderly 15-second save-checkpoint window during session teardown
+  and leave standalone xemu profiles and caches untouched
+- isolate managed emulator processes from inherited Steam loader state so
+  capability checks, firmware detection, and disc swaps remain reliable
+- improve Xenia title compatibility, texture handling, and Steam Deck
+  compositor integration
+- add save-only persistent-content isolation for managed Xenia runtimes;
+  Linux transient state, temporary files, and the Proton prefix use a verified
+  memory filesystem, and ineligible runtimes or hosts fail closed
+- remove legacy GDOX-owned Xenia storage, Proton-prefix, and log trees during
+  recovery while retaining only validated save and profile content types
+- harden physical-media recovery, process teardown, runtime integrity checks,
+  image compaction, and release validation
+
 ## 0.1.4
 
 - stop background controller input from activating gdox navigation, links, or
   quit while xemu is running; controller navigation now resumes only after
   gdox regains focus and every button has been released
-- replaced the unused public session reducer with the desktop runtime's
-  ordered, payload-owning command planner; `gdox_session_event` now contains
-  only application commands that are actually accepted
-- consolidated desktop state, optical discovery, MMC commands, build layers,
-  version metadata, and platform tests without changing supported hardware
+- simplify internal session commands, desktop state, optical discovery, build
+  layers, version metadata, and platform tests without changing supported
+  hardware
 
 ## 0.1.3
 

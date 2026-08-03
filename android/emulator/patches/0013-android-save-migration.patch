@@ -1,0 +1,994 @@
+diff --git a/android/app/src/main/cpp/CMakeLists.txt b/android/app/src/main/cpp/CMakeLists.txt
+index 51a586e57a..1914f2ff7c 100644
+--- a/android/app/src/main/cpp/CMakeLists.txt
++++ b/android/app/src/main/cpp/CMakeLists.txt
+@@ -863,6 +863,7 @@ set_target_properties(gthread-2.0 PROPERTIES
+ )
+ 
+ add_library(xemu SHARED
++  gdox_save_migration.c
+   xemu_android.cpp
+   vmstate_if_android.c
+ )
+diff --git a/android/app/src/main/cpp/gdox_save_migration.c b/android/app/src/main/cpp/gdox_save_migration.c
+new file mode 100644
+index 0000000000..075a3e8c8a
+--- /dev/null
++++ b/android/app/src/main/cpp/gdox_save_migration.c
+@@ -0,0 +1,486 @@
++#include "qemu/osdep.h"
++
++#include "block/xbox-save-migration.h"
++#include "gdox_save_migration.h"
++
++#include <sys/stat.h>
++
++#define GDOX_CANONICAL_HDD "xbox_hdd.qcow2"
++#define GDOX_STAGED_HDD "xbox_hdd.clean.qcow2"
++#define GDOX_LEGACY_QCOW2 "hdd.qcow2"
++#define GDOX_LEGACY_RAW "hdd.img"
++#define GDOX_PROMOTION_MARKER "managed_hdd_promotion_v1.complete"
++#define GDOX_PROMOTION_MARKER_CONTENTS "gdox-managed-hdd-promotion-v1\n"
++
++typedef enum GdoxMigrationPhase {
++    GDOX_MIGRATION_UNCONFIGURED,
++    GDOX_MIGRATION_READY,
++    GDOX_MIGRATION_PENDING,
++    GDOX_MIGRATION_EXECUTED,
++    GDOX_MIGRATION_FAILED,
++    GDOX_MIGRATION_FINISHED,
++} GdoxMigrationPhase;
++
++typedef struct GdoxSaveMigrationState {
++    GdoxMigrationPhase phase;
++    int directory_fd;
++    int marker_directory_fd;
++    char *directory;
++    char *active_name;
++    char *active_path;
++    char *legacy_name;
++    char *legacy_path;
++    char *save_vault;
++    struct stat active_identity;
++    struct stat legacy_identity;
++    XboxSaveMigrationRequest request;
++    XboxSaveMigrationProof proof;
++    bool marker_created;
++    char failure[512];
++} GdoxSaveMigrationState;
++
++static GdoxSaveMigrationState migration = {
++    .phase = GDOX_MIGRATION_UNCONFIGURED,
++    .directory_fd = -1,
++    .marker_directory_fd = -1,
++};
++
++G_STATIC_ASSERT(XBOX_SAVE_VAULT_CAPABILITY_SCHEMA == 3U);
++
++static bool same_identity(const struct stat *left, const struct stat *right)
++{
++    return left->st_dev == right->st_dev && left->st_ino == right->st_ino &&
++           left->st_size == right->st_size && left->st_uid == right->st_uid;
++}
++
++static bool exact_active_name(const char *name)
++{
++    return name && (!strcmp(name, GDOX_CANONICAL_HDD) ||
++                    !strcmp(name, GDOX_STAGED_HDD));
++}
++
++static bool exact_legacy_name(const char *name)
++{
++    return !name || !name[0] || !strcmp(name, GDOX_CANONICAL_HDD) ||
++           !strcmp(name, GDOX_LEGACY_QCOW2) ||
++           !strcmp(name, GDOX_LEGACY_RAW);
++}
++
++static bool leaf_status(int directory_fd, const char *name,
++                        struct stat *status, bool *exists, Error **errp)
++{
++    if (fstatat(directory_fd, name, status, AT_SYMLINK_NOFOLLOW) == 0) {
++        *exists = true;
++        return true;
++    }
++    if (errno == ENOENT) {
++        memset(status, 0, sizeof(*status));
++        *exists = false;
++        return true;
++    }
++    error_setg_errno(errp, errno, "Could not inspect managed Xbox storage");
++    return false;
++}
++
++static bool regular_owned_leaf(int directory_fd, const char *name,
++                               struct stat *status, Error **errp)
++{
++    bool exists;
++
++    if (!leaf_status(directory_fd, name, status, &exists, errp)) {
++        return false;
++    }
++    if (!exists || !S_ISREG(status->st_mode) || status->st_uid != geteuid() ||
++        status->st_nlink != 1 || status->st_size <= 0) {
++        error_setg(errp, "Managed Xbox storage is not a safe regular file");
++        return false;
++    }
++    return true;
++}
++
++static bool leaf_absent(int directory_fd, const char *name, Error **errp)
++{
++    struct stat status;
++    bool exists;
++
++    if (!leaf_status(directory_fd, name, &status, &exists, errp)) {
++        return false;
++    }
++    if (exists) {
++        error_setg(errp, "Unexpected managed Xbox storage file is present");
++        return false;
++    }
++    return true;
++}
++
++static int open_owned_directory(const char *path, mode_t required_mode,
++                                Error **errp)
++{
++    struct stat status;
++    int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++
++    if (fd < 0) {
++        error_setg_errno(errp, errno, "Could not open managed storage directory");
++        return -1;
++    }
++    if (fstat(fd, &status) != 0 || !S_ISDIR(status.st_mode) ||
++        status.st_uid != geteuid() ||
++        (required_mode && (status.st_mode & 0777) != required_mode)) {
++        error_setg(errp, "Managed storage directory has unsafe ownership or mode");
++        close(fd);
++        return -1;
++    }
++    return fd;
++}
++
++static bool validate_layout(Error **errp)
++{
++    struct stat status;
++    bool exists;
++
++    if (!regular_owned_leaf(migration.directory_fd, migration.active_name,
++                            &migration.active_identity, errp)) {
++        return false;
++    }
++    if (!migration.legacy_name) {
++        return !strcmp(migration.active_name, GDOX_CANONICAL_HDD) &&
++               leaf_absent(migration.directory_fd, GDOX_STAGED_HDD, errp) &&
++               leaf_absent(migration.directory_fd, GDOX_LEGACY_QCOW2, errp) &&
++               leaf_absent(migration.directory_fd, GDOX_LEGACY_RAW, errp);
++    }
++    if (!strcmp(migration.legacy_name, GDOX_CANONICAL_HDD)) {
++        if (strcmp(migration.active_name, GDOX_STAGED_HDD) != 0 ||
++            !leaf_absent(migration.directory_fd, GDOX_LEGACY_QCOW2, errp) ||
++            !leaf_absent(migration.directory_fd, GDOX_LEGACY_RAW, errp)) {
++            return false;
++        }
++    } else if (strcmp(migration.active_name, GDOX_CANONICAL_HDD) != 0) {
++        error_setg(errp, "Managed Xbox storage roles are inconsistent");
++        return false;
++    }
++    if (!regular_owned_leaf(migration.directory_fd, migration.legacy_name,
++                            &migration.legacy_identity, errp)) {
++        return false;
++    }
++    if (!strcmp(migration.legacy_name, GDOX_LEGACY_QCOW2)) {
++        return leaf_absent(migration.directory_fd, GDOX_LEGACY_RAW, errp) &&
++               leaf_absent(migration.directory_fd, GDOX_STAGED_HDD, errp);
++    }
++    if (!strcmp(migration.legacy_name, GDOX_LEGACY_RAW)) {
++        return leaf_absent(migration.directory_fd, GDOX_LEGACY_QCOW2, errp) &&
++               leaf_absent(migration.directory_fd, GDOX_STAGED_HDD, errp);
++    }
++    if (!leaf_status(migration.directory_fd, migration.legacy_name,
++                     &status, &exists, errp) || !exists) {
++        return false;
++    }
++    return true;
++}
++
++static void remember_failure(Error *error)
++{
++    const char *detail = error ? error_get_pretty(error) : NULL;
++
++    g_strlcpy(migration.failure,
++              detail && detail[0] ? detail : "Saved-game migration failed",
++              sizeof(migration.failure));
++    error_free(error);
++    migration.phase = GDOX_MIGRATION_FAILED;
++}
++
++static bool fail_finish(Error **errp, const char *message)
++{
++    const char *detail = errp && *errp ? error_get_pretty(*errp) : message;
++
++    g_strlcpy(migration.failure, detail, sizeof(migration.failure));
++    migration.phase = GDOX_MIGRATION_FAILED;
++    if (errp && !*errp) {
++        error_setg(errp, "%s", message);
++    }
++    return false;
++}
++
++static bool write_all(int fd, const void *buffer, size_t bytes)
++{
++    const uint8_t *cursor = buffer;
++
++    while (bytes > 0) {
++        ssize_t written = RETRY_ON_EINTR(write(fd, cursor, bytes));
++        if (written <= 0) {
++            return false;
++        }
++        cursor += written;
++        bytes -= written;
++    }
++    return true;
++}
++
++static bool create_promotion_marker(Error **errp)
++{
++    static const char contents[] = GDOX_PROMOTION_MARKER_CONTENTS;
++    struct stat status;
++    int fd = openat(migration.marker_directory_fd, GDOX_PROMOTION_MARKER,
++                    O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
++                    0600);
++    bool success;
++
++    if (fd < 0) {
++        error_setg_errno(errp, errno, "Could not create HDD promotion marker");
++        return false;
++    }
++    success = write_all(fd, contents, sizeof(contents) - 1U) &&
++              fchmod(fd, 0600) == 0 && fsync(fd) == 0 &&
++              fstat(fd, &status) == 0 && S_ISREG(status.st_mode) &&
++              status.st_uid == geteuid() && status.st_nlink == 1 &&
++              status.st_size == sizeof(contents) - 1U;
++    if (close(fd) != 0) {
++        success = false;
++    }
++    if (!success || fsync(migration.marker_directory_fd) != 0) {
++        (void)unlinkat(migration.marker_directory_fd,
++                       GDOX_PROMOTION_MARKER, 0);
++        (void)fsync(migration.marker_directory_fd);
++        error_setg_errno(errp, errno ? errno : EIO,
++                         "Could not make HDD promotion marker durable");
++        return false;
++    }
++    return true;
++}
++
++static bool clear_promotion_marker(Error **errp)
++{
++    if (unlinkat(migration.marker_directory_fd,
++                 GDOX_PROMOTION_MARKER, 0) != 0 ||
++        fsync(migration.marker_directory_fd) != 0) {
++        error_setg_errno(errp, errno, "Could not clear HDD promotion marker");
++        return false;
++    }
++    return true;
++}
++
++static bool promote_clean_hdd(Error **errp)
++{
++    struct stat current;
++
++    if (!regular_owned_leaf(migration.directory_fd, GDOX_STAGED_HDD,
++                            &current, errp) ||
++        !same_identity(&current, &migration.active_identity) ||
++        !leaf_absent(migration.directory_fd, GDOX_CANONICAL_HDD, errp)) {
++        error_setg(errp, "Pinned clean HDD changed before promotion");
++        return false;
++    }
++    if (renameat(migration.directory_fd, GDOX_STAGED_HDD,
++                 migration.directory_fd, GDOX_CANONICAL_HDD) != 0 ||
++        fsync(migration.directory_fd) != 0 ||
++        !regular_owned_leaf(migration.directory_fd, GDOX_CANONICAL_HDD,
++                            &current, errp) ||
++        !same_identity(&current, &migration.active_identity)) {
++        if (!*errp) {
++            error_setg_errno(errp, errno ? errno : EIO,
++                             "Could not promote pinned clean HDD");
++        }
++        return false;
++    }
++    return true;
++}
++
++bool gdox_save_migration_configure(const char *directory,
++                                   const char *active_name,
++                                   const char *legacy_name,
++                                   const char *save_vault,
++                                   const char *marker_directory,
++                                   Error **errp)
++{
++    gdox_save_migration_reset();
++    if (!directory || !g_path_is_absolute(directory) ||
++        !exact_active_name(active_name) || !exact_legacy_name(legacy_name) ||
++        !save_vault || !g_path_is_absolute(save_vault)) {
++        error_setg(errp, "Managed Xbox storage configuration is invalid");
++        return false;
++    }
++    migration.directory_fd = open_owned_directory(directory, 0, errp);
++    if (migration.directory_fd < 0) {
++        return false;
++    }
++    migration.directory = g_strdup(directory);
++    migration.active_name = g_strdup(active_name);
++    migration.active_path = g_build_filename(directory, active_name, NULL);
++    migration.save_vault = g_strdup(save_vault);
++    if (legacy_name && legacy_name[0]) {
++        if (!marker_directory || !g_path_is_absolute(marker_directory)) {
++            error_setg(errp, "HDD migration marker directory is invalid");
++            gdox_save_migration_reset();
++            return false;
++        }
++        migration.marker_directory_fd =
++            open_owned_directory(marker_directory, 0700, errp);
++        if (migration.marker_directory_fd < 0) {
++            gdox_save_migration_reset();
++            return false;
++        }
++        migration.legacy_name = g_strdup(legacy_name);
++        migration.legacy_path =
++            g_build_filename(directory, legacy_name, NULL);
++    }
++    if (!validate_layout(errp)) {
++        gdox_save_migration_reset();
++        return false;
++    }
++    if (!migration.legacy_name) {
++        migration.phase = GDOX_MIGRATION_READY;
++        return true;
++    }
++    migration.request = (XboxSaveMigrationRequest) {
++        .legacy_hdd = migration.legacy_path,
++        .clean_hdd = migration.active_path,
++        .save_vault = migration.save_vault,
++        .expected_source_bytes = migration.legacy_identity.st_size,
++        .expected_source_sha256_valid = false,
++    };
++    migration.phase = GDOX_MIGRATION_PENDING;
++    return true;
++}
++
++void gdox_save_migration_execute_for_hdd(const char *path)
++{
++    Error *error = NULL;
++
++    if (migration.phase == GDOX_MIGRATION_READY) {
++        return;
++    }
++    if (migration.phase != GDOX_MIGRATION_PENDING || !path ||
++        strcmp(path, migration.active_path) != 0) {
++        error_setg(&error, "Save migration was not bound to the primary Xbox HDD");
++        remember_failure(error);
++        return;
++    }
++    if (!strcmp(migration.legacy_name, GDOX_CANONICAL_HDD)) {
++        if (!create_promotion_marker(&error)) {
++            remember_failure(error);
++            return;
++        }
++        migration.marker_created = true;
++    }
++    if (!xbox_save_migration_execute(&migration.request,
++                                     &migration.proof, &error)) {
++        struct stat current;
++        bool source_exists = false;
++        Error *ignored = NULL;
++
++        if (migration.marker_created &&
++            leaf_status(migration.directory_fd, migration.legacy_name,
++                        &current, &source_exists, &ignored) &&
++            source_exists) {
++            error_free(ignored);
++            ignored = NULL;
++            (void)clear_promotion_marker(&ignored);
++            migration.marker_created = false;
++        }
++        error_free(ignored);
++        remember_failure(error);
++        return;
++    }
++    migration.phase = GDOX_MIGRATION_EXECUTED;
++}
++
++bool gdox_save_migration_finish(GdoxSaveMigrationStatus *status,
++                                Error **errp)
++{
++    struct stat current;
++    bool source_exists;
++    bool canonical_source;
++
++    if (!status) {
++        return fail_finish(errp, "Save migration result is unavailable");
++    }
++    *status = GDOX_SAVE_MIGRATION_NONE;
++    if (migration.phase == GDOX_MIGRATION_READY) {
++        migration.phase = GDOX_MIGRATION_FINISHED;
++        return true;
++    }
++    if (migration.phase == GDOX_MIGRATION_FAILED) {
++        error_setg(errp, "%s", migration.failure);
++        return false;
++    }
++    if (migration.phase != GDOX_MIGRATION_EXECUTED) {
++        return fail_finish(errp, "Save migration did not run for the primary HDD");
++    }
++    if (migration.proof.source_writes || !migration.proof.anonymous_cow ||
++        !migration.proof.clean_backing ||
++        !migration.proof.vault.vault_reopened ||
++        !migration.proof.vault.reprojected ||
++        !migration.proof.vault.roundtrip_verified ||
++        migration.proof.source_bytes !=
++            (uint64_t)migration.legacy_identity.st_size ||
++        (migration.proof.receipt_reused &&
++         migration.proof.source_removal_safe) ||
++        (migration.proof.source_removal_safe &&
++         (!migration.proof.source_projection_complete ||
++          !migration.proof.source_hashed ||
++          migration.proof.vault.unclassified_tdata_entries != 0U))) {
++        return fail_finish(errp, "Saved-game migration proof is inconsistent");
++    }
++    canonical_source = !strcmp(migration.legacy_name, GDOX_CANONICAL_HDD);
++    if (!leaf_status(migration.directory_fd, migration.legacy_name,
++                     &current, &source_exists, errp)) {
++        return fail_finish(errp, "Could not inspect legacy Xbox HDD result");
++    }
++    if (source_exists) {
++        if (!same_identity(&current, &migration.legacy_identity) ||
++            migration.proof.source_removal_safe ||
++            migration.proof.source_removed) {
++            return fail_finish(errp,
++                               "Legacy Xbox HDD result is inconsistent");
++        }
++        if (migration.marker_created && !clear_promotion_marker(errp)) {
++            return fail_finish(errp, "Could not clear HDD promotion marker");
++        }
++        migration.marker_created = false;
++        *status = GDOX_SAVE_MIGRATION_PRESERVED;
++        migration.phase = GDOX_MIGRATION_FINISHED;
++        return true;
++    }
++    if (!migration.proof.source_removed ||
++        !migration.proof.source_removal_safe ||
++        migration.proof.receipt_reused ||
++        !migration.proof.source_projection_complete ||
++        !migration.proof.source_hashed ||
++        migration.proof.vault.unclassified_tdata_entries != 0U ||
++        fsync(migration.directory_fd) != 0) {
++        return fail_finish(errp, "Legacy Xbox HDD removal is not durable");
++    }
++    if (canonical_source &&
++        (!migration.marker_created || !promote_clean_hdd(errp) ||
++         !clear_promotion_marker(errp))) {
++        return fail_finish(errp, "Clean Xbox HDD promotion needs recovery");
++    }
++    migration.marker_created = false;
++    *status = GDOX_SAVE_MIGRATION_IMPORTED;
++    migration.phase = GDOX_MIGRATION_FINISHED;
++    return true;
++}
++
++const char *gdox_save_migration_last_error(void)
++{
++    return migration.failure[0] ? migration.failure : NULL;
++}
++
++void gdox_save_migration_reset(void)
++{
++    if (migration.directory_fd >= 0) {
++        close(migration.directory_fd);
++    }
++    if (migration.marker_directory_fd >= 0) {
++        close(migration.marker_directory_fd);
++    }
++    g_free(migration.directory);
++    g_free(migration.active_name);
++    g_free(migration.active_path);
++    g_free(migration.legacy_name);
++    g_free(migration.legacy_path);
++    g_free(migration.save_vault);
++    memset(&migration, 0, sizeof(migration));
++    migration.phase = GDOX_MIGRATION_UNCONFIGURED;
++    migration.directory_fd = -1;
++    migration.marker_directory_fd = -1;
++}
+diff --git a/android/app/src/main/cpp/gdox_save_migration.h b/android/app/src/main/cpp/gdox_save_migration.h
+new file mode 100644
+index 0000000000..c71c571a0c
+--- /dev/null
++++ b/android/app/src/main/cpp/gdox_save_migration.h
+@@ -0,0 +1,24 @@
++#ifndef GDOX_SAVE_MIGRATION_H
++#define GDOX_SAVE_MIGRATION_H
++
++#include "qapi/error.h"
++
++typedef enum GdoxSaveMigrationStatus {
++    GDOX_SAVE_MIGRATION_NONE = 0,
++    GDOX_SAVE_MIGRATION_IMPORTED = 1,
++    GDOX_SAVE_MIGRATION_PRESERVED = 2,
++} GdoxSaveMigrationStatus;
++
++bool gdox_save_migration_configure(const char *directory,
++                                   const char *active_name,
++                                   const char *legacy_name,
++                                   const char *save_vault,
++                                   const char *marker_directory,
++                                   Error **errp);
++void gdox_save_migration_execute_for_hdd(const char *path);
++bool gdox_save_migration_finish(GdoxSaveMigrationStatus *status,
++                                Error **errp);
++const char *gdox_save_migration_last_error(void);
++void gdox_save_migration_reset(void);
++
++#endif
+diff --git a/android/app/src/main/cpp/xemu_android.cpp b/android/app/src/main/cpp/xemu_android.cpp
+index c3b98459df..18684e9fea 100644
+--- a/android/app/src/main/cpp/xemu_android.cpp
++++ b/android/app/src/main/cpp/xemu_android.cpp
+@@ -15,6 +15,7 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <fstream>
++#include <initializer_list>
+ #include <string>
+ #include <vector>
+ #include <sys/stat.h>
+@@ -27,6 +28,7 @@
+ extern "C" {
+ #include "qemu/osdep.h"
+ #include "block/xbox-save-vault.h"
++#include "gdox_save_migration.h"
+ #include "system/runstate.h"
+ }
+ 
+@@ -35,6 +37,8 @@ static_assert(XBOX_SAVE_VAULT_CAPABILITY_SCHEMA == 3U);
+ constexpr const char* kLogTag = "xemu-android";
+ constexpr const char* kPrefsName = "gdox";
+ static bool g_physical_disc_prepared = false;
++static SDL_atomic_t g_startup_complete;
++static SDL_atomic_t g_storage_status;
+ 
+ static JNIEnv* GetEnv();
+ static jobject GetActivity(JNIEnv* env);
+@@ -103,19 +107,19 @@ static bool IsWithinDirectory(const std::string& root,
+       candidate[root.size()] == '/';
+ }
+ 
+-static std::string ResolveSaveVault() {
++static std::string ResolvePrivateDirectory(
++    std::initializer_list<const char*> components) {
+   const char* internalPath = SDL_AndroidGetInternalStoragePath();
+   std::string internalRoot;
+   std::string current;
+   std::string canonical;
+-  static constexpr const char* kComponents[] = {"xemu", "saves", "v1"};
+ 
+   if (!internalPath || internalPath[0] == '\0' ||
+       !CanonicalPath(internalPath, &internalRoot)) {
+     return {};
+   }
+   current = internalRoot;
+-  for (const char* component : kComponents) {
++  for (const char* component : components) {
+     current += "/";
+     current += component;
+     if (!EnsurePrivateDirectory(current)) return {};
+@@ -127,12 +131,64 @@ static std::string ResolveSaveVault() {
+   return canonical;
+ }
+ 
++static std::string ResolveSaveVault() {
++  return ResolvePrivateDirectory({"xemu", "saves", "v1"});
++}
++
++static std::string ResolveMigrationDirectory() {
++  return ResolvePrivateDirectory({"xemu", "migration"});
++}
++
+ static bool FileExists(const std::string& path) {
+   if (path.empty()) return false;
+   struct stat st {};
+   return stat(path.c_str(), &st) == 0;
+ }
+ 
++static bool SyncOwnedParentDirectory(const std::string& path) {
++  const size_t separator = path.find_last_of('/');
++  if (separator == std::string::npos || separator == 0) return false;
++  const std::string parent = path.substr(0, separator);
++  const int descriptor = open(
++      parent.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++  if (descriptor < 0) return false;
++  struct stat status {};
++  const bool success = fstat(descriptor, &status) == 0 &&
++      S_ISDIR(status.st_mode) && status.st_uid == geteuid() &&
++      fsync(descriptor) == 0;
++  close(descriptor);
++  return success;
++}
++
++static bool CreateSessionMarker(const std::string& path) {
++  const int descriptor = open(
++      path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
++      S_IRUSR | S_IWUSR);
++  if (descriptor < 0) return false;
++  struct stat status {};
++  const bool safe = fstat(descriptor, &status) == 0 &&
++      S_ISREG(status.st_mode) && status.st_uid == geteuid() &&
++      status.st_nlink == 1 && status.st_size == 0;
++  const bool synced = safe &&
++      fchmod(descriptor, S_IRUSR | S_IWUSR) == 0 && fsync(descriptor) == 0;
++  const bool closed = close(descriptor) == 0;
++  const bool durable = synced && closed && SyncOwnedParentDirectory(path);
++  if (!durable && safe && closed) {
++    (void)unlink(path.c_str());
++    (void)SyncOwnedParentDirectory(path);
++  }
++  return durable;
++}
++
++static bool RemoveSessionMarker(const std::string& path) {
++  struct stat status {};
++  if (lstat(path.c_str(), &status) != 0 || !S_ISREG(status.st_mode) ||
++      status.st_uid != geteuid() || status.st_nlink != 1) {
++    return false;
++  }
++  return unlink(path.c_str()) == 0 && SyncOwnedParentDirectory(path);
++}
++
+ static bool IsTcgTuningEnabled() {
+   const char* value = SDL_getenv("XEMU_ANDROID_TCG_TUNING");
+   return !(value && value[0] == '0');
+@@ -316,6 +372,29 @@ static void ApplyTitleProfile(
+   HasException(env, "gdoxApplyTitleProfile");
+ }
+ 
++static void ShowStorageStatus(
++    JNIEnv* env,
++    jobject activity,
++    const char* message) {
++  if (!env || !activity || !message || !message[0]) return;
++  jclass activityClass = env->GetObjectClass(activity);
++  if (!activityClass) return;
++  jmethodID method = env->GetMethodID(
++      activityClass, "gdoxShowStorageStatus", "(Ljava/lang/String;)V");
++  if (!method) {
++    env->DeleteLocalRef(activityClass);
++    HasException(env, "gdoxShowStorageStatus lookup");
++    return;
++  }
++  jstring text = env->NewStringUTF(message);
++  if (text) {
++    env->CallVoidMethod(activity, method, text);
++    env->DeleteLocalRef(text);
++  }
++  env->DeleteLocalRef(activityClass);
++  HasException(env, "gdoxShowStorageStatus");
++}
++
+ static void ShutdownPhysicalDrive() {
+   gdox_qemu_disc_shutdown();
+   JNIEnv* env = GetEnv();
+@@ -451,6 +530,11 @@ struct SetupFiles {
+   std::string dvd;
+   std::string eeprom;
+   std::string save_vault;
++  std::string storage_directory;
++  std::string migration_marker_directory;
++  std::string active_hdd_name;
++  std::string legacy_hdd_name;
++  std::string storage_problem;
+   std::string config_path;
+   std::string active_session_flag_path;
+ };
+@@ -565,8 +649,10 @@ static SetupFiles SyncSetupFiles() {
+ 
+   std::string base = std::string(basePath) + "/gdox";
+   EnsureDirExists(base);
++  out.storage_directory = base;
+   out.eeprom = base + "/eeprom.bin";
+   out.save_vault = ResolveSaveVault();
++  out.migration_marker_directory = ResolveMigrationDirectory();
+   out.active_session_flag_path = base + "/active_emulator_session.flag";
+ 
+   const std::string mcpxPath = GetPrefString(env, activity, "mcpxPath");
+@@ -596,10 +682,28 @@ static SetupFiles SyncSetupFiles() {
+       LogError("Failed to sync flash ROM");
+     }
+   }
+-  out.hdd = base + "/xbox_hdd.qcow2";
+-  if (!FileExists(out.hdd)) {
+-    LogError("Managed Xbox HDD is unavailable");
+-    out.hdd.clear();
++  const std::string activeHddRole = GetPrefString(
++      env, activity, "gdox_managed_hdd_role");
++  const std::string legacyHddRole = GetPrefString(
++      env, activity, "gdox_legacy_managed_hdd_role");
++  if (activeHddRole == "canonical") {
++    out.active_hdd_name = "xbox_hdd.qcow2";
++  } else if (activeHddRole == "staged") {
++    out.active_hdd_name = "xbox_hdd.clean.qcow2";
++  } else {
++    out.storage_problem = "Managed Xbox storage has no safe active role.";
++  }
++  if (legacyHddRole == "hdd-qcow2") {
++    out.legacy_hdd_name = "hdd.qcow2";
++  } else if (legacyHddRole == "hdd-img") {
++    out.legacy_hdd_name = "hdd.img";
++  } else if (legacyHddRole == "canonical") {
++    out.legacy_hdd_name = "xbox_hdd.qcow2";
++  } else if (!legacyHddRole.empty()) {
++    out.storage_problem = "Managed Xbox storage has an unknown legacy role.";
++  }
++  if (out.storage_problem.empty()) {
++    out.hdd = base + "/" + out.active_hdd_name;
+   }
+ 
+   if (g_physical_disc_prepared) {
+@@ -660,27 +764,42 @@ extern "C" int xemu_android_main(int argc, char** argv);
+ extern "C" void qemu_init(int argc, char** argv);
+ extern "C" int (*qemu_main)(void);
+ extern "C" void xemu_android_display_preinit(void);
+-extern "C" void xemu_android_display_wait_ready(void);
++extern "C" int xemu_android_display_wait_ready_timeout(int timeout_ms);
+ extern "C" void xemu_android_display_loop(void);
+ struct QemuLaunchContext {
+   int argc;
+   char** argv;
++  SDL_atomic_t complete;
+ };
+ 
+ static int SDLCALL QemuThreadMain(void* data) {
+   auto* ctx = static_cast<QemuLaunchContext*>(data);
+   LogInfoInt("QemuThreadMain: show_welcome=%d", g_config.general.show_welcome ? 1 : 0);
+   LogInfo("QemuThreadMain: starting");
+-  return xemu_android_main(ctx->argc, ctx->argv);
++  const int result = xemu_android_main(ctx->argc, ctx->argv);
++  SDL_AtomicSet(&ctx->complete, 1);
++  return result;
+ }
+ 
+ extern "C" int xemu_android_main(int argc, char** argv) {
++  Error* migrationError = nullptr;
++  GdoxSaveMigrationStatus migrationStatus = GDOX_SAVE_MIGRATION_NONE;
++
+   if (!qemu_main) {
+     LogError("xemu core not linked; qemu_main missing");
+     return 1;
+   }
+   LogInfo("xemu_android_main: qemu_init");
+   qemu_init(argc, argv);
++  if (!gdox_save_migration_finish(&migrationStatus, &migrationError)) {
++    LogErrorFmt(
++        "Saved-game migration failed: %s",
++        migrationError ? error_get_pretty(migrationError) : "unknown error");
++    error_free(migrationError);
++    return 1;
++  }
++  SDL_AtomicSet(&g_storage_status, migrationStatus);
++  SDL_AtomicSet(&g_startup_complete, 1);
+   LogInfo("xemu_android_main: qemu_main");
+   int rc = qemu_main();
+   LogErrorInt("xemu_android_main: qemu_main returned %d", rc);
+@@ -692,6 +811,9 @@ extern "C" int SDL_main(int argc, char* argv[]) {
+   (void)argv;
+ 
+   LogInfo("SDL_main: start");
++  gdox_save_migration_reset();
++  SDL_AtomicSet(&g_startup_complete, 0);
++  SDL_AtomicSet(&g_storage_status, GDOX_SAVE_MIGRATION_NONE);
+   if (setenv("MESA_SHADER_CACHE_DISABLE", "1", 1) != 0 ||
+       setenv("__GL_SHADER_DISK_CACHE", "0", 1) != 0) {
+     LogErrorFmt("Could not disable persistent driver caches: %s", strerror(errno));
+@@ -771,6 +893,43 @@ extern "C" int SDL_main(int argc, char* argv[]) {
+     SDL_Quit();
+     return 1;
+   }
++  Error* storageError = nullptr;
++  if (!setup.storage_problem.empty()) {
++    error_setg(&storageError, "%s", setup.storage_problem.c_str());
++  } else {
++    const bool configured = gdox_save_migration_configure(
++        setup.storage_directory.c_str(),
++        setup.active_hdd_name.c_str(),
++        setup.legacy_hdd_name.empty()
++            ? nullptr : setup.legacy_hdd_name.c_str(),
++        setup.save_vault.c_str(),
++        setup.migration_marker_directory.c_str(),
++        &storageError);
++    if (!configured && !storageError) {
++      error_setg(&storageError, "Managed Xbox storage setup failed");
++    }
++  }
++  if (storageError) {
++    const char* detail = error_get_pretty(storageError);
++    LogErrorFmt("Managed Xbox storage is unsafe: %s", detail);
++    SDL_ShowSimpleMessageBox(
++        SDL_MESSAGEBOX_ERROR,
++        "GDOX preserved managed Xbox storage",
++        detail,
++        nullptr);
++    error_free(storageError);
++    gdox_save_migration_reset();
++    ShutdownPhysicalDrive();
++    SDL_Quit();
++    return 1;
++  }
++  if (!setup.legacy_hdd_name.empty()) {
++    ShowStorageStatus(
++        env,
++        activity,
++        "Checking saved games from previous GDOX storage. "
++        "The original is preserved until verification finishes.");
++  }
+ 
+   if (!setup.config_path.empty()) {
+     LogInfo("SDL_main: loading config");
+@@ -786,6 +945,7 @@ extern "C" int SDL_main(int argc, char* argv[]) {
+                                err,
+                                nullptr);
+       ShutdownPhysicalDrive();
++      gdox_save_migration_reset();
+       SDL_Quit();
+       return 1;
+     }
+@@ -852,12 +1012,10 @@ extern "C" int SDL_main(int argc, char* argv[]) {
+     QemuLaunchContext launch_ctx{
+       static_cast<int>(arg_storage.size()),
+       xemu_argv.data(),
++      {},
+     };
+-    int session_fd = open(
+-        setup.active_session_flag_path.c_str(),
+-        O_WRONLY | O_CREAT | O_TRUNC,
+-        0644);
+-    if (session_fd < 0) {
++    SDL_AtomicSet(&launch_ctx.complete, 0);
++    if (!CreateSessionMarker(setup.active_session_flag_path)) {
+       LogErrorFmt(
+           "Could not create emulator session marker: %s",
+           strerror(errno));
+@@ -867,26 +1025,67 @@ extern "C" int SDL_main(int argc, char* argv[]) {
+           "The app storage is unavailable.",
+           nullptr);
+       ShutdownPhysicalDrive();
++      gdox_save_migration_reset();
+       SDL_Quit();
+       return 1;
+     }
+-    close(session_fd);
+     SDL_Thread* qemu_thread = SDL_CreateThread(QemuThreadMain, "qemu_main", &launch_ctx);
+     if (!qemu_thread) {
+       LogErrorFmt("Failed to start xemu thread: %s", SDL_GetError());
+-      unlink(setup.active_session_flag_path.c_str());
++      (void)RemoveSessionMarker(setup.active_session_flag_path);
+       ShutdownPhysicalDrive();
++      gdox_save_migration_reset();
+       return 1;
+     }
+     LogInfo("SDL_main: qemu thread started");
+-    (void)qemu_thread;
+-    xemu_android_display_wait_ready();
++    bool display_ready = false;
++    LogInfo("SDL_main: waiting for display readiness");
++    while (!display_ready || SDL_AtomicGet(&g_startup_complete) == 0) {
++      if (!display_ready) {
++        display_ready = xemu_android_display_wait_ready_timeout(100) == 0;
++      } else {
++        SDL_Delay(10);
++      }
++      if (SDL_AtomicGet(&launch_ctx.complete) != 0) break;
++      SDL_PumpEvents();
++    }
++    if (!display_ready || SDL_AtomicGet(&g_startup_complete) == 0) {
++      int qemu_result = 0;
++      SDL_WaitThread(qemu_thread, &qemu_result);
++      const char* migration_detail = gdox_save_migration_last_error();
++      SDL_ShowSimpleMessageBox(
++          SDL_MESSAGEBOX_ERROR,
++          "GDOX could not start the game",
++          migration_detail ? migration_detail :
++          "The emulator stopped before startup completed. "
++          "Saved games and original storage were preserved.",
++          nullptr);
++      (void)RemoveSessionMarker(setup.active_session_flag_path);
++      ShutdownPhysicalDrive();
++      gdox_save_migration_reset();
++      SDL_Quit();
++      return qemu_result == 0 ? 1 : qemu_result;
++    }
++    const int storage_status = SDL_AtomicGet(&g_storage_status);
++    if (storage_status == GDOX_SAVE_MIGRATION_PRESERVED) {
++      ShowStorageStatus(
++          env,
++          activity,
++          "Saved games are ready. Some legacy title data remains preserved "
++          "because it is not classified as save data.");
++    } else if (storage_status == GDOX_SAVE_MIGRATION_IMPORTED) {
++      ShowStorageStatus(env, activity, "Saved games imported and verified.");
++    }
+     LogInfo("SDL_main: display ready, entering render loop");
+     xemu_android_display_loop();
+     int qemu_result = 0;
+     SDL_WaitThread(qemu_thread, &qemu_result);
+-    unlink(setup.active_session_flag_path.c_str());
++    if (!RemoveSessionMarker(setup.active_session_flag_path) &&
++        qemu_result == 0) {
++      qemu_result = 1;
++    }
+     ShutdownPhysicalDrive();
++    gdox_save_migration_reset();
+     SDL_Quit();
+     return qemu_result;
+   }
+@@ -955,6 +1154,7 @@ extern "C" int SDL_main(int argc, char* argv[]) {
+   SDL_GL_DeleteContext(gl);
+   SDL_DestroyWindow(window);
+   ShutdownPhysicalDrive();
++  gdox_save_migration_reset();
+   SDL_Quit();
+   return 0;
+ }
+diff --git a/system/vl.c b/system/vl.c
+index 6742237c10..6cda2b6817 100644
+--- a/system/vl.c
++++ b/system/vl.c
+@@ -89,6 +89,9 @@
+ #endif
+ #include "system/blockdev.h"
+ #include "block/xbox-volatile-hdd.h"
++#ifdef __ANDROID__
++#include "gdox_save_migration.h"
++#endif
+ #include "hw/block/block.h"
+ #include "hw/i386/x86.h"
+ #include "hw/i386/pc.h"
+@@ -701,6 +704,9 @@ static int drive_init_func(void *opaque, QemuOpts *opts, Error **errp)
+     if (!failed && volatile_hdd &&
+         drive->type == IF_IDE && drive->bus == 0 && drive->unit == 0 &&
+         !drive->media_cd) {
++#ifdef __ANDROID__
++        gdox_save_migration_execute_for_hdd(file_path);
++#endif
+         failed = !xbox_volatile_hdd_attach(blk_by_legacy_dinfo(drive), errp);
+     }
+ 
+diff --git a/ui/xemu.c b/ui/xemu.c
+index 06f37058d9..afcc957ec1 100644
+--- a/ui/xemu.c
++++ b/ui/xemu.c
+@@ -1375,17 +1375,16 @@ void xemu_android_display_preinit(void)
+     qemu_sem_init(&display_init_sem, 0);
+ }
+ 
+-void xemu_android_display_wait_ready(void)
++int xemu_android_display_wait_ready_timeout(int timeout_ms)
+ {
++    int result = qemu_sem_timedwait(&display_init_sem, timeout_ms);
+ #ifdef __ANDROID__
+-    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+-                        "xemu_android_display_wait_ready: waiting");
+-#endif
+-    qemu_sem_wait(&display_init_sem);
+-#ifdef __ANDROID__
+-    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+-                        "xemu_android_display_wait_ready: ready");
++    if (result == 0) {
++        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
++                            "xemu_android_display_wait_ready: ready");
++    }
+ #endif
++    return result;
+ }
+ 
+ void xemu_android_display_loop(void)

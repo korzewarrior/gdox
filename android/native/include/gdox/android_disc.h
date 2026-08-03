@@ -23,7 +23,14 @@ typedef enum gdox_android_media_state {
     GDOX_ANDROID_MEDIA_CHANGING = 2
 } gdox_android_media_state;
 
+typedef enum gdox_android_disc_platform {
+    GDOX_ANDROID_DISC_UNKNOWN = 0,
+    GDOX_ANDROID_DISC_XBOX,
+    GDOX_ANDROID_DISC_XBOX_360
+} gdox_android_disc_platform;
+
 typedef struct gdox_android_disc_info {
+    gdox_android_disc_platform platform;
     char title[GDOX_ANDROID_DISC_TITLE_CAPACITY];
     bool title_id_present;
     uint32_t title_id;
@@ -70,16 +77,6 @@ bool gdox_android_disc_identify(
 );
 
 /*
- * Empties the Xbox HDD's transient X, Y, and Z cache metadata without
- * touching saved games or dashboard data.
- */
-bool gdox_android_hdd_reset_cache(
-    const char *path,
-    bool *changed,
-    gdox_error *error
-);
-
-/*
  * Opens a live emulator view over a UsbManager-authorized GP63 connection.
  *
  * `file_descriptor` remains owned by the Java UsbDeviceConnection. That
@@ -104,7 +101,10 @@ bool gdox_android_disc_read_at(
     size_t *read_bytes,
     gdox_error *error
 );
-bool gdox_android_disc_media_present(const gdox_android_disc *disc);
+bool gdox_android_disc_observe_media(
+    const gdox_android_disc *disc,
+    gdox_media_observation *output
+);
 bool gdox_android_disc_physical_read_stats(
     const gdox_android_disc *disc,
     gdox_physical_read_stats *output

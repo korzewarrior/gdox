@@ -1,7 +1,7 @@
 #include "gdox/media.h"
 
 #include "gdox/source.h"
-#include "gdox/xdvdfs.h"
+#include "gdox/x360.h"
 
 #include <string.h>
 
@@ -13,8 +13,8 @@ bool gdox_media_open_image(
 )
 {
     gdox_sector_source source = {0};
-    gdox_xdvdfs_volume volume;
-    gdox_live_disc_info disc_info;
+    gdox_live_disc_info disc_info = {0};
+    gdox_x360_disc_info x360_info = {0};
     gdox_media_image_info image_info;
     gdox_error cleanup_error;
 
@@ -33,18 +33,40 @@ bool gdox_media_open_image(
         return false;
     }
     image_info.source_sectors = gdox_source_sector_count(&source);
-    if (!gdox_xdvdfs_find_volume(&source, &volume, error)) {
-        (void)gdox_source_close(&source, &cleanup_error);
-        return false;
+    if (gdox_live_disc_build(&source, output, &disc_info, error)) {
+        image_info.platform = GDOX_MEDIA_PLATFORM_XBOX;
+        image_info.backend = GDOX_MEDIA_BACKEND_XEMU;
+        image_info.game_partition_lba = disc_info.game_partition_lba;
+        image_info.layout = disc_info.game_partition_lba == 0U
+            ? GDOX_MEDIA_IMAGE_PLAYABLE_XISO
+            : GDOX_MEDIA_IMAGE_WHOLE_DISC;
+        image_info.disc = disc_info;
+    } else {
+        if (error == NULL || error->code != GDOX_ERROR_INVALID_VOLUME) {
+            if (gdox_source_is_valid(&source)
+                && !gdox_source_close(&source, &cleanup_error)) {
+                if (error != NULL) {
+                    *error = cleanup_error;
+                }
+            }
+            return false;
+        }
+        gdox_error_clear(error);
+        if (!gdox_x360_live_disc_build(
+            &source, output, &x360_info, error
+            )) {
+            if (gdox_source_is_valid(&source)
+                && !gdox_source_close(&source, &cleanup_error)) {
+                if (error != NULL) {
+                    *error = cleanup_error;
+                }
+            }
+            return false;
+        }
+        image_info.platform = GDOX_MEDIA_PLATFORM_XBOX_360;
+        image_info.backend = GDOX_MEDIA_BACKEND_XENIA;
+        image_info.x360 = x360_info;
     }
-    image_info.game_partition_lba = volume.base_lba;
-    image_info.layout = volume.base_lba == 0U
-        ? GDOX_MEDIA_IMAGE_PLAYABLE_XISO
-        : GDOX_MEDIA_IMAGE_WHOLE_DISC;
-    if (!gdox_live_disc_build(&source, output, &disc_info, error)) {
-        return false;
-    }
-    image_info.disc = disc_info;
     *info = image_info;
     return true;
 }

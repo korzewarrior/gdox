@@ -1,5 +1,6 @@
 #include "app/runtime_internal.h"
 
+#include "core/compact.h"
 #include "gdox/optical.h"
 #include "gdox/xdvdfs.h"
 
@@ -254,39 +255,46 @@ static bool run_preservation(
     return true;
 }
 
-static bool close_preservation_source(
-    preservation_session *session,
-    gdox_error *error
+static gdox_sector_source *preservation_owned_source(
+    preservation_session *session
 )
 {
     if (gdox_source_is_valid(&session->compact)) {
-        return gdox_source_close(&session->compact, error);
+        return &session->compact;
     }
     if (gdox_source_is_valid(&session->patched)) {
-        return gdox_source_close(&session->patched, error);
+        return &session->patched;
     }
     if (gdox_source_is_valid(&session->partition)) {
-        return gdox_source_close(&session->partition, error);
+        return &session->partition;
     }
     if (gdox_source_is_valid(&session->whole)) {
-        return gdox_source_close(&session->whole, error);
+        return &session->whole;
     }
-    return true;
+    return NULL;
 }
 
 static bool preservation_session_finish(
+    gdox_runtime *runtime,
     preservation_session *session,
     bool success,
     gdox_error *error
 )
 {
+    gdox_sector_source *owned = preservation_owned_source(session);
     gdox_error cleanup_error;
+    gdox_error retention_error;
 
     gdox_error_clear(&cleanup_error);
     free(session->patches);
+    session->patches = NULL;
     gdox_xdvdfs_metadata_destroy(&session->metadata);
-    if (!close_preservation_source(session, &cleanup_error)) {
-        if (success) {
+    if (owned != NULL && !gdox_source_close(owned, &cleanup_error)) {
+        if (!gdox_runtime_media_retain_cleanup_source(
+                &runtime->media, owned, &retention_error
+            )) {
+            *error = retention_error;
+        } else if (success) {
             *error = cleanup_error;
         }
         success = false;
@@ -356,6 +364,14 @@ bool gdox_runtime_run_preservation(
     bool success;
 
     preservation_session_initialize(&session);
+    if (gdox_runtime_media_is_owned(&runtime->media)) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INTERNAL,
+            "existing media cleanup must finish before preservation"
+        );
+        return false;
+    }
     if (!read_preservation_request(
             queued_request,
             &format,
@@ -380,7 +396,7 @@ bool gdox_runtime_run_preservation(
             error
         );
     }
-    if (!preservation_session_finish(&session, success, error)) {
+    if (!preservation_session_finish(runtime, &session, success, error)) {
         return false;
     }
     publish_preservation_complete(runtime, snapshot, &session.result);

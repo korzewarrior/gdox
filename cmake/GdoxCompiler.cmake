@@ -66,3 +66,23 @@ function(gdox_enable_cxx_warnings target)
         endif()
     endif()
 endfunction()
+
+function(gdox_enable_objc_warnings target)
+    target_compile_options(
+        ${target}
+        PRIVATE
+            $<$<COMPILE_LANGUAGE:OBJC>:-Wall>
+            $<$<COMPILE_LANGUAGE:OBJC>:-Wextra>
+            $<$<COMPILE_LANGUAGE:OBJC>:-Wpedantic>
+            $<$<COMPILE_LANGUAGE:OBJC>:-Wconversion>
+            $<$<COMPILE_LANGUAGE:OBJC>:-Wshadow>
+            $<$<COMPILE_LANGUAGE:OBJC>:-Wstrict-prototypes>
+            $<$<COMPILE_LANGUAGE:OBJC>:-Wundef>
+    )
+    if(GDOX_WARNINGS_AS_ERRORS)
+        target_compile_options(
+            ${target}
+            PRIVATE $<$<COMPILE_LANGUAGE:OBJC>:-Werror>
+        )
+    endif()
+endfunction()

@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include "platform/user_storage.h"
+#include "gdox/hash.h"
 #include "platform/windows_support.h"
 
 #include <windows.h>
@@ -276,6 +277,146 @@ bool gdox_storage_file_size(const char *path, uint64_t *bytes)
     return true;
 }
 
+bool gdox_storage_ordinary_file(
+    const char *path,
+    bool *found,
+    gdox_error *error
+)
+{
+    wchar_t *wide;
+    DWORD attributes;
+    DWORD code;
+
+    gdox_error_clear(error);
+    if (path == NULL || path[0] == '\0' || found == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "ordinary private file path and result are required"
+        );
+        return false;
+    }
+    *found = false;
+    wide = gdox_windows_wide_path(path, error);
+    if (wide == NULL) {
+        return false;
+    }
+    attributes = GetFileAttributesW(wide);
+    code = attributes == INVALID_FILE_ATTRIBUTES
+        ? GetLastError() : ERROR_SUCCESS;
+    free(wide);
+    if (attributes == INVALID_FILE_ATTRIBUTES
+        && (code == ERROR_FILE_NOT_FOUND
+            || code == ERROR_PATH_NOT_FOUND)) {
+        return true;
+    }
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        gdox_windows_io_error(
+            error, "could not inspect private file", code
+        );
+        return false;
+    }
+    if ((attributes
+            & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))
+        != 0U) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_SOURCE,
+            "private file is not an ordinary regular file"
+        );
+        return false;
+    }
+    *found = true;
+    return true;
+}
+
+bool gdox_storage_xemu_pending_hdd(
+    const char *managed_path,
+    bool *found,
+    uint64_t *bytes,
+    gdox_error *error
+)
+{
+    gdox_error_clear(error);
+    if (managed_path == NULL || managed_path[0] == '\0'
+        || found == NULL || bytes == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "managed xemu HDD path and pending-removal result are required"
+        );
+        return false;
+    }
+    *found = false;
+    *bytes = 0U;
+    return true;
+}
+
+bool gdox_storage_resolve_existing_path(
+    const char *path,
+    char output[GDOX_STORAGE_PATH_CAPACITY],
+    gdox_error *error
+)
+{
+    wchar_t *wide;
+    wchar_t resolved[GDOX_WINDOWS_PATH_CAPACITY];
+    DWORD characters;
+    DWORD attributes;
+    bool success;
+
+    gdox_error_clear(error);
+    if (path == NULL || path[0] == '\0' || output == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "private storage path and destination are required"
+        );
+        return false;
+    }
+    wide = gdox_windows_wide_path(path, error);
+    if (wide == NULL) {
+        return false;
+    }
+    characters = GetFullPathNameW(
+        wide, GDOX_WINDOWS_PATH_CAPACITY, resolved, NULL
+    );
+    free(wide);
+    attributes = characters != 0U
+        && characters < GDOX_WINDOWS_PATH_CAPACITY
+        ? GetFileAttributesW(resolved) : INVALID_FILE_ATTRIBUTES;
+    if (characters == 0U || characters >= GDOX_WINDOWS_PATH_CAPACITY
+        || attributes == INVALID_FILE_ATTRIBUTES) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_SOURCE,
+            "private storage path is unavailable"
+        );
+        return false;
+    }
+    success = wide_to_utf8(resolved, output, error);
+    return success;
+}
+
+bool gdox_storage_directory_exists(const char *path)
+{
+    gdox_error error;
+    wchar_t *wide;
+    DWORD attributes;
+
+    if (path == NULL) {
+        return false;
+    }
+    wide = gdox_windows_wide_path(path, &error);
+    if (wide == NULL) {
+        return false;
+    }
+    attributes = GetFileAttributesW(wide);
+    free(wide);
+    return attributes != INVALID_FILE_ATTRIBUTES
+        && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0U
+        && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0U;
+}
+
 bool gdox_storage_ensure_directory(
     const char *path,
     gdox_error *error
@@ -337,6 +478,47 @@ bool gdox_storage_ensure_directory(
     return true;
 }
 
+bool gdox_storage_ensure_private_directory(
+    const char *path,
+    gdox_error *error
+)
+{
+    wchar_t *wide;
+    bool created;
+
+    gdox_error_clear(error);
+    if (path == NULL || path[0] == '\0') {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "private directory path is required"
+        );
+        return false;
+    }
+    wide = gdox_windows_wide_path(path, error);
+    if (wide == NULL) {
+        return false;
+    }
+    if (wcslen(wide) >= GDOX_WINDOWS_PATH_CAPACITY
+        || !create_parent_directories(wide, error)) {
+        if (!gdox_error_is_set(error)) {
+            gdox_error_set(
+                error,
+                GDOX_ERROR_INVALID_ARGUMENT,
+                "private directory path is too long"
+            );
+        }
+        free(wide);
+        return false;
+    }
+    if (!gdox_windows_ensure_private_directory(wide, &created, error)) {
+        free(wide);
+        return false;
+    }
+    free(wide);
+    return true;
+}
+
 bool gdox_storage_read(
     const char *path,
     size_t maximum_bytes,
@@ -374,11 +556,13 @@ bool gdox_storage_read(
         NULL
     );
     free(wide);
-    if (file == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND) {
-        return true;
-    }
     if (file == INVALID_HANDLE_VALUE) {
-        gdox_windows_io_error(error, "could not open private file", GetLastError());
+        const DWORD code = GetLastError();
+
+        if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND) {
+            return true;
+        }
+        gdox_windows_io_error(error, "could not open private file", code);
         return false;
     }
     if (!GetFileSizeEx(file, &length)) {
@@ -573,5 +757,173 @@ bool gdox_storage_copy_private(
         error
     );
     free(data);
+    return success;
+}
+
+bool gdox_storage_remove_exact_file(
+    const char *path,
+    uint64_t expected_bytes,
+    const uint8_t expected_sha256[GDOX_SHA256_BYTES],
+    gdox_storage_remove_result *result,
+    gdox_error *error
+)
+{
+    uint8_t buffer[32U * 1024U];
+    gdox_hash_stream *stream = NULL;
+    gdox_hashes hashes;
+    BY_HANDLE_FILE_INFORMATION before;
+    BY_HANDLE_FILE_INFORMATION after;
+    FILE_DISPOSITION_INFO disposition;
+    wchar_t *wide;
+    HANDLE file;
+    uint64_t completed = 0U;
+    bool success = false;
+
+    gdox_error_clear(error);
+    if (path == NULL || path[0] == '\0' || expected_sha256 == NULL
+        || result == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "exact file path, digest, and result are required"
+        );
+        return false;
+    }
+    *result = GDOX_STORAGE_REMOVE_NOT_FOUND;
+    wide = gdox_windows_wide_path(path, error);
+    if (wide == NULL) {
+        return false;
+    }
+    file = CreateFileW(
+        wide,
+        GENERIC_READ | DELETE,
+        FILE_SHARE_READ,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT
+            | FILE_FLAG_SEQUENTIAL_SCAN,
+        NULL
+    );
+    free(wide);
+    if (file == INVALID_HANDLE_VALUE
+        && (GetLastError() == ERROR_FILE_NOT_FOUND
+            || GetLastError() == ERROR_PATH_NOT_FOUND)) {
+        return true;
+    }
+    if (file == INVALID_HANDLE_VALUE) {
+        gdox_windows_io_error(
+            error,
+            "could not open exact private file",
+            GetLastError()
+        );
+        return false;
+    }
+    if (!GetFileInformationByHandle(file, &before)) {
+        gdox_windows_io_error(
+            error,
+            "could not inspect exact private file",
+            GetLastError()
+        );
+        goto cleanup;
+    }
+    if ((before.dwFileAttributes
+            & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0U
+        || (((uint64_t)before.nFileSizeHigh << 32U)
+            | before.nFileSizeLow) != expected_bytes) {
+        *result = GDOX_STORAGE_REMOVE_MISMATCH;
+        success = true;
+        goto cleanup;
+    }
+    if (!gdox_hash_stream_create(&stream, error)) {
+        goto cleanup;
+    }
+    while (completed < expected_bytes) {
+        const uint64_t remaining = expected_bytes - completed;
+        const DWORD request = remaining < sizeof(buffer)
+            ? (DWORD)remaining : (DWORD)sizeof(buffer);
+        DWORD received = 0U;
+
+        if (!ReadFile(file, buffer, request, &received, NULL)
+            || received == 0U) {
+            gdox_windows_io_error(
+                error,
+                "could not read exact private file",
+                GetLastError()
+            );
+            goto cleanup;
+        }
+        if (!gdox_hash_stream_update(
+                stream,
+                buffer,
+                received,
+                error
+            )) {
+            goto cleanup;
+        }
+        completed += received;
+    }
+    if (!gdox_hash_stream_finish(stream, &hashes, error)) {
+        goto cleanup;
+    }
+    if (!GetFileInformationByHandle(file, &after)) {
+        gdox_windows_io_error(
+            error,
+            "could not recheck exact private file",
+            GetLastError()
+        );
+        goto cleanup;
+    }
+    if (before.dwVolumeSerialNumber != after.dwVolumeSerialNumber
+        || before.nFileIndexHigh != after.nFileIndexHigh
+        || before.nFileIndexLow != after.nFileIndexLow
+        || before.nFileSizeHigh != after.nFileSizeHigh
+        || before.nFileSizeLow != after.nFileSizeLow
+        || before.ftLastWriteTime.dwHighDateTime
+            != after.ftLastWriteTime.dwHighDateTime
+        || before.ftLastWriteTime.dwLowDateTime
+            != after.ftLastWriteTime.dwLowDateTime) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_IO,
+            "exact private file changed while it was verified"
+        );
+        goto cleanup;
+    }
+    if (memcmp(
+            hashes.sha256,
+            expected_sha256,
+            GDOX_SHA256_BYTES
+        ) != 0) {
+        *result = GDOX_STORAGE_REMOVE_MISMATCH;
+        success = true;
+        goto cleanup;
+    }
+    disposition.DeleteFile = TRUE;
+    if (!SetFileInformationByHandle(
+            file,
+            FileDispositionInfo,
+            &disposition,
+            (DWORD)sizeof(disposition)
+        )) {
+        gdox_windows_io_error(
+            error,
+            "could not remove exact private file",
+            GetLastError()
+        );
+        goto cleanup;
+    }
+    *result = GDOX_STORAGE_REMOVE_REMOVED;
+    success = true;
+
+cleanup:
+    gdox_hash_stream_destroy(stream);
+    if (!CloseHandle(file) && success) {
+        gdox_windows_io_error(
+            error,
+            "could not close exact private file",
+            GetLastError()
+        );
+        return false;
+    }
     return success;
 }

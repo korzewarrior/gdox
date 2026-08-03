@@ -66,18 +66,20 @@ bool gdox_thread_start(
 bool gdox_thread_join(gdox_thread *thread)
 {
     gdox_thread_implementation *implementation;
-    bool success;
+    DWORD wait_result;
 
     if (thread == NULL || thread->implementation == NULL) {
         return false;
     }
     implementation = thread->implementation;
-    success = WaitForSingleObject(implementation->handle, INFINITE)
-        == WAIT_OBJECT_0;
-    success = CloseHandle(implementation->handle) != 0 && success;
+    wait_result = WaitForSingleObject(implementation->handle, INFINITE);
+    if (wait_result != WAIT_OBJECT_0
+        || CloseHandle(implementation->handle) == 0) {
+        return false;
+    }
     free(implementation);
     thread->implementation = NULL;
-    return success;
+    return true;
 }
 
 #else
@@ -133,16 +135,17 @@ bool gdox_thread_start(
 bool gdox_thread_join(gdox_thread *thread)
 {
     gdox_thread_implementation *implementation;
-    bool success;
 
     if (thread == NULL || thread->implementation == NULL) {
         return false;
     }
     implementation = thread->implementation;
-    success = pthread_join(implementation->handle, NULL) == 0;
+    if (pthread_join(implementation->handle, NULL) != 0) {
+        return false;
+    }
     free(implementation);
     thread->implementation = NULL;
-    return success;
+    return true;
 }
 
 #endif

@@ -4,3 +4,10 @@
 0004-android-performance.patch
 0005-dsp-interpreter-fast-paths.patch
 0006-android-arm64-coroutines.patch
+0007-android-build-provenance.patch
+0008-android-sdl2-build-paths.patch
+0009-android-native-source-pins.patch
+0010-volatile-xbox-hdd.patch
+0011-android-volatile-runtime-files.patch
+0012-android-save-vault.patch
+0013-android-save-migration.patch

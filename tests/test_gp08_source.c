@@ -18,7 +18,7 @@
 #define GP08_DESCRIPTOR_LBA UINT32_C(0x30620)
 #define GP08_STOCK_LAST_LBA UINT32_C(0x1b4f)
 #define GP08_LIVE_LAST_LBA UINT32_C(0x3a4d4f)
-#define GP08_MAX_LOG_ENTRIES 96U
+#define GP08_MAX_LOG_ENTRIES 192U
 
 static const uint8_t stock_capacity[8] = {
     0x00U, 0x00U, 0x1bU, 0x4fU, 0x00U, 0x00U, 0x1bU, 0x4fU,
@@ -87,10 +87,18 @@ typedef struct fake_gp08 {
     uint32_t write_count;
     uint32_t read_capacity_count;
     uint32_t reset_count;
+    uint32_t load_start_count;
+    uint32_t gesn_count;
+    uint32_t sense_count;
+    uint32_t transition_gesn_call;
+    uint32_t transition_sense_call;
     uint32_t fail_write_number;
+    uint32_t prepare_close_calls;
+    uint32_t prepare_close_failures;
     bool fail_stock_capacity;
     bool descriptor_has_end_magic;
     bool identity_valid;
+    bool fail_next_read;
     bool invalid_command;
     bool closed;
 } fake_gp08;
@@ -210,6 +218,26 @@ static bool fake_command_in(
             fake->identity_valid ? "JE01" : "JE00",
             4U
         );
+    } else if (cdb[0] == 0x4aU && cdb_bytes == 10U
+        && output_bytes == 8U) {
+        ++fake->gesn_count;
+        memset(output, 0, output_bytes);
+        output[0] = 0U;
+        output[1] = 6U;
+        output[2] = 0x84U;
+        if (fake->gesn_count == fake->transition_gesn_call) {
+            output[2] = 0x04U;
+            output[4] = 0x01U;
+        }
+    } else if (cdb[0] == 0x03U && cdb_bytes == 6U
+        && output_bytes == 18U) {
+        ++fake->sense_count;
+        memset(output, 0, output_bytes);
+        if (fake->sense_count == fake->transition_sense_call) {
+            output[0] = 0x70U;
+            output[2] = 0x06U;
+            output[12] = 0x28U;
+        }
     } else if (cdb[0] == 0xadU && cdb_bytes == 12U
         && output_bytes == 2052U) {
         memset(output, 0, output_bytes);
@@ -269,6 +297,14 @@ static bool fake_command_in(
                 error
             )) {
             return false;
+        }
+        if (fake->fail_next_read) {
+            fake->fail_next_read = false;
+            return fail(
+                error,
+                GDOX_ERROR_TRANSPORT,
+                "injected GP08 read failure"
+            );
         }
         memset(output, 0xa5, output_bytes);
         if (lba == GP08_DESCRIPTOR_LBA && blocks == 1U) {
@@ -366,9 +402,13 @@ static bool fake_command_none(
     (void)name;
     (void)timeout_ms;
     gdox_error_clear(error);
-    if (cdb[0] != 0x00U || cdb_bytes != 6U) {
+    if (cdb_bytes != 6U
+        || (cdb[0] != 0x00U && cdb[0] != 0x1bU)) {
         fake->invalid_command = true;
         return fail(error, GDOX_ERROR_PROTOCOL, "unexpected no-data command");
+    }
+    if (cdb[0] == 0x1bU && cdb[4] == 0x03U) {
+        ++fake->load_start_count;
     }
     return true;
 }
@@ -389,12 +429,30 @@ static bool fake_close(void *raw_context, gdox_error *error)
     return true;
 }
 
+static bool fake_prepare_close(void *raw_context, gdox_error *error)
+{
+    fake_gp08 *fake = raw_context;
+    ++fake->prepare_close_calls;
+    if (fake->prepare_close_failures != 0U) {
+        --fake->prepare_close_failures;
+        return fail(
+            error,
+            GDOX_ERROR_TRANSPORT,
+            "injected transport close preparation failure"
+        );
+    }
+    gdox_error_clear(error);
+    return true;
+}
+
 static const gdox_scsi_transport_ops fake_ops = {
     fake_command_in,
     fake_command_out,
     fake_command_none,
     fake_reset,
     fake_close,
+    fake_prepare_close,
+    NULL,
 };
 
 static bool fake_open(
@@ -714,6 +772,36 @@ static bool test_descriptor_rejection_restores(void)
     return true;
 }
 
+static bool test_failed_open_retains_transport_for_close_retry(void)
+{
+    fake_gp08 fake;
+    gdox_sector_source source = {0};
+    gdox_error error;
+
+    fake_initialize(&fake);
+    fake.descriptor_has_end_magic = false;
+    fake.prepare_close_failures = 1U;
+    CHECK(!gdox_gp08_source_open(
+        fake_open,
+        &fake,
+        0U,
+        0U,
+        &source,
+        &error
+    ));
+    CHECK(error.code == GDOX_ERROR_TRANSPORT);
+    CHECK(gdox_source_is_valid(&source));
+    CHECK(fake_is_stock(&fake));
+    CHECK(!fake.closed);
+    CHECK(fake.prepare_close_calls == 1U);
+
+    CHECK(gdox_source_close(&source, &error));
+    CHECK(!gdox_source_is_valid(&source));
+    CHECK(fake.closed);
+    CHECK(fake.prepare_close_calls == 3U);
+    return true;
+}
+
 static bool test_persistent_restore_failure_is_explicit(void)
 {
     fake_gp08 fake;
@@ -733,10 +821,93 @@ static bool test_persistent_restore_failure_is_explicit(void)
     ));
     CHECK(error.code == GDOX_ERROR_TRANSPORT);
     CHECK(strstr(error.message, "power-cycle the drive") != NULL);
-    CHECK(fake.closed);
-    CHECK(fake.reset_count == 2U);
+    CHECK(gdox_source_is_valid(&source));
+    CHECK(!fake.closed);
+    CHECK(fake.reset_count == 4U);
     CHECK(!fake_is_stock(&fake));
     CHECK(!fake.invalid_command);
+    fake.fail_stock_capacity = false;
+    CHECK(gdox_source_close(&source, &error));
+    CHECK(fake.closed);
+    CHECK(fake_is_stock(&fake));
+    return true;
+}
+
+static bool test_recovery_stops_before_reset_on_eject_event(void)
+{
+    fake_gp08 fake;
+    gdox_sector_source source = {0};
+    gdox_error error;
+    uint8_t output[GDOX_LOGICAL_SECTOR_BYTES];
+    uint32_t reset_count;
+    uint32_t write_count;
+
+    fake_initialize(&fake);
+    CHECK(gdox_gp08_source_open(
+        fake_open,
+        &fake,
+        1U,
+        0U,
+        &source,
+        &error
+    ));
+    reset_count = fake.reset_count;
+    write_count = fake.write_count;
+    fake.fail_next_read = true;
+    fake.transition_gesn_call = fake.gesn_count + 1U;
+    CHECK(!gdox_source_read(
+        &source,
+        0U,
+        1U,
+        output,
+        sizeof(output),
+        &error
+    ));
+    CHECK(error.code == GDOX_ERROR_NOT_FOUND);
+    CHECK(strstr(error.message, "physical eject requested") != NULL);
+    CHECK(fake.reset_count == reset_count);
+    CHECK(fake.load_start_count == 0U);
+    CHECK(fake.write_count == write_count);
+    CHECK(gdox_source_close(&source, &error));
+    return true;
+}
+
+static bool test_recovery_stops_before_load_on_post_reset_sense(void)
+{
+    fake_gp08 fake;
+    gdox_sector_source source = {0};
+    gdox_error error;
+    uint8_t output[GDOX_LOGICAL_SECTOR_BYTES];
+    uint32_t reset_count;
+    uint32_t write_count;
+
+    fake_initialize(&fake);
+    CHECK(gdox_gp08_source_open(
+        fake_open,
+        &fake,
+        1U,
+        0U,
+        &source,
+        &error
+    ));
+    reset_count = fake.reset_count;
+    write_count = fake.write_count;
+    fake.fail_next_read = true;
+    fake.transition_sense_call = fake.sense_count + 2U;
+    CHECK(!gdox_source_read(
+        &source,
+        0U,
+        1U,
+        output,
+        sizeof(output),
+        &error
+    ));
+    CHECK(error.code == GDOX_ERROR_NOT_FOUND);
+    CHECK(strstr(error.message, "physical media changed") != NULL);
+    CHECK(fake.reset_count == reset_count + 1U);
+    CHECK(fake.load_start_count == 0U);
+    CHECK(fake.write_count == write_count);
+    CHECK(gdox_source_close(&source, &error));
     return true;
 }
 
@@ -746,7 +917,10 @@ int main(void)
         || !test_activation_failures_restore()
         || !test_identity_and_stock_must_match()
         || !test_descriptor_rejection_restores()
-        || !test_persistent_restore_failure_is_explicit()) {
+        || !test_failed_open_retains_transport_for_close_retry()
+        || !test_persistent_restore_failure_is_explicit()
+        || !test_recovery_stops_before_reset_on_eject_event()
+        || !test_recovery_stops_before_load_on_post_reset_sense()) {
         return 1;
     }
     (void)puts("GP08 adapter tests passed");

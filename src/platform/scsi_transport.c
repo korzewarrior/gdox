@@ -126,6 +126,45 @@ bool gdox_scsi_transport_reset(gdox_scsi_transport *transport, gdox_error *error
     return transport->ops->reset(transport->context, error);
 }
 
+bool gdox_scsi_transport_last_sense(
+    const gdox_scsi_transport *transport,
+    uint8_t *output,
+    size_t output_bytes,
+    size_t *sense_bytes
+)
+{
+    if (sense_bytes != NULL) {
+        *sense_bytes = 0U;
+    }
+    if (!gdox_scsi_transport_is_valid(transport)
+        || output == NULL || output_bytes == 0U || sense_bytes == NULL
+        || transport->ops->last_sense == NULL) {
+        return false;
+    }
+    return transport->ops->last_sense(
+        transport->context,
+        output,
+        output_bytes,
+        sense_bytes
+    );
+}
+
+bool gdox_scsi_transport_prepare_close(
+    gdox_scsi_transport *transport,
+    gdox_error *error
+)
+{
+    gdox_error_clear(error);
+    if (!gdox_scsi_transport_is_valid(transport)) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "transport is not open");
+        return false;
+    }
+    if (transport->ops->prepare_close == NULL) {
+        return true;
+    }
+    return transport->ops->prepare_close(transport->context, error);
+}
+
 bool gdox_scsi_transport_close(gdox_scsi_transport *transport, gdox_error *error)
 {
     void *context;
@@ -136,17 +175,12 @@ bool gdox_scsi_transport_close(gdox_scsi_transport *transport, gdox_error *error
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "transport is not open");
         return false;
     }
+    if (!gdox_scsi_transport_prepare_close(transport, error)) {
+        return false;
+    }
     context = transport->context;
     ops = transport->ops;
     transport->context = NULL;
     transport->ops = NULL;
     return ops->close(context, error);
-}
-
-void gdox_scsi_transport_destroy(gdox_scsi_transport *transport)
-{
-    gdox_error ignored;
-    if (gdox_scsi_transport_is_valid(transport)) {
-        (void)gdox_scsi_transport_close(transport, &ignored);
-    }
 }

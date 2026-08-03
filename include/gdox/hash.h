@@ -45,6 +45,15 @@ bool gdox_hash_buffer(
     gdox_error *error
 );
 
+/* Streams a regular file through the native digest backend without loading
+ * the complete file into memory. */
+bool gdox_hash_file(
+    const char *path,
+    gdox_hashes *output,
+    uint64_t *length,
+    gdox_error *error
+);
+
 uint32_t gdox_crc32_buffer(const uint8_t *bytes, size_t length);
 
 void gdox_hash_hex(

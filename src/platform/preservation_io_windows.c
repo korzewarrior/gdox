@@ -11,6 +11,11 @@ struct gdox_preservation_file {
     HANDLE handle;
 };
 
+double gdox_preservation_monotonic_seconds(void)
+{
+    return (double)GetTickCount64() / 1000.0;
+}
+
 static bool allocate_file(
     HANDLE handle,
     gdox_preservation_file **output,

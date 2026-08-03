@@ -2,9 +2,15 @@ package org.korze.gdox.android
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.os.Build
 import android.util.Log
 import java.io.File
+import java.io.IOException
+import java.nio.file.FileVisitResult
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.Locale
 
 internal const val GDOX_RESTART_EXTRA =
@@ -19,9 +25,6 @@ internal object GdoxEmulatorPolicy {
   const val touchControlsKey = "gdox_touch_controls"
   const val compatibilityProfilesKey = "gdox_compatibility_profiles"
   const val autoStartKey = "gdox_auto_start"
-
-  private const val cacheSignatureKey = "gdox_emulator_cache_signature"
-  private const val cacheEpoch = 2
 
   fun resolve(
     preferences: SharedPreferences,
@@ -47,10 +50,7 @@ internal object GdoxEmulatorPolicy {
   ): GdoxResolvedGraphics {
     val preferences = GdoxCoreFiles.preferences(context)
     val resolved = resolve(preferences, titleId)
-    val signature = cacheSignature(context, resolved)
-    if (preferences.getString(cacheSignatureKey, null) != signature) {
-      clearCaches(context)
-    }
+    removeLegacyCaches(context)
 
     val editor = preferences.edit()
     editor
@@ -59,7 +59,6 @@ internal object GdoxEmulatorPolicy {
       .putString("runtime_override_aspect_ratio", resolved.aspectRatio)
       .putString("runtime_override_filtering", resolved.filtering)
       .putString("runtime_override_vsync", resolved.vsync.toString())
-      .putString(cacheSignatureKey, signature)
       .putString("gdox_active_title", title)
       .putString(
         "gdox_active_title_id",
@@ -79,7 +78,7 @@ internal object GdoxEmulatorPolicy {
     return resolved
   }
 
-  fun clearCaches(context: Context): Int {
+  private fun removeLegacyCaches(context: Context) {
     val targets = mutableListOf<File>()
     context.getExternalFilesDir(null)?.let {
       val emulatorRoot = File(it, "gdox")
@@ -88,15 +87,41 @@ internal object GdoxEmulatorPolicy {
     }
     var removed = 0
     targets.distinctBy { it.absolutePath }.forEach { target ->
-      if (target.exists() && target.deleteRecursively()) {
-        removed++
-      }
+      if (removeLegacyCacheTree(target)) removed++
     }
-    GdoxCoreFiles.preferences(context).edit()
-      .remove(cacheSignatureKey)
-      .apply()
-    Log.i("GDOX-profile", "cleared $removed emulator cache location(s)")
-    return removed
+    if (removed != 0) {
+      Log.i("GDOX-storage", "removed $removed legacy cache location(s)")
+    }
+  }
+
+  internal fun removeLegacyCacheTree(target: File): Boolean {
+    val root = target.toPath()
+    if (!Files.exists(root, LinkOption.NOFOLLOW_LINKS)) return false
+    return try {
+      Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
+        override fun visitFile(
+          file: Path,
+          attributes: BasicFileAttributes
+        ): FileVisitResult {
+          Files.delete(file)
+          return FileVisitResult.CONTINUE
+        }
+
+        override fun postVisitDirectory(
+          directory: Path,
+          failure: IOException?
+        ): FileVisitResult {
+          if (failure != null) throw failure
+          Files.delete(directory)
+          return FileVisitResult.CONTINUE
+        }
+      })
+      true
+    } catch (_: IOException) {
+      false
+    } catch (_: SecurityException) {
+      false
+    }
   }
 
   fun resetGraphics(preferences: SharedPreferences) {
@@ -107,36 +132,6 @@ internal object GdoxEmulatorPolicy {
       .putBoolean(compatibilityProfilesKey, true)
       .remove(vsyncKey)
       .remove("runtime_override_vsync")
-      .remove(cacheSignatureKey)
       .apply()
-  }
-
-  private fun cacheSignature(
-    context: Context,
-    settings: GdoxResolvedGraphics
-  ): String {
-    val packageInfo = context.packageManager.getPackageInfo(
-      context.packageName,
-      0
-    )
-    val version = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-      packageInfo.longVersionCode
-    } else {
-      @Suppress("DEPRECATION")
-      packageInfo.versionCode.toLong()
-    }
-    return listOf(
-      cacheEpoch,
-      version,
-      packageInfo.lastUpdateTime,
-      settings.renderer,
-      settings.surfaceScale,
-      settings.aspectRatio,
-      settings.filtering,
-      settings.vsync,
-      "fp0",
-      "jit0",
-      "tier0"
-    ).joinToString(":")
   }
 }

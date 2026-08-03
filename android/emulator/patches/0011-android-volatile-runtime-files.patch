@@ -1,0 +1,94 @@
+diff --git a/android/app/src/main/cpp/xemu_android.cpp b/android/app/src/main/cpp/xemu_android.cpp
+index 09204c5c69..f6e49d77f4 100644
+--- a/android/app/src/main/cpp/xemu_android.cpp
++++ b/android/app/src/main/cpp/xemu_android.cpp
+@@ -304,6 +304,8 @@ static std::string GetPrefString(JNIEnv* env, jobject activity, const char* key)
+ 
+ static bool CopyUriToPath(JNIEnv* env, jobject activity, const std::string& uriString, const std::string& path) {
+   if (uriString.empty() || path.empty()) return false;
++  const std::string temporaryPath = path + ".part";
++  (void)std::remove(temporaryPath.c_str());
+ 
+   jclass activityClass = env->GetObjectClass(activity);
+   jmethodID getContentResolver = env->GetMethodID(activityClass, "getContentResolver",
+@@ -327,10 +329,13 @@ static bool CopyUriToPath(JNIEnv* env, jobject activity, const std::string& uriS
+ 
+   jclass fosClass = env->FindClass("java/io/FileOutputStream");
+   jmethodID fosCtor = env->GetMethodID(fosClass, "<init>", "(Ljava/lang/String;)V");
+-  jstring jpath = env->NewStringUTF(path.c_str());
++  jstring jpath = env->NewStringUTF(temporaryPath.c_str());
+   jobject outputStream = env->NewObject(fosClass, fosCtor, jpath);
+   env->DeleteLocalRef(jpath);
+-  if (HasException(env, "FileOutputStream.<init>") || !outputStream) return false;
++  if (HasException(env, "FileOutputStream.<init>") || !outputStream) {
++    (void)std::remove(temporaryPath.c_str());
++    return false;
++  }
+ 
+   jclass inputClass = env->GetObjectClass(inputStream);
+   jclass outputClass = env->GetObjectClass(outputStream);
+@@ -338,21 +343,45 @@ static bool CopyUriToPath(JNIEnv* env, jobject activity, const std::string& uriS
+   jmethodID closeInput = env->GetMethodID(inputClass, "close", "()V");
+   jmethodID writeMethod = env->GetMethodID(outputClass, "write", "([BII)V");
+   jmethodID closeOutput = env->GetMethodID(outputClass, "close", "()V");
+-  if (!readMethod || !writeMethod) return false;
++  if (!readMethod || !closeInput || !writeMethod || !closeOutput ||
++      HasException(env, "stream methods")) {
++    (void)std::remove(temporaryPath.c_str());
++    return false;
++  }
+ 
+   const int kBufferSize = 64 * 1024;
+   jbyteArray buffer = env->NewByteArray(kBufferSize);
+-  while (true) {
++  bool success = buffer != nullptr && !HasException(env, "NewByteArray");
++  while (success) {
+     jint read = env->CallIntMethod(inputStream, readMethod, buffer);
+-    if (HasException(env, "InputStream.read")) break;
+-    if (read <= 0) break;
++    if (HasException(env, "InputStream.read")) {
++      success = false;
++      break;
++    }
++    if (read < 0) break;
++    if (read == 0) {
++      success = false;
++      break;
++    }
+     env->CallVoidMethod(outputStream, writeMethod, buffer, 0, read);
+-    if (HasException(env, "OutputStream.write")) break;
++    if (HasException(env, "OutputStream.write")) {
++      success = false;
++      break;
++    }
+   }
+-  env->DeleteLocalRef(buffer);
++  if (buffer) env->DeleteLocalRef(buffer);
+   env->CallVoidMethod(inputStream, closeInput);
++  if (HasException(env, "InputStream.close")) success = false;
+   env->CallVoidMethod(outputStream, closeOutput);
+-  HasException(env, "close streams");
++  if (HasException(env, "OutputStream.close")) success = false;
++  if (!success) {
++    (void)std::remove(temporaryPath.c_str());
++    return false;
++  }
++  if (std::rename(temporaryPath.c_str(), path.c_str()) != 0) {
++    (void)std::remove(temporaryPath.c_str());
++    return false;
++  }
+   return true;
+ }
+ 
+@@ -602,6 +631,11 @@ extern "C" int SDL_main(int argc, char* argv[]) {
+   (void)argv;
+ 
+   LogInfo("SDL_main: start");
++  if (setenv("MESA_SHADER_CACHE_DISABLE", "1", 1) != 0 ||
++      setenv("__GL_SHADER_DISK_CACHE", "0", 1) != 0) {
++    LogErrorFmt("Could not disable persistent driver caches: %s", strerror(errno));
++    return 1;
++  }
+   // Prefer AAudio on Android, but keep Android AudioTrack as fallback.
+   SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, "aaudio,android",
+                           SDL_HINT_OVERRIDE);

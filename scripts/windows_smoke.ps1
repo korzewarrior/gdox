@@ -44,6 +44,21 @@ public static class GdoxWindow {
         UIntPtr wParam,
         IntPtr lParam
     );
+
+    [DllImport("user32.dll", CharSet = CharSet.Ansi)]
+    public static extern IntPtr FindWindow(
+        string className,
+        string windowName
+    );
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(
+        IntPtr handle,
+        out uint processId
+    );
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr handle);
 }
 "@
         $Process = Start-Process `
@@ -64,14 +79,56 @@ public static class GdoxWindow {
         if ($Process.MainWindowHandle -eq 0) {
             throw "GDOX did not create an interactive desktop window."
         }
-        [void][GdoxWindow]::PostMessage(
-            $Process.MainWindowHandle,
+        $MainWindow = $Process.MainWindowHandle
+        $BackgroundWindow = [GdoxWindow]::FindWindow(
+            "GDOXBackgroundHost",
+            "GDOX background host"
+        )
+        if ($BackgroundWindow -eq [IntPtr]::Zero) {
+            throw "GDOX did not create its notification-area host."
+        }
+        [uint32]$BackgroundProcessId = 0
+        [void][GdoxWindow]::GetWindowThreadProcessId(
+            $BackgroundWindow,
+            [ref]$BackgroundProcessId
+        )
+        if ($BackgroundProcessId -ne $Process.Id) {
+            throw "The notification-area host belongs to another process."
+        }
+        if (-not [GdoxWindow]::PostMessage(
+            $MainWindow,
             0x0010,
             [UIntPtr]::Zero,
             [IntPtr]::Zero
-        )
+        )) {
+            throw "Could not send WM_CLOSE to the GDOX window."
+        }
+        Start-Sleep -Seconds 2
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            throw "GDOX exited instead of remaining in the notification area."
+        }
+        if ([GdoxWindow]::IsWindowVisible($MainWindow)) {
+            throw "GDOX remained visible after receiving WM_CLOSE."
+        }
+        if (-not [GdoxWindow]::PostMessage(
+            $BackgroundWindow,
+            0x0011,
+            [UIntPtr]::Zero,
+            [IntPtr]::Zero
+        )) {
+            throw "Could not send WM_QUERYENDSESSION to GDOX."
+        }
+        if (-not [GdoxWindow]::PostMessage(
+            $BackgroundWindow,
+            0x0016,
+            [UIntPtr]::new([uint64]1),
+            [IntPtr]::Zero
+        )) {
+            throw "Could not send WM_ENDSESSION to GDOX."
+        }
         if (-not $Process.WaitForExit(30000)) {
-            throw "GDOX did not close after receiving WM_CLOSE."
+            throw "GDOX did not stop after a Windows session-ending request."
         }
         if ($Process.ExitCode -ne 0) {
             throw "GDOX exited with code $($Process.ExitCode)."

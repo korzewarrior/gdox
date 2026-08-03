@@ -1,8 +1,11 @@
 #include "gdox/hash.h"
 
 #include "core/ports/hash_backend.h"
+#include "core/ports/preservation_io.h"
 
 #include <stdlib.h>
+
+#define GDOX_HASH_FILE_BUFFER_BYTES ((size_t)1024U * 1024U)
 
 struct gdox_hash_stream {
     gdox_digest_backend *backend;
@@ -16,14 +19,22 @@ static uint32_t crc32_update(
     size_t length
 )
 {
+    static const uint32_t table[16] = {
+        UINT32_C(0x00000000), UINT32_C(0x1db71064),
+        UINT32_C(0x3b6e20c8), UINT32_C(0x26d930ac),
+        UINT32_C(0x76dc4190), UINT32_C(0x6b6b51f4),
+        UINT32_C(0x4db26158), UINT32_C(0x5005713c),
+        UINT32_C(0xedb88320), UINT32_C(0xf00f9344),
+        UINT32_C(0xd6d6a3e8), UINT32_C(0xcb61b38c),
+        UINT32_C(0x9b64c2b0), UINT32_C(0x86d3d2d4),
+        UINT32_C(0xa00ae278), UINT32_C(0xbdbdf21c),
+    };
     size_t index;
+
     for (index = 0U; index < length; ++index) {
-        unsigned int bit;
         crc32 ^= bytes[index];
-        for (bit = 0U; bit < 8U; ++bit) {
-            const uint32_t mask = (uint32_t)(-(int32_t)(crc32 & UINT32_C(1)));
-            crc32 = (crc32 >> 1U) ^ (UINT32_C(0xedb88320) & mask);
-        }
+        crc32 = table[crc32 & UINT32_C(0x0f)] ^ (crc32 >> 4U);
+        crc32 = table[crc32 & UINT32_C(0x0f)] ^ (crc32 >> 4U);
     }
     return crc32;
 }
@@ -117,6 +128,95 @@ bool gdox_hash_buffer(
     success = gdox_hash_stream_update(stream, bytes, length, error)
         && gdox_hash_stream_finish(stream, output, error);
     gdox_hash_stream_destroy(stream);
+    return success;
+}
+
+bool gdox_hash_file(
+    const char *path,
+    gdox_hashes *output,
+    uint64_t *length,
+    gdox_error *error
+)
+{
+    gdox_preservation_file *file = NULL;
+    gdox_hash_stream *stream = NULL;
+    uint8_t *buffer = NULL;
+    uint64_t file_length = 0U;
+    uint64_t completed = 0U;
+    bool success = false;
+
+    gdox_error_clear(error);
+    if (path == NULL || path[0] == '\0' || output == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "file path and hash output are required"
+        );
+        return false;
+    }
+    if (!gdox_preservation_file_open_read(
+            path,
+            &file,
+            &file_length,
+            error
+        )) {
+        return false;
+    }
+    buffer = malloc(GDOX_HASH_FILE_BUFFER_BYTES);
+    if (buffer == NULL || !gdox_hash_stream_create(&stream, error)) {
+        if (buffer == NULL) {
+            gdox_error_set(
+                error,
+                GDOX_ERROR_INTERNAL,
+                "could not allocate file hashing buffer"
+            );
+        }
+        goto cleanup;
+    }
+    while (completed < file_length) {
+        const uint64_t remaining = file_length - completed;
+        const size_t request = remaining < GDOX_HASH_FILE_BUFFER_BYTES
+            ? (size_t)remaining
+            : GDOX_HASH_FILE_BUFFER_BYTES;
+        size_t received = 0U;
+
+        if (!gdox_preservation_file_read(
+                file,
+                buffer,
+                request,
+                &received,
+                error
+            ) || received == 0U
+            || !gdox_hash_stream_update(stream, buffer, received, error)) {
+            if (!gdox_error_is_set(error)) {
+                gdox_error_set(
+                    error,
+                    GDOX_ERROR_IO,
+                    "file ended while hashing"
+                );
+            }
+            goto cleanup;
+        }
+        completed += received;
+    }
+    if (!gdox_hash_stream_finish(stream, output, error)) {
+        goto cleanup;
+    }
+    if (length != NULL) {
+        *length = file_length;
+    }
+    success = true;
+
+cleanup:
+    free(buffer);
+    gdox_hash_stream_destroy(stream);
+    if (file != NULL) {
+        gdox_error close_error;
+        if (!gdox_preservation_file_close(file, &close_error) && success) {
+            *error = close_error;
+            success = false;
+        }
+    }
     return success;
 }
 

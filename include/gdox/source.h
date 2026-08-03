@@ -22,6 +22,43 @@ typedef struct gdox_physical_read_stats {
     uint64_t last_lba;
 } gdox_physical_read_stats;
 
+typedef enum gdox_media_readiness {
+    GDOX_MEDIA_READINESS_UNKNOWN = 0,
+    GDOX_MEDIA_READINESS_ABSENT,
+    GDOX_MEDIA_READINESS_PRESENT,
+} gdox_media_readiness;
+
+typedef enum gdox_media_event {
+    GDOX_MEDIA_EVENT_NONE = 0,
+    GDOX_MEDIA_EVENT_EJECT_REQUEST,
+    GDOX_MEDIA_EVENT_NEW_MEDIA,
+    GDOX_MEDIA_EVENT_REMOVAL,
+    GDOX_MEDIA_EVENT_CHANGED,
+} gdox_media_event;
+
+/*
+ * `generation` changes when a removable source observes that the medium may
+ * have changed. It is stable for file-backed and other immutable sources.
+ */
+typedef struct gdox_media_observation {
+    gdox_media_readiness readiness;
+    uint64_t generation;
+    gdox_media_event event;
+} gdox_media_observation;
+
+typedef enum gdox_removable_session_status {
+    GDOX_REMOVABLE_SESSION_PRESENT = 0,
+    GDOX_REMOVABLE_SESSION_UNAVAILABLE,
+    GDOX_REMOVABLE_SESSION_EJECT_REQUESTED,
+    GDOX_REMOVABLE_SESSION_CHANGED,
+} gdox_removable_session_status;
+
+gdox_removable_session_status gdox_removable_session_classify(
+    const gdox_media_observation *observation,
+    bool generation_known,
+    uint64_t expected_generation
+);
+
 typedef struct gdox_sector_source_ops {
     uint64_t (*sector_count)(const void *context);
     bool (*read)(
@@ -45,12 +82,33 @@ typedef struct gdox_sector_source_ops {
      * thread while the source remains open.
      */
     void (*abort)(void *context);
+    /*
+     * Optional. Completes safety-critical shutdown without consuming the
+     * context. The operation must be idempotent; after it succeeds, later
+     * calls must also succeed. On failure, the context must remain valid so
+     * shutdown can be retried.
+     */
+    bool (*prepare_close)(void *context, gdox_error *error);
+    /*
+     * Optional. Reports readiness without collapsing transient transport
+     * failures into absence. Appended to preserve existing member order.
+     */
+    void (*observe_media)(
+        const void *context,
+        gdox_media_observation *output
+    );
 } gdox_sector_source_ops;
 
 struct gdox_sector_source {
     void *context;
     const gdox_sector_source_ops *ops;
 };
+
+/*
+ * Callers serialize reads against other reads. Media queries may run while a
+ * read is active, and abort is explicitly safe from another thread. Prepare
+ * and close require all in-flight operations to be drained first.
+ */
 
 typedef struct gdox_byte_patch {
     uint64_t offset;
@@ -68,6 +126,10 @@ bool gdox_source_read(
     gdox_error *error
 );
 bool gdox_source_media_present(const gdox_sector_source *source);
+bool gdox_source_observe_media(
+    const gdox_sector_source *source,
+    gdox_media_observation *output
+);
 bool gdox_source_evidence(
     const gdox_sector_source *source,
     gdox_disc_evidence *output
@@ -77,6 +139,8 @@ bool gdox_source_physical_read_stats(
     gdox_physical_read_stats *output
 );
 void gdox_source_abort(gdox_sector_source *source);
+bool gdox_source_prepare_close(gdox_sector_source *source, gdox_error *error);
+/* A failed prepare_close leaves the source open and eligible for retry. */
 bool gdox_source_close(gdox_sector_source *source, gdox_error *error);
 void gdox_source_destroy(gdox_sector_source *source);
 

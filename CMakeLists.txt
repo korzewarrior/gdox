@@ -2,10 +2,14 @@ cmake_minimum_required(VERSION 3.25)
 
 project(
     gdox
-    VERSION 0.1.4
-    DESCRIPTION "Play and preserve original Xbox discs"
+    VERSION 0.2.0
+    DESCRIPTION "Read, play, and preserve Xbox game discs"
     LANGUAGES C CXX
 )
+
+if(APPLE)
+    enable_language(OBJC)
+endif()
 
 include(CTest)
 include(FetchContent)
@@ -32,7 +36,12 @@ if(MSVC)
         CMAKE_MSVC_RUNTIME_LIBRARY
         "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
-else()
+    # Match the ordinary 8 MiB POSIX main-thread reserve. Windows otherwise
+    # defaults executables to 1 MiB, which is too small for bounded media and
+    # session path validation using extended-length Windows paths.
+    add_link_options(/STACK:8388608)
+endif()
+if(NOT WIN32)
     find_package(Threads REQUIRED)
 endif()
 
@@ -43,6 +52,7 @@ include(GdoxSources)
 include(GdoxCore)
 if(GDOX_BUILD_OPTICAL)
     include(GdoxOptical)
+    include(GdoxXenia)
     include(GdoxRuntime)
 endif()
 if(BUILD_TESTING)
