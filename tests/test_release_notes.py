@@ -11,7 +11,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from project_version import project_version
-from release_notes import release_notes
+from release_notes import publication_notes, release_notes
 
 
 class ReleaseNotesTest(unittest.TestCase):
@@ -57,6 +57,17 @@ class ReleaseNotesTest(unittest.TestCase):
             require_released=True,
         )
         self.assertTrue(notes.startswith("- "))
+
+    def test_publication_notes_start_with_plain_download_choices(self) -> None:
+        notes = publication_notes(
+            "## 0.2.0\n\n- fixed\n",
+            "0.2.0",
+            require_released=True,
+        )
+        self.assertTrue(notes.startswith("[windows]("))
+        self.assertIn("[linux + steam deck](", notes)
+        self.assertIn("[macos](", notes)
+        self.assertTrue(notes.endswith("- fixed\n"))
 
 
 if __name__ == "__main__":

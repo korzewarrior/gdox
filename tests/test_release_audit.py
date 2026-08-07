@@ -816,6 +816,13 @@ class ReleaseAuditTest(unittest.TestCase):
         self.assertTrue(
             any("automated authorship reference" in item for item in findings)
         )
+        self.assertTrue(
+            release_audit_provenance.is_android_core_patch(
+                "gdox-0.2.1-corresponding-source.tar.gz!"
+                "gdox-0.2.1-corresponding-source/gdox/"
+                "android/emulator/patches/0001-android-core.patch"
+            )
+        )
 
     def test_patch_context_does_not_claim_upstream_work_is_unfinished(self) -> None:
         label = "packaging/xemu/patches/0001-runtime.patch"

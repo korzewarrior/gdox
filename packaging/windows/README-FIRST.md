@@ -12,7 +12,7 @@ menu to open the window or quit cleanly.
 xbox 360 playback uses the reviewed Xenia runtimes with save-only content
 isolation. transient Xenia state uses a GDOX-owned session directory that is
 removed during teardown and recovery. physical playback is limited to the
-exact GP63EX70/RF02 XGD2 profile; it is not general drive support. original
+exact GP63EX70/RF02 XGD2 profile. this is not general drive support. original
 xbox discs continue to use xemu.
 
 keep this folder together. firmware, EEPROM, settings, and supported save data

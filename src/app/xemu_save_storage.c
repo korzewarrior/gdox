@@ -3,11 +3,77 @@
 #include "platform/xemu_save_migration.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define GDOX_XEMU_SAVE_VAULT_RELATIVE "xemu/saves/v1"
 #define GDOX_XEMU_LEGACY_HDD_RELATIVE "xemu/xbox_hdd.qcow2"
 #define GDOX_XEMU_LEGACY_HDD_MAX_BYTES (UINT64_C(64) * 1024U * 1024U * 1024U)
+
+static bool rejected_migration_source_remains(
+    const char *legacy_path,
+    uint64_t expected_bytes,
+    const gdox_error *error
+)
+{
+    gdox_error ignored;
+    bool legacy_found = false;
+    bool pending_found = false;
+    uint64_t legacy_bytes = 0U;
+    uint64_t pending_bytes = 0U;
+
+    if (error == NULL || error->code != GDOX_ERROR_INVALID_SOURCE
+        || !gdox_storage_ordinary_file(
+            legacy_path, &legacy_found, &ignored
+        )
+        || (legacy_found
+            && (!gdox_storage_file_size(legacy_path, &legacy_bytes)
+                || legacy_bytes != expected_bytes))
+        || (!legacy_found
+            && !gdox_storage_xemu_pending_hdd(
+                legacy_path, &pending_found, &pending_bytes, &ignored
+            ))
+        || (!legacy_found
+            && (!pending_found || pending_bytes != expected_bytes))) {
+        return false;
+    }
+    return true;
+}
+
+static bool save_vault_has_generation(
+    const char *save_vault,
+    bool *found,
+    gdox_error *error
+)
+{
+    char path[GDOX_STORAGE_PATH_CAPACITY];
+
+    *found = false;
+    for (unsigned int slot = 0U; slot < 2U; ++slot) {
+        bool slot_found = false;
+        const int written = snprintf(
+            path,
+            sizeof(path),
+            "%s/original-xbox-udata-%u.gdox",
+            save_vault,
+            slot
+        );
+
+        if (written < 0 || (size_t)written >= sizeof(path)) {
+            gdox_error_set(
+                error,
+                GDOX_ERROR_OUT_OF_BOUNDS,
+                "Xbox save vault generation path is too long"
+            );
+            return false;
+        }
+        if (!gdox_storage_ordinary_file(path, &slot_found, error)) {
+            return false;
+        }
+        *found = *found || slot_found;
+    }
+    return true;
+}
 
 bool gdox_xemu_save_vault_prepare(
     char output[GDOX_STORAGE_PATH_CAPACITY],
@@ -54,6 +120,7 @@ bool gdox_xemu_migrate_legacy_managed_hdd_with_outcome(
     bool pending_removal = false;
     bool pending_removal_after = false;
     bool clean_found = false;
+    bool vault_generation_found = false;
 
     gdox_error_clear(error);
     if (outcome != NULL) {
@@ -130,8 +197,31 @@ bool gdox_xemu_migrate_legacy_managed_hdd_with_outcome(
             source_bytes,
             &migrated,
             error
-        )
-        || !gdox_emulator_validate_save_vault(
+        )) {
+        if (!rejected_migration_source_remains(
+                legacy_path, source_bytes, error
+            )
+            || !save_vault_has_generation(
+                save_vault, &vault_generation_found, error
+            )
+            || (vault_generation_found
+                && !gdox_emulator_validate_save_vault(
+                    executable,
+                    save_vault,
+                    clean_resolved,
+                    &validated,
+                    error
+                ))) {
+            return false;
+        }
+        if (outcome != NULL) {
+            outcome->legacy_found = true;
+            outcome->retained_due_to_rejected_migration = true;
+        }
+        gdox_error_clear(error);
+        return true;
+    }
+    if (!gdox_emulator_validate_save_vault(
             executable,
             save_vault,
             clean_resolved,

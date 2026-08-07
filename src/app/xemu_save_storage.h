@@ -10,6 +10,7 @@
 typedef struct gdox_xemu_legacy_migration_outcome {
     bool legacy_found;
     bool source_removed;
+    bool retained_due_to_rejected_migration;
     bool retained_due_to_unclassified;
     bool retained_due_to_save_conflict;
     bool receipt_reused;

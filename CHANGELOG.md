@@ -1,5 +1,16 @@
 # changes
 
+## 0.2.1
+
+- allow playback after a rejected legacy Xbox hard-disk migration when the
+  same-size source remains and saved games validate
+- make the included clean Xbox hard disk and separate save storage clear in the
+  interface
+- simplify public package names and replace duplicate checksum files with one
+  signed checksum manifest
+- publish GDOX, xemu, and libnbd corresponding source in one archive
+- document the Linux/Proton ASUS A202 XGD2 validation boundary
+
 ## 0.2.0
 
 - add Xbox 360 image playback on Windows x86-64, Linux x86-64, and Steam Deck

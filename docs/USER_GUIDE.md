@@ -70,8 +70,11 @@ shows that every source save was represented, finds no unclassified title data,
 and verifies the unchanged source. A differing same-path save or configuration
 entry remains unchanged in the current vault; GDOX imports the nonconflicting
 saves, keeps the old HDD, and continues playback. Unclassified TDATA has the
-same preserve-and-continue result. User-owned HDD images and standalone xemu
-data are not touched.
+same preserve-and-continue result. If xemu rejects the old HDD migration and
+the same-size source remains, GDOX retains it and continues with the included
+HDD. Existing saved games must pass independent validation; an empty vault
+starts clean. Invalid proof and failed save-vault validation still stop
+playback. User-owned HDD images and standalone xemu data are not touched.
 
 ## Firmware
 
@@ -82,7 +85,8 @@ Open **Sources** and select:
 
 GDOX validates the MCPX hash and firmware sizes before importing them. It
 creates a managed xemu configuration and EEPROM path under your user account.
-The bundled blank HDD remains the backing for a volatile guest-write layer. A
+The bundled blank HDD remains the fixed backing for a volatile guest-write
+layer and is not user-selectable. A
 valid existing 256-byte xemu EEPROM can be adopted once; later
 changes to an external xemu configuration do not replace GDOX user data. The
 source paths and readiness are visible on Sources and Details. Xbox 360
@@ -123,8 +127,8 @@ read-only bridge so Xenia receives the exact source GDOX validated. Generic
 Linux requires host `nbdfuse` and `fusermount3`; without both helpers, all Xbox
 360 playback is unavailable. The Steam Deck package includes its reviewed
 `nbdfuse` and libnbd build and uses SteamOS's `fusermount3`. Physical playback
-is limited to the exact GP63EX70/RF02 host and media combinations in
-`XBOX360.md`; it is not general drive support. macOS and Android playback are
+uses only the exact host, drive, firmware, and media combinations in
+`XBOX360.md`. It is not general drive support. macOS and Android playback are
 unavailable.
 
 Managed Xenia sessions keep saves and profiles under GDOX user data. On

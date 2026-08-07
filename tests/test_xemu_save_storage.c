@@ -255,6 +255,7 @@ static void test_managed_migration(void)
     char custom[4096];
     char vault[4096];
     char marker[4096];
+    char vault_generation[4096];
     char expected_bytes[32];
     char *saved_data_home = save_environment("GDOX_DATA_HOME");
     char *saved_save_mode = save_environment("GDOX_TEST_XEMU_SAVE_MODE");
@@ -313,6 +314,7 @@ static void test_managed_migration(void)
     ));
     GDOX_TEST_CHECK(outcome.legacy_found);
     GDOX_TEST_CHECK(outcome.source_removed);
+    GDOX_TEST_CHECK(!outcome.retained_due_to_rejected_migration);
     GDOX_TEST_CHECK(!outcome.retained_due_to_unclassified);
     GDOX_TEST_CHECK(!outcome.retained_due_to_save_conflict);
 
@@ -431,33 +433,71 @@ static void test_managed_migration(void)
     GDOX_TEST_CHECK(set_environment(
         "GDOX_TEST_XEMU_SAVE_MODE", "mismatch"
     ));
-    GDOX_TEST_CHECK(!gdox_xemu_migrate_legacy_managed_hdd(
-        gdox_test_program_path, clean, &error
+    GDOX_TEST_CHECK(!gdox_xemu_migrate_legacy_managed_hdd_with_outcome(
+        gdox_test_program_path, clean, &outcome, &error
     ));
+    GDOX_TEST_CHECK(!outcome.retained_due_to_rejected_migration);
     GDOX_TEST_CHECK(gdox_test_remove(legacy) == 0);
 
     GDOX_TEST_CHECK(create_text(legacy, "source-changes"));
     GDOX_TEST_CHECK(set_environment(
         "GDOX_TEST_XEMU_SAVE_MODE", "source-write"
     ));
-    GDOX_TEST_CHECK(!gdox_xemu_migrate_legacy_managed_hdd(
-        gdox_test_program_path, clean, &error
+    GDOX_TEST_CHECK(!gdox_xemu_migrate_legacy_managed_hdd_with_outcome(
+        gdox_test_program_path, clean, &outcome, &error
     ));
+    GDOX_TEST_CHECK(!outcome.retained_due_to_rejected_migration);
     GDOX_TEST_CHECK(gdox_test_remove(legacy) == 0);
 
     GDOX_TEST_CHECK(create_text(legacy, "operation-fails"));
     GDOX_TEST_CHECK(set_environment(
         "GDOX_TEST_XEMU_SAVE_MODE", "nonzero"
     ));
-    GDOX_TEST_CHECK(!gdox_xemu_migrate_legacy_managed_hdd(
-        gdox_test_program_path, clean, &error
+    GDOX_TEST_CHECK(gdox_xemu_migrate_legacy_managed_hdd_with_outcome(
+        gdox_test_program_path, clean, &outcome, &error
     ));
+    GDOX_TEST_CHECK(outcome.retained_due_to_rejected_migration);
+    GDOX_TEST_CHECK(set_environment(
+        "GDOX_TEST_XEMU_SAVE_MODE", "nonzero-source-write"
+    ));
+    GDOX_TEST_CHECK(!gdox_xemu_migrate_legacy_managed_hdd_with_outcome(
+        gdox_test_program_path, clean, &outcome, &error
+    ));
+    GDOX_TEST_CHECK(!outcome.retained_due_to_rejected_migration);
+    GDOX_TEST_CHECK(gdox_test_remove(legacy) == 0);
+    GDOX_TEST_CHECK(create_text(legacy, "operation-fails"));
+    GDOX_TEST_CHECK(set_environment(
+        "GDOX_TEST_XEMU_SAVE_MODE", "nonzero"
+    ));
+    written = snprintf(
+        vault_generation,
+        sizeof(vault_generation),
+        "%s/original-xbox-udata-0.gdox",
+        vault
+    );
+    GDOX_TEST_CHECK(
+        written >= 0 && (size_t)written < sizeof(vault_generation)
+    );
+    GDOX_TEST_CHECK(create_text(vault_generation, "invalid-vault"));
+    GDOX_TEST_CHECK(!gdox_xemu_migrate_legacy_managed_hdd_with_outcome(
+        gdox_test_program_path, clean, &outcome, &error
+    ));
+    GDOX_TEST_CHECK(!outcome.retained_due_to_rejected_migration);
+    GDOX_TEST_CHECK(set_environment(
+        "GDOX_TEST_XEMU_SAVE_MODE", "nonzero-valid-vault"
+    ));
+    GDOX_TEST_CHECK(gdox_xemu_migrate_legacy_managed_hdd_with_outcome(
+        gdox_test_program_path, clean, &outcome, &error
+    ));
+    GDOX_TEST_CHECK(outcome.retained_due_to_rejected_migration);
+    GDOX_TEST_CHECK(gdox_test_remove(vault_generation) == 0);
     GDOX_TEST_CHECK(set_environment(
         "GDOX_TEST_XEMU_SAVE_MODE", "malformed"
     ));
-    GDOX_TEST_CHECK(!gdox_xemu_migrate_legacy_managed_hdd(
-        gdox_test_program_path, clean, &error
+    GDOX_TEST_CHECK(!gdox_xemu_migrate_legacy_managed_hdd_with_outcome(
+        gdox_test_program_path, clean, &outcome, &error
     ));
+    GDOX_TEST_CHECK(!outcome.retained_due_to_rejected_migration);
     source_bytes = sizeof("operation-fails") - 1U;
     written = snprintf(
         expected_bytes,

@@ -13,8 +13,8 @@ executable as a separate program and a redistributable blank HDD from
 xemu-dashboard. Their
 versions, source URLs, hashes, sizes, and licenses are fixed in
 `packaging/runtime-manifest.json`; the maintained integration patch series is
-in `packaging/xemu/`. The exact corresponding xemu source archive is published
-alongside GDOX binary releases.
+in `packaging/xemu/`. The exact GDOX, xemu, and libnbd source is published in
+one corresponding-source archive alongside GDOX binary releases.
 
 Windows, Linux, and Steam Deck archives also contain exact, reviewed
 GDOX-patched Xenia Canary executables as separate programs. Their commits,

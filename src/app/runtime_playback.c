@@ -196,6 +196,13 @@ bool gdox_runtime_playback_start(
             : "xemu is running"
     );
     if (owner == GDOX_RUNTIME_PLAYBACK_XEMU
+        && runtime->xemu_save_migration.retained_due_to_rejected_migration) {
+        gdox_runtime_copy_text(
+            snapshot->notice,
+            sizeof(snapshot->notice),
+            "Legacy Xbox hard disk retained because migration was rejected. Playback is using the included HDD and available saved games."
+        );
+    } else if (owner == GDOX_RUNTIME_PLAYBACK_XEMU
         && runtime->xemu_save_migration.retained_due_to_unclassified) {
         const uint32_t entries = runtime->xemu_save_migration
             .unclassified_tdata_entries;

@@ -13,6 +13,11 @@ from project_version import ROOT, validated_project_version
 HEADING = re.compile(
     r"^## (?P<version>[0-9]+(?:\.[0-9]+){2})(?P<unreleased> \(unreleased\))?$"
 )
+DOWNLOADS = (
+    "[windows](https://gdox.korze.org/download/windows/) / "
+    "[linux + steam deck](https://gdox.korze.org/download/linux/) / "
+    "[macos](https://gdox.korze.org/download/macos/)"
+)
 
 
 def release_notes(text: str, version: str, *, require_released: bool) -> str:
@@ -41,6 +46,19 @@ def release_notes(text: str, version: str, *, require_released: bool) -> str:
     return body + "\n"
 
 
+def publication_notes(
+    text: str,
+    version: str,
+    *,
+    require_released: bool,
+) -> str:
+    return DOWNLOADS + "\n\n" + release_notes(
+        text,
+        version,
+        require_released=require_released,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -57,7 +75,7 @@ def main() -> int:
 
     try:
         version = validated_project_version(arguments.version)
-        notes = release_notes(
+        notes = publication_notes(
             (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
             version,
             require_released=arguments.require_released,

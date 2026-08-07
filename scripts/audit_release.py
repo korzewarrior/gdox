@@ -578,7 +578,7 @@ def inspect_filesystem_symlink(
 
 def inspect_bytes(label: str, data: bytes, findings: list[str]) -> None:
     normalized_label = label.replace("\\", "/")
-    pinned_source_member = is_pinned_source_member(normalized_label)
+    pinned_source_member = is_pinned_source_member(normalized_label, data)
     if pinned_source_member:
         for marker_label, marker in RUNTIME_MARKERS:
             wide_marker = marker.decode(errors="ignore").encode("utf-16le")
