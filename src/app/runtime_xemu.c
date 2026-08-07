@@ -45,13 +45,18 @@ bool gdox_runtime_xemu_prepare_launch(
         );
         return false;
     }
-    return read_launch_state(runtime, &bundle, NULL, error)
-        && gdox_xemu_migrate_legacy_managed_hdd_with_outcome(
-            bundle.executable,
-            bundle.hdd,
-            &runtime->xemu_save_migration,
-            error
-        );
+    if (!read_launch_state(runtime, &bundle, NULL, error)) {
+        return false;
+    }
+    if (runtime->xemu_save_migration.retained_due_to_rejected_migration) {
+        return true;
+    }
+    return gdox_xemu_migrate_legacy_managed_hdd_with_outcome(
+        bundle.executable,
+        bundle.hdd,
+        &runtime->xemu_save_migration,
+        error
+    );
 }
 
 bool gdox_runtime_xemu_start(gdox_runtime *runtime, gdox_error *error)

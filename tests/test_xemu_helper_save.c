@@ -76,7 +76,9 @@ int gdox_test_xemu_save(int argc, char **argv)
     const char *source = migration && argc > 2 ? argv[2] : NULL;
     const bool receipt = mode != NULL && strcmp(mode, "receipt") == 0;
     const bool source_write =
-        mode != NULL && strcmp(mode, "source-write") == 0;
+        mode != NULL
+        && (strcmp(mode, "source-write") == 0
+            || strcmp(mode, "nonzero-source-write") == 0);
     const bool conflict =
         mode != NULL && strcmp(mode, "preserve-conflict") == 0;
     const bool recover =
@@ -105,10 +107,6 @@ int gdox_test_xemu_save(int argc, char **argv)
                 || !absolute_path(argv[4])))) {
         return 2;
     }
-    if (mode != NULL && strcmp(mode, "nonzero") == 0) {
-        (void)fputs("save operation rejected\n", stderr);
-        return 7;
-    }
     if (mode != NULL && strcmp(mode, "hang") == 0) {
 #if defined(_WIN32)
         Sleep(10000U);
@@ -135,6 +133,14 @@ int gdox_test_xemu_save(int argc, char **argv)
         if (file == NULL || fputc('x', file) == EOF || fclose(file) != 0) {
             return 8;
         }
+    }
+    if (mode != NULL
+        && (strcmp(mode, "nonzero") == 0
+            || (migration
+                && (strcmp(mode, "nonzero-valid-vault") == 0
+                    || strcmp(mode, "nonzero-source-write") == 0)))) {
+        (void)fputs("save operation rejected\n", stderr);
+        return 7;
     }
     if (migration) {
         if (!preserve && remove(source) != 0) {

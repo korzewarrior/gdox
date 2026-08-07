@@ -533,6 +533,30 @@ static void test_xemu_owner_and_exclusion(void)
     destroy_runtime(&runtime);
 }
 
+static void test_xemu_migration_failure_retains_source_and_starts(void)
+{
+    gdox_runtime runtime;
+    gdox_runtime_snapshot snapshot;
+    gdox_error error;
+
+    reset_mocks();
+    xemu_mock.migration_outcome = (gdox_xemu_legacy_migration_outcome){
+        .legacy_found = true,
+        .retained_due_to_rejected_migration = true,
+    };
+    initialize_runtime(&runtime, &snapshot, GDOX_MEDIA_BACKEND_XEMU);
+    check(
+        gdox_runtime_playback_start(&runtime, &snapshot, &error),
+        "start xemu after preserving an unmigrated legacy HDD"
+    );
+    check(
+        strstr(snapshot.notice, "migration was rejected") != NULL,
+        "explain nonblocking legacy HDD preservation"
+    );
+    check(xemu_mock.starts == 1U, "launch xemu after migration fallback");
+    destroy_runtime(&runtime);
+}
+
 static void test_xemu_preparation_failure_gates_launch(void)
 {
     gdox_runtime runtime;
@@ -758,6 +782,7 @@ int main(void)
     test_media_open_result_presentation();
     test_media_open_retry_policy();
     test_xemu_owner_and_exclusion();
+    test_xemu_migration_failure_retains_source_and_starts();
     test_xemu_retained_source_notice();
     test_xemu_save_conflict_notice();
     test_xemu_preparation_failure_gates_launch();

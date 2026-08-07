@@ -1,11 +1,8 @@
-#!/usr/bin/env python3
-"""Create a deterministic archive of the committed GDOX source tree."""
+"""Read and archive the exact committed GDOX source tree."""
 
 from __future__ import annotations
 
-import argparse
 import gzip
-import hashlib
 import subprocess
 import sys
 import tarfile
@@ -13,9 +10,6 @@ from io import BytesIO
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-from project_version import validated_project_version
-from release_paths import output_root
-
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -123,52 +117,3 @@ def create_source_archive(
                 info.mode = 0o755 if mode == 0o100755 else 0o644
                 info.size = len(data)
                 archive.addfile(info, BytesIO(data))
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--version",
-        help="release version; defaults to and must match the CMake project",
-    )
-    parser.add_argument(
-        "--output",
-        default=output_root() / "release",
-        type=Path,
-    )
-    args = parser.parse_args()
-    try:
-        validate_clean_repository()
-        version = validated_project_version(args.version)
-    except (
-        OSError,
-        RuntimeError,
-        subprocess.CalledProcessError,
-        ValueError,
-    ) as error:
-        parser.error(str(error))
-    name = f"gdox-{version}-source"
-    output = args.output / f"{name}.tar.gz"
-    args.output.mkdir(parents=True, exist_ok=True)
-    output.unlink(missing_ok=True)
-
-    create_source_archive(ROOT, output, name)
-
-    subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "scripts" / "audit_release.py"),
-            "--artifact",
-            str(output),
-        ],
-        check=True,
-    )
-    digest = hashlib.sha256(output.read_bytes()).hexdigest()
-    checksum = output.with_name(output.name + ".sha256")
-    checksum.write_text(f"{digest}  {output.name}\n", encoding="utf-8")
-    print(output)
-    print(checksum)
-
-
-if __name__ == "__main__":
-    main()

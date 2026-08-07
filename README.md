@@ -20,9 +20,10 @@ images from original Xbox discs.
 | android arm64 | in development | — |
 
 original Xbox physical play supports four exact optical-drive profiles. Xbox
-360 physical play supports the exact GP63EX70/RF02 profile on the host and
-media combinations in [Xbox 360 support](docs/XBOX360.md). similar drive names,
-firmware revisions, and USB bridges are not interchangeable.
+360 validated physical play uses the exact GP63EX70/RF02 profile. The complete
+host, media, and validation matrix is in [Xbox 360 support](docs/XBOX360.md).
+similar drive names, firmware revisions, and USB bridges are not
+interchangeable.
 
 gdox reads game data from the disc or image while the emulator runs. saves and
 profiles persist; game contents, shader caches, and session files do not.

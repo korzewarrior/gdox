@@ -13,18 +13,22 @@ Deck. macOS and Android do not have a compatible Xenia integration.
 
 ## Platform matrix
 
-| Host | Owned image | Physical disc | Runtime |
-| --- | --- | --- | --- |
-| Windows x86-64 | Supported | Exact GP63EX70/RF02 XGD2 profile | Reviewed native Xenia builds; transient state uses a cleanup-owned session directory |
-| Linux x86-64 | Supported | Exact GP63EX70/RF02 XGD2 and XGD3 profiles | Reviewed Windows Xenia builds through Proton Experimental; transient state uses a verified memory session |
-| Steam Deck | Supported | Exact GP63EX70/RF02 XGD2 and XGD3 profiles | Same Proton and memory-session contract with the handheld performance profile |
-| macOS | Unavailable | Unavailable | No compatible Xenia integration |
-| Android | Unavailable | Unavailable | No Xenia integration |
+| Host | Owned image | Validated physical playback | ASUS A202 XGD2 | Runtime |
+| --- | --- | --- | --- | --- |
+| Windows x86-64 | Supported | GP63EX70/RF02 XGD2 | Implemented; host validation not established | Reviewed native Xenia builds; transient state uses a cleanup-owned session directory |
+| Linux x86-64 | Supported | GP63EX70/RF02 XGD2 and XGD3 | Reader, stream, rendered startup, and restoration validated through Proton; stable title execution not established | Reviewed Windows Xenia builds through Proton Experimental; transient state uses a verified memory session |
+| Steam Deck | Supported | GP63EX70/RF02 XGD2 and XGD3 | Implemented; host validation not established | Same Proton and memory-session contract with the handheld performance profile |
+| macOS | Unavailable | Unavailable | Unavailable | No compatible Xenia integration |
+| Android | Unavailable | Unavailable | Unavailable | No Xenia integration |
 
 Physical Xbox 360 support is an exact-profile claim, not general optical-drive
-support. GDOX rejects other drive and firmware combinations. Original Xbox
-support for the GP65NB60/PB00, GP08NU10/JE01, and ASUS SDRW-08D1S-U/A202 does
-not imply Xbox 360 support for those drives.
+support. GDOX rejects other drive and firmware combinations. The exact ASUS
+SDRW-08D1S-U/A202 XGD2 path is implemented and selected automatically. Its
+Linux/Proton reader, sustained stream, rendered startup, and complete
+restoration have been validated; stable execution of the tested title was not
+established. Windows and Steam Deck host validation is not established. ASUS
+XGD3 is not supported. Original Xbox support for the GP65NB60/PB00 and
+GP08NU10/JE01 does not imply Xbox 360 support for those drives.
 
 Windows binds the exact validated GP63 XGD2 partition directly to Xenia through
 GDOX's local read-only NBD transport. Transient state is confined to a
@@ -49,7 +53,8 @@ the runtime manifest and checked during packaging and launch.
 The runtime manifest pins each upstream commit and license, integration patch
 and digest, native MSVC and Vulkan SDK build input, downstream archive identity,
 and executable identity. The patches and exact Windows build recipe are in
-`packaging/xenia/` and are included in the GDOX source archive.
+`packaging/xenia/` and are included in the combined corresponding-source
+archive.
 
 The reviewed compatibility manifest is the only title-policy input. Release
 validation requires its runtime revision set to match the runtime manifest,

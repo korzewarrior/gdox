@@ -62,9 +62,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gdox-linux
-          path: |
-            dist/release/*.tar.gz
-            dist/release/*.sha256
+          path: dist/release/*.tar.gz
           if-no-files-found: error
 
   unix:
@@ -103,9 +101,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gdox-${{ matrix.target }}
-          path: |
-            dist/release/*.tar.gz
-            dist/release/*.sha256
+          path: dist/release/*.tar.gz
           if-no-files-found: error
 
   windows:
@@ -135,7 +131,7 @@ jobs:
           $Archives = @(
             Get-ChildItem `
               -LiteralPath dist/release `
-              -Filter "gdox-*-x86_64-pc-windows-msvc.zip"
+              -Filter "gdox-*-windows-x64.zip"
           )
           if ($Archives.Count -ne 1) {
             throw "Expected one Windows release archive, found $($Archives.Count)."
@@ -150,9 +146,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gdox-x86_64-pc-windows-msvc
-          path: |
-            dist/release/*.zip
-            dist/release/*.sha256
+          path: dist/release/*.zip
           if-no-files-found: error
 
   source:
@@ -166,27 +160,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes zstd
-      - name: Package GDOX source
+      - name: Package corresponding source
         run: >-
-          python scripts/package_source.py
+          python scripts/package_corresponding_source.py
           --version "${{ github.ref_name }}"
           --output dist
-      - name: Fetch xemu corresponding source
-        run: python scripts/fetch_runtime.py source --output dist
       - name: Audit source payload
         run: python scripts/audit_release.py --path dist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sources
-          path: |
-            dist/*-source.tar.gz
-            dist/*-source.tar.gz.sha256
-            dist/*.tar.zst
-            dist/*.tar.zst.sha256
-            dist/libnbd-*.tar.gz
-            dist/libnbd-*.tar.gz.sha256
-            dist/libnbd-*-PKGBUILD
-            dist/libnbd-*-PKGBUILD.sha256
+          path: dist/*-corresponding-source.tar.gz
           if-no-files-found: error
 
   publish:
@@ -206,21 +190,24 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Audit assembled release
-        run: python scripts/audit_release.py --path dist
+        run: |
+          python scripts/audit_release.py --path dist
+          python scripts/release_inventory.py audit \
+            --path dist --version "${GITHUB_REF_NAME}"
       - name: Sign release checksums
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |
-          cd dist
-          find . -maxdepth 1 -type f ! -name '*.sha256' ! -name 'SHA256SUMS*' \
-            -printf '%f\n' | sort | xargs sha256sum > "$RUNNER_TEMP/SHA256SUMS"
-          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
+          python scripts/release_inventory.py checksums \
+            --path dist --version "${GITHUB_REF_NAME}"
           umask 077
           printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
           minisign -S -s "$RUNNER_TEMP/minisign.key" \
-            -x SHA256SUMS.minisig -m SHA256SUMS
+            -x dist/SHA256SUMS.minisig -m dist/SHA256SUMS
           rm "$RUNNER_TEMP/minisign.key"
-          minisign -V -p ../packaging/minisign.pub -m SHA256SUMS
+          minisign -V -p packaging/minisign.pub -m dist/SHA256SUMS
+          python scripts/release_inventory.py audit \
+            --path dist --version "${GITHUB_REF_NAME}" --signed
       - name: Prepare reviewed release notes
         run: >-
           python scripts/release_notes.py
@@ -232,19 +219,38 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           release_version=$(python scripts/project_version.py --validate "${GITHUB_REF_NAME}")
+          mapfile -t release_assets < <(
+            python scripts/release_inventory.py list \
+              --path dist --version "${GITHUB_REF_NAME}" --signed
+          )
+          printf '%s\n' "${release_assets[@]##*/}" | sort \
+            > "$RUNNER_TEMP/expected-assets"
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             test "$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq .isDraft)" = true || {
               echo "refusing to replace assets on a published release" >&2
               exit 1
             }
+            mapfile -t current_assets < <(
+              gh release view "${GITHUB_REF_NAME}" \
+                --json assets --jq '.assets[].name'
+            )
+            for asset in "${current_assets[@]}"; do
+              if ! grep --fixed-strings --line-regexp --quiet -- \
+                  "${asset}" "$RUNNER_TEMP/expected-assets"; then
+                gh release delete-asset "${GITHUB_REF_NAME}" "${asset}" --yes
+              fi
+            done
             gh release edit "${GITHUB_REF_NAME}" \
               --title "gdox ${release_version}" \
               --notes-file "$RUNNER_TEMP/RELEASE_NOTES.md"
-            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+            gh release upload "${GITHUB_REF_NAME}" "${release_assets[@]}" --clobber
           else
             gh release create "${GITHUB_REF_NAME}" \
               --draft \
               --title "gdox ${release_version}" \
               --notes-file "$RUNNER_TEMP/RELEASE_NOTES.md" \
-              dist/*
+              "${release_assets[@]}"
           fi
+          gh release view "${GITHUB_REF_NAME}" --json assets \
+            --jq '.assets[].name' | sort > "$RUNNER_TEMP/observed-assets"
+          diff -u "$RUNNER_TEMP/expected-assets" "$RUNNER_TEMP/observed-assets"

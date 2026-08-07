@@ -71,9 +71,12 @@ avoids repeating that full migration on later launches. Exact unchanged-file
 deletion is allowed only after a fresh proof shows complete source projection
 and finds no unclassified TDATA. A differing same-path save or configuration
 entry remains in the current vault; nonconflicting saves are merged, playback
-continues, and the old HDD is preserved. A failed helper, malformed
-attestation, inventory mismatch, source change, symlink, or unclassified title
-data also preserves it. POSIX deletion requires a private source and parent,
+continues, and the old HDD is preserved. An explicitly rejected migration may
+continue only while the same-size ordinary source remains and any existing
+save-vault generation passes independent validation; an empty vault starts
+clean. A malformed proof, failed validation, source-size change, symlink, or
+ambiguous source fails closed. Unclassified title data preserves the source
+and permits playback. POSIX deletion requires a private source and parent,
 an exclusive lock, post-hash identity revalidation, and a durable quarantine
 rename. Exactly one valid crash quarantine may be restored non-destructively;
 fresh migration proof remains mandatory before removal. Files outside the

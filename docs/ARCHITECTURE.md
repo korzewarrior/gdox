@@ -207,9 +207,13 @@ exact-delete check proves that the same unchanged file is still held. A
 differing same-path save or configuration entry remains authoritative in the
 current vault; nonconflicting source saves are merged, playback continues, and
 the old container is preserved. Unclassified TDATA has the same nonblocking
-preservation result. An HDD outside the historical managed path is never
-inspected or modified. POSIX removal holds an exclusive source lock, requires a
-private stable parent, revalidates the complete file identity after hashing,
+preservation result. A rejected migration also keeps the same-size old
+container and continues playback when the existing save-vault generation
+passes independent validation; an empty vault starts clean. Malformed proof
+and failed validation fail closed. An HDD outside the historical managed path
+is never inspected or modified. POSIX removal holds an exclusive source lock,
+requires a private stable parent, revalidates the complete file identity after
+hashing,
 and uses a durable quarantine rename. After an interrupted removal, exactly one
 private, size-bounded quarantine inode can be restored to the fixed canonical
 path; fresh migration proof is still required before deletion.

@@ -329,6 +329,13 @@ def is_android_core_patch(label: str) -> bool:
     if android_source is not None:
         root = archive_name.removesuffix(".tar.gz")
         return member == f"{root}/source/gdox/{android_patch}"
+    corresponding_source = re.fullmatch(
+        r"gdox-[0-9]+\.[0-9]+\.[0-9]+-corresponding-source\.tar\.gz",
+        archive_name,
+    )
+    if corresponding_source is not None:
+        root = archive_name.removesuffix(".tar.gz")
+        return member == f"{root}/gdox/{android_patch}"
     source_archive = re.fullmatch(
         r"gdox-[0-9]+\.[0-9]+\.[0-9]+-source\.tar\.gz",
         archive_name,
@@ -339,18 +346,27 @@ def is_android_core_patch(label: str) -> bool:
     return member == f"{root}/{android_patch}"
 
 
-def is_pinned_source_member(label: str) -> bool:
+def is_pinned_source_member(label: str, data: bytes) -> bool:
     normalized = label.replace("\\", "/")
     if "!" not in normalized:
         return False
-    archive, _ = normalized.split("!", 1)
+    archive, member = normalized.split("!", 1)
     archive_name = Path(archive).name
     assets = (
         RUNTIME_MANIFEST["xemu"]["source"],
         RUNTIME_MANIFEST["linux_bridge"]["source"],
     )
-    return any(
+    if any(
         archive_name == asset["name"] and asset_matches_file(archive, asset)
+        for asset in assets
+    ):
+        return True
+    member_name = Path(member).name
+    digest = hashlib.sha256(data).hexdigest()
+    return any(
+        member_name == asset["name"]
+        and len(data) == asset["size"]
+        and digest == asset["sha256"]
         for asset in assets
     )
 

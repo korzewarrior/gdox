@@ -59,4 +59,4 @@ release-steamdeck:
 	python scripts/build_linux_packages.py --version $(VERSION)
 
 source:
-	python scripts/package_source.py --version $(VERSION)
+	python scripts/package_corresponding_source.py --version $(VERSION)

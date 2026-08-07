@@ -59,7 +59,8 @@ newer host-built artifact before staging it. Raising this ceiling requires an
 explicit platform policy change and validation on every supported Linux
 target. Package creation fetches only hash-pinned runtime assets, checks the
 expected layout, audits the staged tree and binary, creates a deterministic
-archive, audits the archive, and writes SHA-256.
+archive, and audits the archive. The publish job writes the signed checksum
+manifest.
 
 The runtime manifest also pins each extracted xemu notice file by member name,
 size, and SHA-256. Only an exact match may suppress personal-email findings
@@ -170,25 +171,27 @@ retain their embedded executable size and digest checks. macOS packages must
 not contain Xenia. Release packages must not contain research, website, or
 workspace material.
 
-Create the source archives with:
+Create the desktop corresponding-source archive with:
 
 ```sh
-python scripts/package_source.py
-python scripts/fetch_runtime.py source --output ../gdox-output/release
+python scripts/package_corresponding_source.py
+```
+
+Create the separate Android source archive with:
+
+```sh
 python scripts/package_android_source.py
 ```
 
-The separate xemu archive satisfies corresponding-source distribution for the
-bundled desktop executable. The source job also publishes the exact libnbd
-source archive and the exact Arch PKGBUILD used for the Steam Deck bridge.
-Their recorded SHA-256 digests must match the SteamOS package build metadata.
-The GDOX source archive contains the exact Xenia integration patches and pinned
-Windows build recipe referenced by the runtime manifest. Xenia's BSD 3-Clause
-license is retained beside every staged executable. The Android archive
-contains the exact patched xemu and SDL2 trees plus every native source used by
-the APK. Its component set is fixed by the source packager and shared with the
-release auditor; a missing, extra, duplicated, or self-declared component makes
-the corresponding-source package invalid.
+The desktop archive contains the exact GDOX tree, xemu source, libnbd source,
+and Arch PKGBUILD used by the released packages. The GDOX tree comes from the
+release commit; third-party component identities come from the runtime
+manifest. Xenia's BSD 3-Clause license remains beside every staged executable,
+and its integration patches and pinned build recipe are in the GDOX tree. The
+Android archive contains the exact patched xemu and SDL2 trees plus every native
+source used by the APK. Its component set is fixed by the source packager and
+shared with the release auditor; a missing, extra, duplicated, or self-declared
+component makes the archive invalid.
 
 ## Signing
 
@@ -205,33 +208,34 @@ signature and reviewed bytes remain unchanged.
 
 ## Publication
 
-The reviewed downstream emulator assets are a separate bootstrap release whose
-name is `runtime-v` followed by the project version; it deliberately does not
-match the `v*` application release trigger. Its exact inventory includes the
+Reviewed downstream emulator assets live in the immutable runtime release
+named by the runtime manifest. Application patches reuse that release while
+every runtime byte remains unchanged. A new runtime release is required only
+when a reviewed runtime asset changes. Runtime tags deliberately do not match
+the `v*` application release trigger. Their exact inventory includes the
 pinned xemu corresponding-source archive whenever patched xemu binaries are
 present. The runtime tag points at the commit containing the exact patch series
 and build recipes. Assemble only the assets returned by the runtime inventory
 and audit the directory before upload:
 
 ```sh
-release_version=$(python scripts/project_version.py)
-runtime_release="runtime-v${release_version}"
+runtime_release=$(python scripts/fetch_runtime.py runtime-release)
 python scripts/fetch_runtime.py audit-runtime-release \
   --path "../gdox-output/release/${runtime_release}"
 ```
 
-After the final `main` commit is identical on GitHub and Forgejo, create the
-GitHub runtime release at that commit and upload the audited directory
-without renaming or replacing any file. Verify every HTTPS URL from an empty
-cache by packaging each desktop target. A missing URL, changed byte, extra
-file, or checksum mismatch stops publication. Only then create the versioned
-`v*` application tag. Do not reuse the runtime release name for later bytes; a
-runtime change requires a new manifest identity and release name.
+After the final `main` commit is identical on GitHub and Forgejo, verify the
+manifest-named runtime release. Create it only when the reviewed runtime assets
+changed; otherwise reuse the existing immutable release. Verify every HTTPS URL
+from an empty cache by packaging each desktop target. A missing URL, changed
+byte, extra file, or checksum mismatch stops publication. Only then create the
+versioned `v*` application tag. Do not reuse a runtime release name for changed
+bytes; a runtime change requires a new manifest identity and release name.
 
-Tags matching `v*` build the platform matrix and attach binary packages, the
-Steam Deck package, GDOX source, xemu and libnbd corresponding source, the
-libnbd build recipe, and checksums.
-The publish job writes a combined `SHA256SUMS` and signs it with minisign
+Tags matching `v*` build five plainly named platform packages and one combined
+corresponding-source archive. The public inventory rejects missing or extra
+files. The publish job writes one combined `SHA256SUMS` and signs it with
+minisign
 using the `MINISIGN_SECRET_KEY` repository secret. The public key is
 `packaging/minisign.pub`, mirrored at `https://gdox.korze.org/minisign.pub`;
 verify with:

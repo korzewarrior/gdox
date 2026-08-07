@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 from copy import deepcopy
 from pathlib import Path
@@ -19,6 +20,7 @@ from fetch_runtime import (
     audit_runtime_release,
     load_manifest,
     publication_runtime_assets,
+    publication_runtime_release,
     validate_manifest,
 )
 from linux_bridge_distribution import validate_stage as validate_bridge_stage
@@ -29,8 +31,15 @@ from package_release import (
     release_package_name,
     validate_payload_inventory,
 )
+from release_inventory import (
+    audit as audit_public_release,
+    payload_names,
+    write_checksums,
+)
+from project_version import project_version
 
 WINDOWS_TARGET = "x86_64-pc-windows-msvc"
+VERSION = project_version()
 
 
 class PackageReleaseTest(unittest.TestCase):
@@ -53,18 +62,21 @@ class PackageReleaseTest(unittest.TestCase):
 
     def test_runtime_less_package_is_unmistakably_developer_only(self) -> None:
         ordinary = release_package_name(
-            "0.2.0",
+            VERSION,
             WINDOWS_TARGET,
             without_runtime=False,
         )
-        candidate = candidate_package_name("0.2.0", WINDOWS_TARGET)
+        candidate = candidate_package_name(VERSION, WINDOWS_TARGET)
         developer = release_package_name(
-            "0.2.0",
+            VERSION,
             WINDOWS_TARGET,
             without_runtime=True,
         )
-        self.assertEqual(ordinary, f"gdox-0.2.0-{WINDOWS_TARGET}")
-        self.assertEqual(candidate, ordinary + "-candidate")
+        self.assertEqual(ordinary, f"gdox-{VERSION}-windows-x64")
+        self.assertEqual(
+            candidate,
+            f"gdox-{VERSION}-{WINDOWS_TARGET}-candidate",
+        )
         self.assertEqual(developer, ordinary + "-developer-no-runtime")
 
         artifact = self.root / f"{developer}.zip"
@@ -89,7 +101,7 @@ class PackageReleaseTest(unittest.TestCase):
                 sys.executable,
                 str(ROOT / "scripts" / "package_release.py"),
                 "--version",
-                "0.2.0",
+                VERSION,
                 "--target",
                 WINDOWS_TARGET,
                 "--artifact",
@@ -105,11 +117,11 @@ class PackageReleaseTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, msg=completed.stderr)
         developer = output / (
-            f"gdox-0.2.0-{WINDOWS_TARGET}-developer-no-runtime.zip"
+            f"gdox-{VERSION}-windows-x64-developer-no-runtime.zip"
         )
         self.assertTrue(developer.is_file())
         self.assertFalse(
-            (output / f"gdox-0.2.0-{WINDOWS_TARGET}.zip").exists()
+            (output / f"gdox-{VERSION}-windows-x64.zip").exists()
         )
 
         audited = subprocess.run(
@@ -232,6 +244,41 @@ class PackageReleaseTest(unittest.TestCase):
             releasing,
         )
         self.assertIn("github and forgejo", releasing)
+
+    def test_public_release_inventory_is_small_and_exact(self) -> None:
+        stage = self.root / "public-release"
+        stage.mkdir()
+        names = payload_names("0.2.0")
+        self.assertEqual(len(names), 6)
+        self.assertIn("gdox-0.2.0-windows-x64.zip", names)
+        self.assertIn("gdox-0.2.0-steam-deck.tar.gz", names)
+        self.assertIn("gdox-0.2.0-corresponding-source.tar.gz", names)
+        self.assertFalse(any("unknown-linux-gnu" in name for name in names))
+        self.assertFalse(any(name.endswith(".sha256") for name in names))
+        for name in names:
+            (stage / name).write_bytes(name.encode("utf-8"))
+
+        with patch("release_inventory.audit_corresponding_source_archive"):
+            audit_public_release(stage, "0.2.0", signed=False)
+            write_checksums(stage, "0.2.0")
+            (stage / "SHA256SUMS.minisig").write_text("fixture\n")
+            audit_public_release(stage, "0.2.0", signed=True)
+
+            (stage / "unexpected.txt").write_text("unexpected\n")
+            with self.assertRaisesRegex(ValueError, "missing, extra, or unsafe"):
+                audit_public_release(stage, "0.2.0", signed=True)
+
+    def test_release_workflow_publishes_only_the_exact_inventory(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("package_corresponding_source.py", workflow)
+        self.assertIn("release_inventory.py list", workflow)
+        self.assertIn("gh release delete-asset", workflow)
+        self.assertIn("expected-assets", workflow)
+        self.assertIn("observed-assets", workflow)
+        self.assertNotIn("dist/* --clobber", workflow)
+        self.assertNotIn("dist/release/*.sha256", workflow)
 
     def test_windows_release_smoke_uses_headless_background_lifecycle(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(
@@ -368,6 +415,11 @@ class PackageReleaseTest(unittest.TestCase):
             (stage / "unexpected.txt").write_text("unexpected\n")
             with self.assertRaisesRegex(SystemExit, "missing, extra, or unsafe"):
                 audit_runtime_release(stage)
+
+        self.assertEqual(
+            publication_runtime_release(self.manifest),
+            "runtime-v0.2.0",
+        )
 
     def test_platform_payload_inventory_requires_every_exact_file(self) -> None:
         stage = self.root / "missing-stage"

@@ -55,7 +55,7 @@ def write_runtime_notes(
             "and build provenance when applicable, sizes, and SHA-256 digests\n"
             "are recorded in `VERSIONS.json`. Xenia is distributed under the\n"
             "BSD 3-Clause license retained beside each executable. The GDOX\n"
-            "source archive contains the recorded integration patches and\n"
+            "corresponding-source archive contains the integration patches and\n"
             "Windows build recipe.\n\n"
         )
     (destination / "SOURCE.md").write_text(
@@ -63,8 +63,8 @@ def write_runtime_notes(
 
 This bundle contains the reviewed GDOX-patched xemu {xemu['version']} executable
 as a separate program. Its exact corresponding source and the maintained GDOX
-patch series are distributed with the GDOX release sources; the pristine source
-archive is distributed beside the release archives as `{source['name']}`.
+patch series are in the release's combined corresponding-source archive. The
+pristine xemu component is `{source['name']}`.
 
 {xenia_note}Upstream source URL: {source['url']}
 

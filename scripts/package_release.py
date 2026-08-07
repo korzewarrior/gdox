@@ -38,6 +38,14 @@ PLATFORMS = {
     "x86_64-apple-darwin": "macos",
     "aarch64-apple-darwin": "macos",
 }
+PUBLIC_TARGET_NAMES = {
+    "x86_64-unknown-linux-gnu": "linux-x64",
+    "x86_64-steamdeck-linux-gnu": "steam-deck",
+    "x86_64-pc-windows-gnu": "windows-x64-gnu",
+    "x86_64-pc-windows-msvc": "windows-x64",
+    "x86_64-apple-darwin": "macos-intel",
+    "aarch64-apple-darwin": "macos-apple-silicon",
+}
 RUNTIME_TARGETS = {
     "x86_64-steamdeck-linux-gnu": "x86_64-unknown-linux-gnu",
     "x86_64-pc-windows-gnu": "x86_64-pc-windows-msvc",
@@ -116,7 +124,11 @@ def release_package_name(
     *,
     without_runtime: bool,
 ) -> str:
-    name = f"gdox-{version}-{target}"
+    try:
+        public_target = PUBLIC_TARGET_NAMES[target]
+    except KeyError:
+        raise ValueError(f"unsupported release target: {target}") from None
+    name = f"gdox-{version}-{public_target}"
     if without_runtime:
         return name + "-developer-no-runtime"
     return name
@@ -666,11 +678,7 @@ def main() -> None:
                 str(archive),
             ]
         )
-    digest = file_sha256(archive)
-    checksum = archive.with_name(archive.name + ".sha256")
-    checksum.write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
     print(archive)
-    print(checksum)
 
 
 if __name__ == "__main__":

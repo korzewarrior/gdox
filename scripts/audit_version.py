@@ -14,9 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DERIVED_VERSION_FILES = (
     "scripts/build_linux_packages.py",
     "scripts/package_android_source.py",
+    "scripts/package_corresponding_source.py",
     "scripts/package_private_candidate.py",
     "scripts/package_release.py",
-    "scripts/package_source.py",
+    "scripts/release_inventory.py",
     "scripts/release_notes.py",
 )
 CURRENT_DOCUMENTS = (

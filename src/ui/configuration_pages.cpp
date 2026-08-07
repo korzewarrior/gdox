@@ -336,8 +336,13 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
         choose_firmware(app, false);
     }
     source_actions_spacing();
-    path_row("hdd", "Xbox hard disk", snapshot.hdd_path, "Not prepared");
-    ImGui::TextColored(muted, "Verified clean image; only logical saves persist");
+    path_row(
+        "hdd", "Included Xbox hard disk", snapshot.hdd_path, "Not prepared"
+    );
+    ImGui::TextColored(
+        muted,
+        "Included clean image; saves persist separately and the image is not replaced"
+    );
     source_actions_spacing();
     path_row(
         "preservation",

@@ -401,6 +401,18 @@ def publication_runtime_assets(manifest: dict) -> dict[str, dict]:
     return dict(sorted(assets.items()))
 
 
+def publication_runtime_release(manifest: dict) -> str:
+    prefix = "https://github.com/korzewarrior/gdox/releases/download/"
+    releases = {
+        asset["url"][len(prefix) :].split("/", 1)[0]
+        for asset in publication_runtime_assets(manifest).values()
+        if asset["url"].startswith(prefix)
+    }
+    if len(releases) != 1:
+        raise SystemExit("runtime assets do not share one immutable release")
+    return releases.pop()
+
+
 def audit_runtime_release(directory: Path) -> None:
     manifest = load_manifest()
     assets = publication_runtime_assets(manifest)
@@ -459,6 +471,7 @@ def main() -> None:
     publishable_parser.add_argument("--target", required=True)
     audit_runtime_parser = commands.add_parser("audit-runtime-release")
     audit_runtime_parser.add_argument("--path", required=True, type=Path)
+    commands.add_parser("runtime-release")
     commands.add_parser("validate")
     args = parser.parse_args()
     cache = args.cache.resolve()
@@ -476,6 +489,8 @@ def main() -> None:
         print(f"Runtime assets are publishable for {args.target}.")
     elif args.command == "audit-runtime-release":
         audit_runtime_release(args.path)
+    elif args.command == "runtime-release":
+        print(publication_runtime_release(load_manifest()))
     else:
         load_manifest()
         print("Runtime manifest is valid.")
