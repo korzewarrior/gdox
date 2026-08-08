@@ -52,7 +52,7 @@ Xbox 360 physical validation is narrower:
 
 | identity | media | current validation |
 |---|---|---|
-| `HL-DT-ST DVDRAM GP63EX70 RF02`, USB `0e8d:1887` | XGD2 and XGD3 | controllable gameplay validated on the host combinations in `XBOX360.md` |
+| `HL-DT-ST DVDRAM GP63EX70 RF02`, USB `0e8d:1887` | XGD2 Wave 1, XGD2 Wave 2, and XGD3 | controllable gameplay validated on the host combinations in `XBOX360.md` |
 | `ASUS SDRW-08D1S-U A202`, Initio USB `13fd:1640` | XGD2 | reader, sustained stream, rendered startup, and restoration validated on Linux through Proton; stable tested-title execution not established |
 
 ## preservation

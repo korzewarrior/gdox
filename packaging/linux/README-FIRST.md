@@ -15,7 +15,7 @@ running as an unreachable process.
 xbox 360 playback uses the reviewed Xenia runtimes through Proton Experimental.
 images and physical media use a local read-only bridge that requires host
 `nbdfuse` and `fusermount3`. physical playback is limited to the exact
-GP63EX70/RF02 XGD2 and XGD3 profiles.
+GP63EX70/RF02 XGD2 Wave 1, XGD2 Wave 2, and XGD3 profiles.
 
 if either bridge helper is unavailable, all xbox 360 playback is unavailable,
 including owned images. gdox reports the missing helper before starting Xenia.

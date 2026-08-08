@@ -58,8 +58,10 @@ static void run(void)
     );
     const gdox_mt1887_media_profile *xgd1 =
         gdox_mt1887_media_profile_xgd1();
-    const gdox_mt1887_media_profile *xgd2 =
-        gdox_mt1887_media_profile_gp63_xgd2();
+    const gdox_mt1887_media_profile *xgd2_wave1 =
+        gdox_mt1887_media_profile_gp63_xgd2_wave1();
+    const gdox_mt1887_media_profile *xgd2_wave2 =
+        gdox_mt1887_media_profile_gp63_xgd2_wave2();
     const gdox_mt1887_media_profile *xgd3 =
         gdox_mt1887_media_profile_gp63_xgd3();
     gdox_mt1887_state state;
@@ -68,39 +70,68 @@ static void run(void)
     GDOX_TEST_CHECK(gp63 != NULL);
     GDOX_TEST_CHECK(gp65 != NULL);
     GDOX_TEST_CHECK(xgd1 != NULL);
-    GDOX_TEST_CHECK(xgd2 != NULL);
+    GDOX_TEST_CHECK(xgd2_wave1 != NULL);
+    GDOX_TEST_CHECK(xgd2_wave2 != NULL);
     GDOX_TEST_CHECK(xgd3 != NULL);
     if (gp63 == NULL || gp65 == NULL || xgd1 == NULL
-        || xgd2 == NULL || xgd3 == NULL) {
+        || xgd2_wave1 == NULL || xgd2_wave2 == NULL || xgd3 == NULL) {
         return;
     }
 
     GDOX_TEST_CHECK(memcmp(
-        xgd2->stock_capacity,
+        xgd2_wave1->stock_capacity,
+        (const uint8_t[]){0x03U, 0x0dU, 0xbeU},
+        3U
+    ) == 0);
+    GDOX_TEST_CHECK(memcmp(
+        xgd2_wave1->live_capacity,
+        (const uint8_t[]){0x3dU, 0x5fU, 0xdeU},
+        3U
+    ) == 0);
+    GDOX_TEST_CHECK(memcmp(
+        xgd2_wave1->stock_geometry,
+        (const uint8_t[]){0x03U, 0x0aU, 0x8fU},
+        3U
+    ) == 0);
+    GDOX_TEST_CHECK(memcmp(
+        xgd2_wave1->live_geometry,
+        (const uint8_t[]){0x20U, 0x33U, 0x9fU},
+        3U
+    ) == 0);
+    GDOX_TEST_CHECK(xgd2_wave1->stock_last_lba == UINT32_C(0x0dbe));
+    GDOX_TEST_CHECK(xgd2_wave1->live_last_lba == UINT32_C(0x3a5fde));
+    GDOX_TEST_CHECK(xgd2_wave1->live_sectors == UINT64_C(0x3a5fdf));
+    GDOX_TEST_CHECK(xgd2_wave1->descriptor_lba == UINT32_C(0x1fb40));
+    GDOX_TEST_CHECK(
+        xgd2_wave1->game_partition_lba == GDOX_XGD2_GAME_PARTITION_LBA
+    );
+
+    GDOX_TEST_CHECK(memcmp(
+        xgd2_wave2->stock_capacity,
         (const uint8_t[]){0x03U, 0x0aU, 0xa3U},
         3U
     ) == 0);
     GDOX_TEST_CHECK(memcmp(
-        xgd2->live_capacity,
+        xgd2_wave2->live_capacity,
         (const uint8_t[]){0x3dU, 0x61U, 0x03U},
         3U
     ) == 0);
     GDOX_TEST_CHECK(memcmp(
-        xgd2->stock_geometry,
+        xgd2_wave2->stock_geometry,
         (const uint8_t[]){0x03U, 0x08U, 0x6fU},
         3U
     ) == 0);
     GDOX_TEST_CHECK(memcmp(
-        xgd2->live_geometry,
+        xgd2_wave2->live_geometry,
         (const uint8_t[]){0x20U, 0x33U, 0x9fU},
         3U
     ) == 0);
-    GDOX_TEST_CHECK(xgd2->stock_last_lba == UINT32_C(0x0aa3));
-    GDOX_TEST_CHECK(xgd2->live_last_lba == UINT32_C(0x3a6103));
-    GDOX_TEST_CHECK(xgd2->live_sectors == GDOX_XGD2_TOTAL_SECTORS);
-    GDOX_TEST_CHECK(xgd2->descriptor_lba == UINT32_C(0x1fb40));
+    GDOX_TEST_CHECK(xgd2_wave2->stock_last_lba == UINT32_C(0x0aa3));
+    GDOX_TEST_CHECK(xgd2_wave2->live_last_lba == UINT32_C(0x3a6103));
+    GDOX_TEST_CHECK(xgd2_wave2->live_sectors == GDOX_XGD2_TOTAL_SECTORS);
+    GDOX_TEST_CHECK(xgd2_wave2->descriptor_lba == UINT32_C(0x1fb40));
     GDOX_TEST_CHECK(
-        xgd2->game_partition_lba == GDOX_XGD2_GAME_PARTITION_LBA
+        xgd2_wave2->game_partition_lba == GDOX_XGD2_GAME_PARTITION_LBA
     );
 
     GDOX_TEST_CHECK(memcmp(
@@ -133,16 +164,35 @@ static void run(void)
 
     GDOX_TEST_CHECK(gdox_mt1887_media_profile_supports_hardware(xgd1, gp63));
     GDOX_TEST_CHECK(gdox_mt1887_media_profile_supports_hardware(xgd1, gp65));
-    GDOX_TEST_CHECK(gdox_mt1887_media_profile_supports_hardware(xgd2, gp63));
-    GDOX_TEST_CHECK(!gdox_mt1887_media_profile_supports_hardware(xgd2, gp65));
+    GDOX_TEST_CHECK(gdox_mt1887_media_profile_supports_hardware(
+        xgd2_wave1, gp63
+    ));
+    GDOX_TEST_CHECK(!gdox_mt1887_media_profile_supports_hardware(
+        xgd2_wave1, gp65
+    ));
+    GDOX_TEST_CHECK(gdox_mt1887_media_profile_supports_hardware(
+        xgd2_wave2, gp63
+    ));
+    GDOX_TEST_CHECK(!gdox_mt1887_media_profile_supports_hardware(
+        xgd2_wave2, gp65
+    ));
     GDOX_TEST_CHECK(gdox_mt1887_media_profile_supports_hardware(xgd3, gp63));
     GDOX_TEST_CHECK(!gdox_mt1887_media_profile_supports_hardware(xgd3, gp65));
 
-    state = make_state(xgd2, gp63, false);
+    state = make_state(xgd2_wave1, gp63, false);
     GDOX_TEST_CHECK(gdox_mt1887_media_profile_select_stock(gp63, &state)
-        == xgd2);
+        == xgd2_wave1);
     GDOX_TEST_CHECK(gdox_mt1887_media_profile_select_known(gp63, &state)
-        == xgd2);
+        == xgd2_wave1);
+    GDOX_TEST_CHECK(gdox_mt1887_media_state_classify(
+        xgd2_wave2, gp63, &state
+    ) == GDOX_MT1887_MEDIA_STATE_UNKNOWN);
+
+    state = make_state(xgd2_wave2, gp63, false);
+    GDOX_TEST_CHECK(gdox_mt1887_media_profile_select_stock(gp63, &state)
+        == xgd2_wave2);
+    GDOX_TEST_CHECK(gdox_mt1887_media_profile_select_known(gp63, &state)
+        == xgd2_wave2);
     GDOX_TEST_CHECK(gdox_mt1887_media_state_classify(xgd1, gp63, &state)
         == GDOX_MT1887_MEDIA_STATE_UNKNOWN);
 
@@ -185,8 +235,13 @@ static void run(void)
     ));
     GDOX_TEST_CHECK(
         gdox_mt1887_media_profile_select_physical_geometry(
-            gp63, xgd2->stock_geometry
-        ) == xgd2
+            gp63, xgd2_wave1->stock_geometry
+        ) == xgd2_wave1
+    );
+    GDOX_TEST_CHECK(
+        gdox_mt1887_media_profile_select_physical_geometry(
+            gp63, xgd2_wave2->stock_geometry
+        ) == xgd2_wave2
     );
     GDOX_TEST_CHECK(
         gdox_mt1887_media_profile_select_physical_geometry(
@@ -195,7 +250,7 @@ static void run(void)
     );
     GDOX_TEST_CHECK(
         gdox_mt1887_media_profile_select_physical_geometry(
-            gp65, xgd2->stock_geometry
+            gp65, xgd2_wave1->stock_geometry
         ) == NULL
     );
     GDOX_TEST_CHECK(

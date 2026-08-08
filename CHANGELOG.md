@@ -1,5 +1,9 @@
 # changes
 
+## 0.2.2
+
+- add exact GP63EX70/RF02 support for Wave 1 XGD2 discs
+
 ## 0.2.1
 
 - allow playback after a rejected legacy Xbox hard-disk migration when the

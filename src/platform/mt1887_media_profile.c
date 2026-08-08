@@ -11,6 +11,8 @@ static const uint8_t gdfx_magic[20] = {
     'X', 'B', 'O', 'X', '*', 'M', 'E', 'D', 'I', 'A',
 };
 
+#define GDOX_GP63_XGD2_WAVE1_TOTAL_SECTORS UINT64_C(0x3a5fdf)
+
 static const gdox_mt1887_media_profile xgd1 = {
     GDOX_MT1887_MEDIA_XGD1,
     {0x03U, 0x1bU, 0x4fU},
@@ -25,11 +27,29 @@ static const gdox_mt1887_media_profile xgd1 = {
 };
 
 /*
- * XGD2 uses the standard 1,913,760-sector layer break. The RF02 capacity
- * field includes the drive's 0x30000 physical-to-host offset, so 0x3d6103
- * exposes host LBAs 0..0x3a6103. The game volume starts at 0x1fb20.
+ * XGD2 Wave 1 uses 0xa90 stock layer-zero video sectors and 0x32f stock
+ * layer-one video sectors. The unlocked view retains the standard XGD2 layer
+ * break and exposes host LBAs 0..0x3a5fde. The game volume starts at 0x1fb20.
  */
-static const gdox_mt1887_media_profile gp63_xgd2 = {
+static const gdox_mt1887_media_profile gp63_xgd2_wave1 = {
+    GDOX_MT1887_MEDIA_GP63_XGD2,
+    {0x03U, 0x0dU, 0xbeU},
+    {0x3dU, 0x5fU, 0xdeU},
+    {0x03U, 0x0aU, 0x8fU},
+    {0x20U, 0x33U, 0x9fU},
+    UINT32_C(0x0dbe),
+    UINT32_C(0x3a5fde),
+    UINT32_C(0x1fb40),
+    GDOX_GP63_XGD2_WAVE1_TOTAL_SECTORS,
+    GDOX_XGD2_GAME_PARTITION_LBA,
+};
+
+/*
+ * XGD2 Wave 2 uses 0x870 stock layer-zero video sectors and 0x234 stock
+ * layer-one video sectors. The unlocked view retains the standard XGD2 layer
+ * break and exposes host LBAs 0..0x3a6103.
+ */
+static const gdox_mt1887_media_profile gp63_xgd2_wave2 = {
     GDOX_MT1887_MEDIA_GP63_XGD2,
     {0x03U, 0x0aU, 0xa3U},
     {0x3dU, 0x61U, 0x03U},
@@ -56,8 +76,12 @@ static const gdox_mt1887_media_profile gp63_xgd3 = {
 };
 
 _Static_assert(
+    UINT64_C(0x3a5fde) + 1U == GDOX_GP63_XGD2_WAVE1_TOTAL_SECTORS,
+    "XGD2 Wave 1 media profile sector count must match its live last LBA"
+);
+_Static_assert(
     UINT64_C(0x3a6103) + 1U == GDOX_XGD2_TOTAL_SECTORS,
-    "XGD2 media profile sector count must match its live last LBA"
+    "XGD2 Wave 2 media profile sector count must match its live last LBA"
 );
 _Static_assert(
     GDOX_XGD2_GAME_PARTITION_LBA + 32U == UINT64_C(0x1fb40),
@@ -78,7 +102,8 @@ _Static_assert(
 
 static const gdox_mt1887_media_profile *const media_profiles[] = {
     &xgd1,
-    &gp63_xgd2,
+    &gp63_xgd2_wave1,
+    &gp63_xgd2_wave2,
     &gp63_xgd3,
 };
 
@@ -126,9 +151,15 @@ const gdox_mt1887_media_profile *gdox_mt1887_media_profile_xgd1(void)
 }
 
 const gdox_mt1887_media_profile *
-gdox_mt1887_media_profile_gp63_xgd2(void)
+gdox_mt1887_media_profile_gp63_xgd2_wave1(void)
 {
-    return &gp63_xgd2;
+    return &gp63_xgd2_wave1;
+}
+
+const gdox_mt1887_media_profile *
+gdox_mt1887_media_profile_gp63_xgd2_wave2(void)
+{
+    return &gp63_xgd2_wave2;
 }
 
 const gdox_mt1887_media_profile *

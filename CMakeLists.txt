@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 project(
     gdox
-    VERSION 0.2.1
+    VERSION 0.2.2
     DESCRIPTION "Read, play, and preserve Xbox game discs"
     LANGUAGES C CXX
 )

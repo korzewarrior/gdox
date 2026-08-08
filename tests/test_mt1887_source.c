@@ -13,10 +13,14 @@ static const uint8_t stock_capacity[3] = {0x03U, 0x1bU, 0x4fU};
 static const uint8_t live_capacity[3] = {0x3dU, 0x4dU, 0x4fU};
 static const uint8_t stock_geometry[3] = {0x03U, 0x1aU, 0xafU};
 static const uint8_t live_geometry[3] = {0x20U, 0x33U, 0xafU};
-static const uint8_t xgd2_stock_capacity[3] = {0x03U, 0x0aU, 0xa3U};
-static const uint8_t xgd2_live_capacity[3] = {0x3dU, 0x61U, 0x03U};
-static const uint8_t xgd2_stock_geometry[3] = {0x03U, 0x08U, 0x6fU};
-static const uint8_t xgd2_live_geometry[3] = {0x20U, 0x33U, 0x9fU};
+static const uint8_t xgd2_wave1_stock_capacity[3] = {0x03U, 0x0dU, 0xbeU};
+static const uint8_t xgd2_wave1_live_capacity[3] = {0x3dU, 0x5fU, 0xdeU};
+static const uint8_t xgd2_wave1_stock_geometry[3] = {0x03U, 0x0aU, 0x8fU};
+static const uint8_t xgd2_wave1_live_geometry[3] = {0x20U, 0x33U, 0x9fU};
+static const uint8_t xgd2_wave2_stock_capacity[3] = {0x03U, 0x0aU, 0xa3U};
+static const uint8_t xgd2_wave2_live_capacity[3] = {0x3dU, 0x61U, 0x03U};
+static const uint8_t xgd2_wave2_stock_geometry[3] = {0x03U, 0x08U, 0x6fU};
+static const uint8_t xgd2_wave2_live_geometry[3] = {0x20U, 0x33U, 0x9fU};
 static const uint8_t xgd3_stock_capacity[3] = {0x03U, 0x61U, 0xe6U};
 static const uint8_t xgd3_live_capacity[3] = {0x44U, 0x1cU, 0x06U};
 static const uint8_t xgd3_stock_geometry[3] = {0x03U, 0x30U, 0xffU};
@@ -34,7 +38,8 @@ typedef struct fake_write {
 
 typedef enum fake_media_kind {
     FAKE_MEDIA_XGD1 = 0,
-    FAKE_MEDIA_XGD2,
+    FAKE_MEDIA_XGD2_WAVE1,
+    FAKE_MEDIA_XGD2_WAVE2,
     FAKE_MEDIA_XGD3,
 } fake_media_kind;
 
@@ -80,8 +85,11 @@ typedef struct fake_mt1887 {
 
 static const uint8_t *fake_stock_capacity(const fake_mt1887 *fake)
 {
-    if (fake->media == FAKE_MEDIA_XGD2) {
-        return xgd2_stock_capacity;
+    if (fake->media == FAKE_MEDIA_XGD2_WAVE1) {
+        return xgd2_wave1_stock_capacity;
+    }
+    if (fake->media == FAKE_MEDIA_XGD2_WAVE2) {
+        return xgd2_wave2_stock_capacity;
     }
     return fake->media == FAKE_MEDIA_XGD3
         ? xgd3_stock_capacity
@@ -90,8 +98,11 @@ static const uint8_t *fake_stock_capacity(const fake_mt1887 *fake)
 
 static const uint8_t *fake_live_capacity(const fake_mt1887 *fake)
 {
-    if (fake->media == FAKE_MEDIA_XGD2) {
-        return xgd2_live_capacity;
+    if (fake->media == FAKE_MEDIA_XGD2_WAVE1) {
+        return xgd2_wave1_live_capacity;
+    }
+    if (fake->media == FAKE_MEDIA_XGD2_WAVE2) {
+        return xgd2_wave2_live_capacity;
     }
     return fake->media == FAKE_MEDIA_XGD3
         ? xgd3_live_capacity
@@ -100,8 +111,11 @@ static const uint8_t *fake_live_capacity(const fake_mt1887 *fake)
 
 static const uint8_t *fake_stock_geometry(const fake_mt1887 *fake)
 {
-    if (fake->media == FAKE_MEDIA_XGD2) {
-        return xgd2_stock_geometry;
+    if (fake->media == FAKE_MEDIA_XGD2_WAVE1) {
+        return xgd2_wave1_stock_geometry;
+    }
+    if (fake->media == FAKE_MEDIA_XGD2_WAVE2) {
+        return xgd2_wave2_stock_geometry;
     }
     return fake->media == FAKE_MEDIA_XGD3
         ? xgd3_stock_geometry
@@ -110,12 +124,47 @@ static const uint8_t *fake_stock_geometry(const fake_mt1887 *fake)
 
 static const uint8_t *fake_live_geometry(const fake_mt1887 *fake)
 {
-    if (fake->media == FAKE_MEDIA_XGD2) {
-        return xgd2_live_geometry;
+    if (fake->media == FAKE_MEDIA_XGD2_WAVE1) {
+        return xgd2_wave1_live_geometry;
+    }
+    if (fake->media == FAKE_MEDIA_XGD2_WAVE2) {
+        return xgd2_wave2_live_geometry;
     }
     return fake->media == FAKE_MEDIA_XGD3
         ? xgd3_live_geometry
         : live_geometry;
+}
+
+static bool fake_media_is_xgd2(const fake_mt1887 *fake)
+{
+    return fake->media == FAKE_MEDIA_XGD2_WAVE1
+        || fake->media == FAKE_MEDIA_XGD2_WAVE2;
+}
+
+static uint32_t fake_stock_last_lba(const fake_mt1887 *fake)
+{
+    if (fake->media == FAKE_MEDIA_XGD2_WAVE1) {
+        return UINT32_C(0x0dbe);
+    }
+    if (fake->media == FAKE_MEDIA_XGD2_WAVE2) {
+        return UINT32_C(0x0aa3);
+    }
+    return fake->media == FAKE_MEDIA_XGD3
+        ? UINT32_C(0x61e6)
+        : UINT32_C(6991);
+}
+
+static uint32_t fake_live_last_lba(const fake_mt1887 *fake)
+{
+    if (fake->media == FAKE_MEDIA_XGD2_WAVE1) {
+        return UINT32_C(0x3a5fde);
+    }
+    if (fake->media == FAKE_MEDIA_XGD2_WAVE2) {
+        return UINT32_C(0x3a6103);
+    }
+    return fake->media == FAKE_MEDIA_XGD3
+        ? UINT32_C(0x411c06)
+        : UINT32_C(3820879);
 }
 
 static bool check(bool condition, const char *name)
@@ -240,16 +289,8 @@ static bool fake_command_in(
                     && !fake_is_live(fake)
                 ? fake->forced_last_lba
                 : fake_is_live(fake)
-                    ? fake->media == FAKE_MEDIA_XGD2
-                        ? UINT32_C(0x3a6103)
-                        : fake->media == FAKE_MEDIA_XGD3
-                            ? UINT32_C(0x411c06)
-                            : UINT32_C(3820879)
-                    : fake->media == FAKE_MEDIA_XGD2
-                        ? UINT32_C(0x0aa3)
-                        : fake->media == FAKE_MEDIA_XGD3
-                            ? UINT32_C(0x61e6)
-                            : UINT32_C(6991)
+                    ? fake_live_last_lba(fake)
+                    : fake_stock_last_lba(fake)
         );
         put_be_u32(
             output + 4U,
@@ -289,7 +330,7 @@ static bool fake_command_in(
             fake->read_blocks[fake->read_count++] = blocks;
         }
         const uint32_t descriptor_lba =
-            fake->media == FAKE_MEDIA_XGD2
+            fake_media_is_xgd2(fake)
                 ? UINT32_C(0x1fb40)
                 : fake->media == FAKE_MEDIA_XGD3
                     ? UINT32_C(0x4120)
@@ -586,17 +627,32 @@ static fake_mt1887 fake_xgd3_stock(void)
     return fake;
 }
 
-static fake_mt1887 fake_xgd2_stock(void)
+static fake_mt1887 fake_xgd2_wave1_stock(void)
 {
     fake_mt1887 fake = {0};
 
-    memcpy(fake.capacity, xgd2_stock_capacity, 3U);
-    memcpy(fake.geometry, xgd2_stock_geometry, 3U);
+    memcpy(fake.capacity, xgd2_wave1_stock_capacity, 3U);
+    memcpy(fake.geometry, xgd2_wave1_stock_geometry, 3U);
     memcpy(fake.revision, "RF02", 5U);
     fake.descriptor_valid = true;
     fake.descriptor_trailing_valid = true;
     fake.pfi_valid = true;
-    fake.media = FAKE_MEDIA_XGD2;
+    fake.media = FAKE_MEDIA_XGD2_WAVE1;
+    fake.gp63 = true;
+    return fake;
+}
+
+static fake_mt1887 fake_xgd2_wave2_stock(void)
+{
+    fake_mt1887 fake = {0};
+
+    memcpy(fake.capacity, xgd2_wave2_stock_capacity, 3U);
+    memcpy(fake.geometry, xgd2_wave2_stock_geometry, 3U);
+    memcpy(fake.revision, "RF02", 5U);
+    fake.descriptor_valid = true;
+    fake.descriptor_trailing_valid = true;
+    fake.pfi_valid = true;
+    fake.media = FAKE_MEDIA_XGD2_WAVE2;
     fake.gp63 = true;
     return fake;
 }
@@ -1382,7 +1438,8 @@ static bool test_close_prepare_retains_source(void)
 static bool test_detected_profiles_use_one_transport(void)
 {
     fake_mt1887 xgd1 = fake_gp63_xgd1_stock();
-    fake_mt1887 xgd2 = fake_xgd2_stock();
+    fake_mt1887 xgd2_wave1 = fake_xgd2_wave1_stock();
+    fake_mt1887 xgd2_wave2 = fake_xgd2_wave2_stock();
     fake_mt1887 xgd3 = fake_xgd3_stock();
     gdox_sector_source source = {0};
     const gdox_mt1887_media_profile *selected = NULL;
@@ -1415,24 +1472,49 @@ static bool test_detected_profiles_use_one_transport(void)
     selected = NULL;
     if (!check(gdox_mt1887_detected_source_open(
             fake_open,
-            &xgd2,
+            &xgd2_wave1,
             UINT16_C(0xffff),
             0U,
             0U,
             &source,
             &selected,
             &error
-        ), "detected XGD2 source opens")
+        ), "detected XGD2 Wave 1 source opens")
         || !check(
-            selected == gdox_mt1887_media_profile_gp63_xgd2(),
-            "detector selects XGD2"
+            selected == gdox_mt1887_media_profile_gp63_xgd2_wave1(),
+            "detector selects XGD2 Wave 1"
         )
-        || !check(xgd2.open_count == 1U,
-            "XGD2 detection opens one transport")
-        || !check(gdox_source_sector_count(&source) == GDOX_XGD2_TOTAL_SECTORS,
-            "detected XGD2 source has exact size")
+        || !check(xgd2_wave1.open_count == 1U,
+            "XGD2 Wave 1 detection opens one transport")
+        || !check(gdox_source_sector_count(&source) == UINT64_C(0x3a5fdf),
+            "detected XGD2 Wave 1 source has exact size")
         || !check(gdox_source_close(&source, &error),
-            "detected XGD2 source closes")) {
+            "detected XGD2 Wave 1 source closes")) {
+        gdox_source_destroy(&source);
+        return false;
+    }
+
+    selected = NULL;
+    if (!check(gdox_mt1887_detected_source_open(
+            fake_open,
+            &xgd2_wave2,
+            UINT16_C(0xffff),
+            0U,
+            0U,
+            &source,
+            &selected,
+            &error
+        ), "detected XGD2 Wave 2 source opens")
+        || !check(
+            selected == gdox_mt1887_media_profile_gp63_xgd2_wave2(),
+            "detector selects XGD2 Wave 2"
+        )
+        || !check(xgd2_wave2.open_count == 1U,
+            "XGD2 Wave 2 detection opens one transport")
+        || !check(gdox_source_sector_count(&source) == GDOX_XGD2_TOTAL_SECTORS,
+            "detected XGD2 Wave 2 source has exact size")
+        || !check(gdox_source_close(&source, &error),
+            "detected XGD2 Wave 2 source closes")) {
         gdox_source_destroy(&source);
         return false;
     }
@@ -1506,7 +1588,7 @@ static bool test_detected_live_xgd3_startup_recovery(void)
 static bool test_detected_cross_profile_disc_swap(void)
 {
     fake_mt1887 xgd1 = fake_gp63_xgd1_stock();
-    fake_mt1887 xgd2 = fake_xgd2_stock();
+    fake_mt1887 xgd2 = fake_xgd2_wave2_stock();
     fake_mt1887 xgd3 = fake_xgd3_stock();
     gdox_sector_source source = {0};
     const gdox_mt1887_media_profile *selected = NULL;
@@ -1561,7 +1643,7 @@ static bool test_detected_cross_profile_disc_swap(void)
             &error
         ), "XGD2 opens after an XGD3 volatile state was retained")
         || !check(
-            selected == gdox_mt1887_media_profile_gp63_xgd2(),
+            selected == gdox_mt1887_media_profile_gp63_xgd2_wave2(),
             "physical XGD2 geometry overrides stale XGD3 state"
         )
         || !check(xgd2.write_count == 12U,
@@ -1581,8 +1663,8 @@ static bool test_detected_cross_profile_disc_swap(void)
         return false;
     }
 
-    memcpy(xgd3.capacity, xgd2_stock_capacity, 3U);
-    memcpy(xgd3.geometry, xgd2_stock_geometry, 3U);
+    memcpy(xgd3.capacity, xgd2_wave2_stock_capacity, 3U);
+    memcpy(xgd3.geometry, xgd2_wave2_stock_geometry, 3U);
     xgd3.forced_last_lba = UINT32_C(0x0aa3);
     selected = NULL;
     if (!check(gdox_mt1887_detected_source_open(
@@ -1719,7 +1801,7 @@ static bool test_persistent_drive_xgd3_to_xgd1_lifecycle(void)
 
 static bool test_detected_failure_rolls_back_and_closes(void)
 {
-    fake_mt1887 fake = fake_xgd3_stock();
+    fake_mt1887 fake = fake_xgd2_wave1_stock();
     gdox_sector_source source = {0};
     const gdox_mt1887_media_profile *selected = NULL;
     gdox_error error;
@@ -1739,9 +1821,13 @@ static bool test_detected_failure_rolls_back_and_closes(void)
             "failed detected session uses one transport")
         && check(fake.write_count == 12U,
             "failed detected session runs complete rollback")
-        && check(memcmp(fake.capacity, xgd3_stock_capacity, 3U) == 0,
+        && check(memcmp(
+                fake.capacity, xgd2_wave1_stock_capacity, 3U
+            ) == 0,
             "failed detected session restores capacity")
-        && check(memcmp(fake.geometry, xgd3_stock_geometry, 3U) == 0,
+        && check(memcmp(
+                fake.geometry, xgd2_wave1_stock_geometry, 3U
+            ) == 0,
             "failed detected session restores geometry")
         && check(fake.closed,
             "failed detected session closes transport")
@@ -1822,11 +1908,17 @@ static bool test_xgd3_activation_and_restore(void)
             "XGD3 geometry restored");
 }
 
-static bool test_xgd2_activation_and_restore(void)
+static bool check_xgd2_activation_and_restore(
+    fake_mt1887 fake,
+    uint64_t expected_sectors
+)
 {
-    fake_mt1887 fake = fake_xgd2_stock();
     gdox_sector_source source = {0};
     gdox_error error;
+    const uint8_t *expected_stock_capacity = fake_stock_capacity(&fake);
+    const uint8_t *expected_live_capacity = fake_live_capacity(&fake);
+    const uint8_t *expected_stock_geometry = fake_stock_geometry(&fake);
+    const uint8_t *expected_live_geometry = fake_live_geometry(&fake);
 
     if (!check(open_detected_xgd2(
             fake_open,
@@ -1838,7 +1930,7 @@ static bool test_xgd2_activation_and_restore(void)
             &error
         ), "RF02 XGD2 source opens")
         || !check(
-            gdox_source_sector_count(&source) == GDOX_XGD2_TOTAL_SECTORS,
+            gdox_source_sector_count(&source) == expected_sectors,
             "XGD2 source has the exact sector count"
         )
         || !check(fake.write_count == 6U, "XGD2 activation writes six bytes")
@@ -1846,9 +1938,9 @@ static bool test_xgd2_activation_and_restore(void)
             "XGD2 capacity activates first")
         || !check(writes_begin_at(&fake, 3U, 0x8be2U),
             "XGD2 geometry activates second")
-        || !check(memcmp(fake.capacity, xgd2_live_capacity, 3U) == 0,
+        || !check(memcmp(fake.capacity, expected_live_capacity, 3U) == 0,
             "XGD2 capacity is live")
-        || !check(memcmp(fake.geometry, xgd2_live_geometry, 3U) == 0,
+        || !check(memcmp(fake.geometry, expected_live_geometry, 3U) == 0,
             "XGD2 geometry is live")) {
         gdox_source_destroy(&source);
         return false;
@@ -1859,15 +1951,25 @@ static bool test_xgd2_activation_and_restore(void)
             "XGD2 geometry restores first")
         && check(writes_begin_at(&fake, 9U, 0x8538U),
             "XGD2 capacity restores second")
-        && check(memcmp(fake.capacity, xgd2_stock_capacity, 3U) == 0,
+        && check(memcmp(fake.capacity, expected_stock_capacity, 3U) == 0,
             "XGD2 capacity restored")
-        && check(memcmp(fake.geometry, xgd2_stock_geometry, 3U) == 0,
+        && check(memcmp(fake.geometry, expected_stock_geometry, 3U) == 0,
             "XGD2 geometry restored");
+}
+
+static bool test_xgd2_activation_and_restore(void)
+{
+    return check_xgd2_activation_and_restore(
+            fake_xgd2_wave1_stock(), UINT64_C(0x3a5fdf)
+        )
+        && check_xgd2_activation_and_restore(
+            fake_xgd2_wave2_stock(), GDOX_XGD2_TOTAL_SECTORS
+        );
 }
 
 static bool test_xgd1_handoff_to_detector_is_write_free(void)
 {
-    fake_mt1887 fake = fake_xgd2_stock();
+    fake_mt1887 fake = fake_xgd2_wave2_stock();
     gdox_sector_source source = {0};
     gdox_error error;
 
