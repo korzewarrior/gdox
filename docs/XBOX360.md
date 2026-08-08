@@ -15,9 +15,9 @@ Deck. macOS and Android do not have a compatible Xenia integration.
 
 | Host | Owned image | Validated physical playback | ASUS A202 XGD2 | Runtime |
 | --- | --- | --- | --- | --- |
-| Windows x86-64 | Supported | GP63EX70/RF02 XGD2 | Implemented; host validation not established | Reviewed native Xenia builds; transient state uses a cleanup-owned session directory |
-| Linux x86-64 | Supported | GP63EX70/RF02 XGD2 and XGD3 | Reader, stream, rendered startup, and restoration validated through Proton; stable title execution not established | Reviewed Windows Xenia builds through Proton Experimental; transient state uses a verified memory session |
-| Steam Deck | Supported | GP63EX70/RF02 XGD2 and XGD3 | Implemented; host validation not established | Same Proton and memory-session contract with the handheld performance profile |
+| Windows x86-64 | Supported | GP63EX70/RF02 XGD2 Wave 1 and Wave 2 | Implemented; host validation not established | Reviewed native Xenia builds; transient state uses a cleanup-owned session directory |
+| Linux x86-64 | Supported | GP63EX70/RF02 XGD2 Wave 1, XGD2 Wave 2, and XGD3 | Reader, stream, rendered startup, and restoration validated through Proton; stable title execution not established | Reviewed Windows Xenia builds through Proton Experimental; transient state uses a verified memory session |
+| Steam Deck | Supported | GP63EX70/RF02 XGD2 Wave 1, XGD2 Wave 2, and XGD3 | Implemented; host validation not established | Same Proton and memory-session contract with the handheld performance profile |
 | macOS | Unavailable | Unavailable | Unavailable | No compatible Xenia integration |
 | Android | Unavailable | Unavailable | Unavailable | No Xenia integration |
 

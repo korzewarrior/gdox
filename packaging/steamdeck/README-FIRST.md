@@ -15,9 +15,10 @@ normal linux notification behavior when a StatusNotifier host is present.
 xbox 360 playback uses the reviewed Xenia runtimes through Proton Experimental.
 images and physical media use a local read-only bridge. this package includes
 the reviewed `nbdfuse` and libnbd build and uses SteamOS's `fusermount3` and
-FUSE support. physical playback is limited to the exact GP63EX70/RF02 XGD2 and
-XGD3 profiles. gdox reports a missing host facility instead of starting an
-incomplete session. without the included bridge or SteamOS FUSE support, all
+FUSE support. physical playback is limited to the exact GP63EX70/RF02 XGD2
+Wave 1, XGD2 Wave 2, and XGD3 profiles. gdox reports a missing host facility
+instead of starting an incomplete session. without the included bridge or
+SteamOS FUSE support, all
 xbox 360 playback is unavailable, including owned images.
 
 reinstalling updates the same shortcut and leaves firmware, EEPROM, settings,

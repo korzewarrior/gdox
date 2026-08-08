@@ -43,7 +43,9 @@ typedef struct gdox_mt1887_media_profile {
 
 const gdox_mt1887_media_profile *gdox_mt1887_media_profile_xgd1(void);
 const gdox_mt1887_media_profile *
-gdox_mt1887_media_profile_gp63_xgd2(void);
+gdox_mt1887_media_profile_gp63_xgd2_wave1(void);
+const gdox_mt1887_media_profile *
+gdox_mt1887_media_profile_gp63_xgd2_wave2(void);
 const gdox_mt1887_media_profile *
 gdox_mt1887_media_profile_gp63_xgd3(void);
 
