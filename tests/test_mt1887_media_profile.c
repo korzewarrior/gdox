@@ -56,6 +56,12 @@ static void run(void)
         GDOX_GP65_SCSI_MODEL,
         GDOX_GP65_SCSI_REVISION
     );
+    const gdox_mt1887_profile *sp80 = gdox_mt1887_profile_find(
+        GDOX_USB_BOT_SP80,
+        GDOX_SP80_SCSI_VENDOR,
+        GDOX_SP80_SCSI_MODEL,
+        GDOX_SP80_SCSI_REVISION
+    );
     const gdox_mt1887_media_profile *xgd1 =
         gdox_mt1887_media_profile_xgd1();
     const gdox_mt1887_media_profile *xgd2_wave1 =
@@ -69,11 +75,12 @@ static void run(void)
 
     GDOX_TEST_CHECK(gp63 != NULL);
     GDOX_TEST_CHECK(gp65 != NULL);
+    GDOX_TEST_CHECK(sp80 != NULL);
     GDOX_TEST_CHECK(xgd1 != NULL);
     GDOX_TEST_CHECK(xgd2_wave1 != NULL);
     GDOX_TEST_CHECK(xgd2_wave2 != NULL);
     GDOX_TEST_CHECK(xgd3 != NULL);
-    if (gp63 == NULL || gp65 == NULL || xgd1 == NULL
+    if (gp63 == NULL || gp65 == NULL || sp80 == NULL || xgd1 == NULL
         || xgd2_wave1 == NULL || xgd2_wave2 == NULL || xgd3 == NULL) {
         return;
     }
@@ -164,11 +171,15 @@ static void run(void)
 
     GDOX_TEST_CHECK(gdox_mt1887_media_profile_supports_hardware(xgd1, gp63));
     GDOX_TEST_CHECK(gdox_mt1887_media_profile_supports_hardware(xgd1, gp65));
+    GDOX_TEST_CHECK(gdox_mt1887_media_profile_supports_hardware(xgd1, sp80));
     GDOX_TEST_CHECK(gdox_mt1887_media_profile_supports_hardware(
         xgd2_wave1, gp63
     ));
     GDOX_TEST_CHECK(!gdox_mt1887_media_profile_supports_hardware(
         xgd2_wave1, gp65
+    ));
+    GDOX_TEST_CHECK(!gdox_mt1887_media_profile_supports_hardware(
+        xgd2_wave1, sp80
     ));
     GDOX_TEST_CHECK(gdox_mt1887_media_profile_supports_hardware(
         xgd2_wave2, gp63
@@ -178,6 +189,13 @@ static void run(void)
     ));
     GDOX_TEST_CHECK(gdox_mt1887_media_profile_supports_hardware(xgd3, gp63));
     GDOX_TEST_CHECK(!gdox_mt1887_media_profile_supports_hardware(xgd3, gp65));
+    GDOX_TEST_CHECK(!gdox_mt1887_media_profile_supports_hardware(xgd3, sp80));
+
+    state = make_state(xgd1, sp80, false);
+    GDOX_TEST_CHECK(gdox_mt1887_media_state_classify(xgd1, sp80, &state)
+        == GDOX_MT1887_MEDIA_STATE_STOCK);
+    GDOX_TEST_CHECK(gdox_mt1887_media_profile_select_stock(sp80, &state)
+        == xgd1);
 
     state = make_state(xgd2_wave1, gp63, false);
     GDOX_TEST_CHECK(gdox_mt1887_media_profile_select_stock(gp63, &state)

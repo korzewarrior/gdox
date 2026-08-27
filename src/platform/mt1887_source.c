@@ -1315,6 +1315,20 @@ static bool open_discovered_gp65(
     );
 }
 
+static bool open_discovered_sp80(
+    void *context,
+    gdox_scsi_transport *transport,
+    gdox_error *error
+)
+{
+    (void)context;
+    return gdox_usb_bot_open(
+        GDOX_USB_BOT_SP80,
+        transport,
+        error
+    );
+}
+
 static bool open_validated_transport(
     gdox_mt1887_transport_opener opener,
     void *opener_context,
@@ -1743,7 +1757,8 @@ static bool mt1887_source_open_for_media(
     gdox_error_clear(error);
     if (opener == NULL
         || (expected_identity != GDOX_USB_BOT_GP63
-            && expected_identity != GDOX_USB_BOT_GP65)
+            && expected_identity != GDOX_USB_BOT_GP65
+            && expected_identity != GDOX_USB_BOT_SP80)
         || (detect_media && expected_identity != GDOX_USB_BOT_GP63)
         || (!detect_media
             && (media->kind == GDOX_MT1887_MEDIA_GP63_XGD2
@@ -2006,6 +2021,25 @@ bool gdox_optical_open_gp65(
         open_discovered_gp65,
         NULL,
         GDOX_USB_BOT_GP65,
+        GDOX_MT_MAXIMUM_READ_SPEED,
+        read_retries,
+        ready_timeout_ms,
+        source,
+        error
+    );
+}
+
+bool gdox_optical_open_sp80(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_error *error
+)
+{
+    return gdox_mt1887_source_open(
+        open_discovered_sp80,
+        NULL,
+        GDOX_USB_BOT_SP80,
         GDOX_MT_MAXIMUM_READ_SPEED,
         read_retries,
         ready_timeout_ms,

@@ -21,9 +21,16 @@ static void run(void)
         GDOX_GP65_SCSI_MODEL,
         GDOX_GP65_SCSI_REVISION
     );
+    const gdox_mt1887_profile *sp80 = gdox_mt1887_profile_find(
+        GDOX_USB_BOT_SP80,
+        GDOX_SP80_SCSI_VENDOR,
+        GDOX_SP80_SCSI_MODEL,
+        GDOX_SP80_SCSI_REVISION
+    );
 
     GDOX_TEST_CHECK(gp63 != NULL);
     GDOX_TEST_CHECK(gp65 != NULL);
+    GDOX_TEST_CHECK(sp80 != NULL);
     GDOX_TEST_CHECK(gdox_mt1887_profile_find(
         GDOX_USB_BOT_GP65,
         GDOX_GP65_SCSI_VENDOR,
@@ -42,7 +49,13 @@ static void run(void)
         GDOX_GP08_SCSI_MODEL,
         GDOX_GP08_SCSI_REVISION
     ) == NULL);
-    if (gp63 == NULL || gp65 == NULL) {
+    GDOX_TEST_CHECK(gdox_mt1887_profile_find(
+        GDOX_USB_BOT_SP80,
+        GDOX_SP80_SCSI_VENDOR,
+        GDOX_SP80_SCSI_MODEL,
+        "RF03"
+    ) == NULL);
+    if (gp63 == NULL || gp65 == NULL || sp80 == NULL) {
         return;
     }
     GDOX_TEST_CHECK(gp63->capacity_addresses[0] == 0x8538U);
@@ -57,10 +70,15 @@ static void run(void)
         (const uint8_t[]){0x64U, 0x00U, 0x64U},
         3U
     ) == 0);
+    GDOX_TEST_CHECK(sp80->capacity_addresses[0] == 0x8538U);
+    GDOX_TEST_CHECK(sp80->geometry_addresses[0] == 0x8be2U);
+    GDOX_TEST_CHECK(!sp80->auxiliary_present);
     GDOX_TEST_CHECK(gdox_mt1887_max_read_blocks(gp63, false) == 128U);
     GDOX_TEST_CHECK(gdox_mt1887_max_read_blocks(gp63, true) == 32U);
     GDOX_TEST_CHECK(gdox_mt1887_max_read_blocks(gp65, false) == 128U);
     GDOX_TEST_CHECK(gdox_mt1887_max_read_blocks(gp65, true) == 32U);
+    GDOX_TEST_CHECK(gdox_mt1887_max_read_blocks(sp80, false) == 32U);
+    GDOX_TEST_CHECK(gdox_mt1887_max_read_blocks(sp80, true) == 32U);
 }
 
 int main(void)

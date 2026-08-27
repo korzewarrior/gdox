@@ -37,6 +37,14 @@ static const gdox_usb_bot_identity_spec identities[] = {
         GDOX_ASUS_SCSI_MODEL,
         GDOX_ASUS_SCSI_REVISION,
     },
+    {
+        GDOX_USB_BOT_SP80,
+        GDOX_SP80_USB_VENDOR_ID,
+        GDOX_SP80_USB_PRODUCT_ID,
+        GDOX_SP80_SCSI_VENDOR,
+        GDOX_SP80_SCSI_MODEL,
+        GDOX_SP80_SCSI_REVISION,
+    },
 };
 
 _Static_assert(

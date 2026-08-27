@@ -28,6 +28,18 @@ static const gdox_mt1887_profile gp65 = {
     {0x64U, 0x00U, 0x64U},
 };
 
+static const gdox_mt1887_profile sp80 = {
+    GDOX_USB_BOT_SP80,
+    GDOX_SP80_SCSI_VENDOR,
+    GDOX_SP80_SCSI_MODEL,
+    GDOX_SP80_SCSI_REVISION,
+    {0x8538U, 0x8539U, 0x853aU},
+    {0x8be2U, 0x8be3U, 0x8be4U},
+    false,
+    {0U, 0U, 0U},
+    {0U, 0U, 0U},
+};
+
 const gdox_mt1887_profile *gdox_mt1887_profile_find(
     gdox_usb_bot_identity identity,
     const char *vendor,
@@ -41,6 +53,8 @@ const gdox_mt1887_profile *gdox_mt1887_profile_find(
         profile = &gp63;
     } else if (identity == GDOX_USB_BOT_GP65) {
         profile = &gp65;
+    } else if (identity == GDOX_USB_BOT_SP80) {
+        profile = &sp80;
     } else {
         return NULL;
     }
@@ -57,6 +71,9 @@ uint32_t gdox_mt1887_max_read_blocks(
     bool windows_transport
 )
 {
+    if (profile != NULL && profile->identity == GDOX_USB_BOT_SP80) {
+        return UINT32_C(32);
+    }
     if (profile == NULL || !windows_transport) {
         return UINT32_C(128);
     }

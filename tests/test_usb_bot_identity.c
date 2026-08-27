@@ -56,6 +56,17 @@ static gdox_usb_bot_observed_identity observed_gp65(void)
     };
 }
 
+static gdox_usb_bot_observed_identity observed_sp80(void)
+{
+    return (gdox_usb_bot_observed_identity){
+        GDOX_SP80_USB_VENDOR_ID,
+        GDOX_SP80_USB_PRODUCT_ID,
+        GDOX_SP80_SCSI_VENDOR,
+        GDOX_SP80_SCSI_MODEL,
+        GDOX_SP80_SCSI_REVISION,
+    };
+}
+
 static gdox_usb_bot_observed_identity observed_gp08(void)
 {
     return (gdox_usb_bot_observed_identity){
@@ -88,10 +99,13 @@ static void run(void)
         gdox_usb_bot_identity_get(GDOX_USB_BOT_GP08);
     const gdox_usb_bot_identity_spec *asus =
         gdox_usb_bot_identity_get(GDOX_USB_BOT_ASUS_NR09);
+    const gdox_usb_bot_identity_spec *sp80 =
+        gdox_usb_bot_identity_get(GDOX_USB_BOT_SP80);
     gdox_usb_bot_observed_identity gp63_observed = observed_gp63();
     gdox_usb_bot_observed_identity gp65_observed = observed_gp65();
     gdox_usb_bot_observed_identity gp08_observed = observed_gp08();
     gdox_usb_bot_observed_identity asus_observed = observed_asus();
+    gdox_usb_bot_observed_identity sp80_observed = observed_sp80();
     gdox_usb_bot_location gp63_location = {
         1U,
         7U,
@@ -111,7 +125,9 @@ static void run(void)
     GDOX_TEST_CHECK(gp65 != NULL);
     GDOX_TEST_CHECK(gp08 != NULL);
     GDOX_TEST_CHECK(asus != NULL);
-    if (gp63 == NULL || gp65 == NULL || gp08 == NULL || asus == NULL) {
+    GDOX_TEST_CHECK(sp80 != NULL);
+    if (gp63 == NULL || gp65 == NULL || gp08 == NULL || asus == NULL
+        || sp80 == NULL) {
         return;
     }
     GDOX_TEST_CHECK(gdox_usb_bot_recovery_identity(
@@ -137,6 +153,8 @@ static void run(void)
     ));
     GDOX_TEST_CHECK(gp63->vendor_id == gp65->vendor_id);
     GDOX_TEST_CHECK(gp63->product_id == gp65->product_id);
+    GDOX_TEST_CHECK(gp63->vendor_id == sp80->vendor_id);
+    GDOX_TEST_CHECK(gp63->product_id == sp80->product_id);
     GDOX_TEST_CHECK(gdox_usb_bot_identity_matches(
         GDOX_USB_BOT_GP63,
         &gp63_observed
@@ -152,6 +170,23 @@ static void run(void)
     GDOX_TEST_CHECK(!gdox_usb_bot_identity_matches(
         GDOX_USB_BOT_GP63,
         &gp65_observed
+    ));
+    GDOX_TEST_CHECK(gdox_usb_bot_identity_matches(
+        GDOX_USB_BOT_SP80,
+        &sp80_observed
+    ));
+    GDOX_TEST_CHECK(!gdox_usb_bot_identity_matches(
+        GDOX_USB_BOT_GP63,
+        &sp80_observed
+    ));
+    GDOX_TEST_CHECK(!gdox_usb_bot_identity_matches(
+        GDOX_USB_BOT_SP80,
+        &gp63_observed
+    ));
+    sp80_observed.scsi_revision = "RF03";
+    GDOX_TEST_CHECK(!gdox_usb_bot_identity_matches(
+        GDOX_USB_BOT_SP80,
+        &sp80_observed
     ));
     GDOX_TEST_CHECK(!gdox_usb_bot_identity_matches(
         GDOX_USB_BOT_GP65,
@@ -183,6 +218,9 @@ static void run(void)
     ));
     GDOX_TEST_CHECK(gdox_optical_drive_can_eject(
         GDOX_OPTICAL_DRIVE_GP08
+    ));
+    GDOX_TEST_CHECK(!gdox_optical_drive_can_eject(
+        GDOX_OPTICAL_DRIVE_SP80
     ));
     GDOX_TEST_CHECK(!gdox_optical_drive_can_eject(
         GDOX_OPTICAL_DRIVE_ASUS_NR09

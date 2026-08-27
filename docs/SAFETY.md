@@ -7,7 +7,7 @@ drive adapters use narrow, validated volatile memory transactions; they do not
 flash drive firmware. Normal teardown restores the prior values, and a USB
 power cycle clears volatile state if the process is terminated unexpectedly.
 
-The GP65, GP08, and ASUS adapters verify the exact USB and SCSI identity and
+The GP65, SP80, GP08, and ASUS adapters verify the exact USB and SCSI identity and
 every expected stock value before activation. They run their complete restore
 sequences on teardown and every error path, and report when a transport
 failure makes a power cycle necessary.
@@ -16,6 +16,13 @@ The GP65 profile never applies the GP63 address table. It requires the PB00
 auxiliary field to be canonical or to contain only the per-byte GP63
 stock/live values left by older Drive Reporter builds. Known combinations are
 restored to `64 00 64`; any other value is rejected without writing.
+
+The SP80 profile uses the GP63 RF02 address table only for exact
+`DVDRAM SP80NB80 RF02` and USB `0e8d:1887`. It accepts only the bounded XGD1
+stock, live, or per-byte transition values needed for activation and recovery;
+only the stock values have been physically observed on SP80. It does not
+inherit the GP63 XGD2 or XGD3 media profiles. An unexpected value is rejected
+before any volatile write.
 
 The ASUS profile writes only its eight validated volatile fields. It verifies
 the two neighboring fixed fields before activation, writes the capacity field
@@ -102,8 +109,8 @@ drive, and forces full media identification.
 
 A physical eject request is completed only after playback, the export, and the
 owned source have stopped. GP63, GP65, and GP08 then use their validated eject
-command. ASUS remains manual: GDOX restores and releases the source, reports
-that manual eject is required, and sends no tray command.
+command. SP80 and ASUS remain manual: GDOX restores and releases the source,
+reports that manual eject is required, and sends no tray command.
 
 An unexplained hard reset is a stop condition. Disconnect the optical drive,
 collect the previous boot's kernel journal, and do not reproduce the event
@@ -116,8 +123,8 @@ delivery fault.
 
 Do not assume two retail enclosures contain the same optical mechanism.
 Require the exact model, revision, and USB identity shown on Details before a
-drive adapter runs. GP63 and GP65 share USB `0e8d:1887`, so the complete SCSI
-identity selects the profile. The GP08 profile additionally requires the exact
+drive adapter runs. GP63, GP65, and SP80 share USB `0e8d:1887`, so the complete
+SCSI identity selects the profile. The GP08 profile additionally requires the exact
 Prolific PL-2507 USB bridge identity. The ASUS profile requires USB
 `13fd:1640`, SCSI vendor `ASUS`, product `SDRW-08D1S-U`, and revision `A202`.
 GDOX fails closed for unknown hardware or an unexpected stock memory state.

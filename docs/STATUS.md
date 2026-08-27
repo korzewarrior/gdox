@@ -35,12 +35,14 @@ runtime and managed-storage transition pass the equivalent save-boundary tests.
 
 ## drive profiles
 
-the physical adapters support four exact profiles:
+the physical adapters recognize five exact profiles; SP80 support remains
+experimental until its live validation is complete:
 
 | identity | current validation |
 |---|---|
 | `HL-DT-ST DVDRAM GP63EX70 RF02`, USB `0e8d:1887` | live play validated |
 | `HL-DT-ST DVDRAM GP65NB60 PB00`, USB `0e8d:1887` | live play and restoration validated on windows 11 with the stock driver |
+| `HL-DT-ST DVDRAM SP80NB80 RF02`, USB `0e8d:1887` | exact identity and GP63-layout XGD1 stock registers confirmed remotely on Ubuntu; live activation, play, and restoration remain to be physically validated; see `SP80_RF02.md` |
 | `HL-DT-ST DVDRAM GP08NU10 JE01`, Prolific PL-2507 USB `152e:2507` | find, volatile activation, and xbox-sector read confirmed externally |
 | `ASUS SDRW-08D1S-U A202`, Initio USB `13fd:1640` | original Xbox live play and restoration validated on windows 11 with the stock driver |
 

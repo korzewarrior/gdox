@@ -19,7 +19,7 @@ images from original Xbox discs.
 | macos intel | images | — |
 | android arm64 | in development | — |
 
-original Xbox physical play supports four exact optical-drive profiles. Xbox
+original Xbox physical play recognizes five exact optical-drive profiles. Xbox
 360 validated physical play uses the exact GP63EX70/RF02 profile. The complete
 host, media, and validation matrix is in [Xbox 360 support](docs/XBOX360.md).
 similar drive names, firmware revisions, and USB bridges are not

@@ -25,6 +25,12 @@ bool gdox_optical_open_gp65(
     gdox_error *error
 );
 bool gdox_optical_eject_gp65(gdox_error *error);
+bool gdox_optical_open_sp80(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_error *error
+);
 bool gdox_optical_open_gp08(
     uint8_t read_retries,
     uint32_t ready_timeout_ms,

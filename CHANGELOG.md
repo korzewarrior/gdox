@@ -1,5 +1,13 @@
 # changes
 
+## 0.2.3
+
+- add exact-gated experimental Original Xbox support for the
+  `HL-DT-ST DVDRAM SP80NB80 RF02` at USB `0e8d:1887`
+- restrict the SP80 profile to the remotely confirmed XGD1 register map and a
+  conservative 32-sector read ceiling; live activation, play, and restoration
+  still require physical validation
+
 ## 0.2.2
 
 - add exact GP63EX70/RF02 support for Wave 1 XGD2 discs

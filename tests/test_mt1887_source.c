@@ -71,6 +71,7 @@ typedef struct fake_mt1887 {
     uint32_t forced_block_size;
     bool invalid_live_last_lba;
     bool gp63;
+    bool sp80;
     unsigned int open_count;
     unsigned int close_count;
     unsigned int prepare_close_count;
@@ -194,7 +195,7 @@ static uint32_t read_be_u32(const uint8_t input[4])
 
 static uint8_t *fake_xdata(fake_mt1887 *fake, uint16_t address)
 {
-    if (fake->gp63
+    if ((fake->gp63 || fake->sp80)
         && address >= 0x8538U && address <= 0x853aU) {
         return &fake->capacity[address - 0x8538U];
     }
@@ -245,9 +246,11 @@ static bool fake_command_in(
         memcpy(output + 8U, "HL-DT-ST", 8U);
         memcpy(
             output + 16U,
-            fake->gp63
-                ? "DVDRAM GP63EX70"
-                : "DVDRAM GP65NB60",
+            fake->sp80
+                ? "DVDRAM SP80NB80"
+                : fake->gp63
+                    ? "DVDRAM GP63EX70"
+                    : "DVDRAM GP65NB60",
             16U
         );
         memcpy(output + 32U, fake->revision, 4U);
@@ -666,6 +669,15 @@ static fake_mt1887 fake_gp63_xgd1_stock(void)
     return fake;
 }
 
+static fake_mt1887 fake_sp80_xgd1_stock(void)
+{
+    fake_mt1887 fake = fake_stock();
+
+    memcpy(fake.revision, "RF02", 5U);
+    fake.sp80 = true;
+    return fake;
+}
+
 static bool writes_begin_at(
     const fake_mt1887 *fake,
     size_t offset,
@@ -738,6 +750,45 @@ static bool test_activation_and_restore(void)
         return false;
     }
     return true;
+}
+
+static bool test_sp80_xgd1_activation_and_restore(void)
+{
+    fake_mt1887 fake = fake_sp80_xgd1_stock();
+    gdox_sector_source source = {0};
+    gdox_error error;
+
+    if (!check(gdox_mt1887_source_open(
+            fake_open,
+            &fake,
+            GDOX_USB_BOT_SP80,
+            UINT16_C(0xffff),
+            0U,
+            0U,
+            &source,
+            &error
+        ), "SP80 RF02 XGD1 source opens")
+        || !check(fake.write_count == 6U,
+            "SP80 activation writes six bytes")
+        || !check(writes_begin_at(&fake, 0U, 0x8538U),
+            "SP80 capacity activates through the RF02 table")
+        || !check(writes_begin_at(&fake, 3U, 0x8be2U),
+            "SP80 geometry activates through the RF02 table")) {
+        gdox_source_destroy(&source);
+        return false;
+    }
+    return check(gdox_source_close(&source, &error),
+            "SP80 XGD1 source restores on close")
+        && check(fake.write_count == 12U,
+            "SP80 close writes the complete restore")
+        && check(writes_begin_at(&fake, 6U, 0x8be2U),
+            "SP80 geometry restores first")
+        && check(writes_begin_at(&fake, 9U, 0x8538U),
+            "SP80 capacity restores second")
+        && check(memcmp(fake.capacity, stock_capacity, 3U) == 0,
+            "SP80 capacity returns to stock")
+        && check(memcmp(fake.geometry, stock_geometry, 3U) == 0,
+            "SP80 geometry returns to stock");
 }
 
 static bool test_gp63_read_batching(void)
@@ -2227,6 +2278,7 @@ static bool test_xgd3_read_recovery_reapplies_selected_profile(void)
 int main(void)
 {
     if (!test_activation_and_restore()
+        || !test_sp80_xgd1_activation_and_restore()
         || !test_gp63_read_batching()
         || !test_read_batch_bisection()
         || !test_auxiliary_recovery()

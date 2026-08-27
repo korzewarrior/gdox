@@ -242,7 +242,7 @@ Playback process polling runs before either drive probe.
 - libusb Bulk-Only Transport on Linux;
 - native SCSI pass-through over the Windows optical class driver;
 - IOKit/Disk Arbitration/SCSI transport on macOS;
-- separate exact-identity GP63/GP65 MT1887, GP08/PL-2507, and ASUS A202/NR09
+- separate exact-identity GP63/GP65/SP80 MT1887, GP08/PL-2507, and ASUS A202/NR09
   optical adapters.
 
 The MT1887 mechanism accepts a transport opener and a requested speed from its
@@ -253,8 +253,9 @@ Neither policy is compiled into the portable disc or application layers.
 Each drive adapter accepts only its validated USB identity, SCSI identity, and
 revision. Its volatile state transaction validates expected values, applies
 only the allowlisted changes, and restores the stock state during normal
-teardown and failed initialization. The MT1887 adapter selects the GP63 or
-GP65 address table only after the complete identity matches; PB00 recovery
+teardown and failed initialization. The MT1887 adapter selects the GP63, SP80,
+or GP65 address table only after the complete identity matches. SP80 uses the
+GP63-layout addresses only for its exact RF02 identity and XGD1 state; PB00 recovery
 also verifies and canonicalizes its separate auxiliary field. The GP08
 adapter keeps its multi-field
 activation and restoration order inside its own source module, uses SCSI DATA
@@ -270,9 +271,9 @@ The public optical API exposes drive-independent operations only. A private
 descriptor registry maps each supported identity to its name, open operation,
 optional software-eject operation, and physical-request completion policy. The
 GP63, GP65, and GP08 complete a physical request with their validated eject
-command. The ASUS policy reports only that the source was released for manual
-eject and never exposes software eject. Standard MMC command construction and
-response validation live in `mmc_commands.c`; identity checks, vendor memory
+command. The SP80 and ASUS policies report only that the source was released
+for manual eject and never expose software eject. Standard MMC command
+construction and response validation live in `mmc_commands.c`; identity checks, vendor memory
 commands, recovery ladders, and restoration order remain in the individual
 drive adapters.
 

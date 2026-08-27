@@ -17,6 +17,7 @@
 #endif
 #define GDOX_GP08_SEQUENTIAL_READ_BLOCKS UINT32_C(32)
 #define GDOX_ASUS_SEQUENTIAL_READ_BLOCKS UINT32_C(32)
+#define GDOX_SP80_SEQUENTIAL_READ_BLOCKS UINT32_C(32)
 
 typedef bool (*gdox_optical_open_fn)(
     uint8_t read_retries,
@@ -93,6 +94,17 @@ static const gdox_optical_driver drivers[] = {
         gdox_optical_open_asus_nr09,
         gdox_optical_open_asus_nr09_media,
         GDOX_ASUS_SEQUENTIAL_READ_BLOCKS,
+        NULL,
+        GDOX_OPTICAL_EJECT_REQUEST_RELEASE_FOR_MANUAL_EJECT,
+    },
+    {
+        GDOX_OPTICAL_DRIVE_SP80,
+        GDOX_USB_BOT_SP80,
+        GDOX_SP80_SCSI_VENDOR " " GDOX_SP80_SCSI_MODEL " "
+            GDOX_SP80_SCSI_REVISION,
+        gdox_optical_open_sp80,
+        NULL,
+        GDOX_SP80_SEQUENTIAL_READ_BLOCKS,
         NULL,
         GDOX_OPTICAL_EJECT_REQUEST_RELEASE_FOR_MANUAL_EJECT,
     },

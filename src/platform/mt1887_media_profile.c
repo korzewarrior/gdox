@@ -178,7 +178,8 @@ bool gdox_mt1887_media_profile_supports_hardware(
     }
     if (media->kind == GDOX_MT1887_MEDIA_XGD1) {
         return hardware->identity == GDOX_USB_BOT_GP63
-            || hardware->identity == GDOX_USB_BOT_GP65;
+            || hardware->identity == GDOX_USB_BOT_GP65
+            || hardware->identity == GDOX_USB_BOT_SP80;
     }
     return (media->kind == GDOX_MT1887_MEDIA_GP63_XGD2
             || media->kind == GDOX_MT1887_MEDIA_GP63_XGD3)

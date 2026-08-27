@@ -110,8 +110,9 @@ installed.
 During desktop live play, pressing the drive's physical eject button stops the
 emulator before GDOX closes the read-only media path, restores the drive, and
 releases it. The GP63, GP65, and GP08 then receive their validated tray-eject
-command. The ASUS drive receives no tray command; after GDOX reports that the
-drive was released, press its physical eject button again to open the tray.
+command. The SP80 and ASUS drives receive no tray command; after GDOX reports
+that the drive was released, press its physical eject button again to open the
+tray.
 
 ### Xbox 360
 
