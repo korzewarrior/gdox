@@ -165,6 +165,10 @@ typedef struct fake_asus {
     unsigned int prepare_close_count;
     bool fail_prepare_close;
     bool fail_stock_writes;
+    bool device_present;
+    bool capacity_no_medium;
+    uint8_t cached_sense[18];
+    size_t cached_sense_bytes;
     unsigned int open_count;
     bool identity_valid;
     bool descriptor_has_end_magic;
@@ -279,6 +283,14 @@ static bool fake_command_in(
     (void)timeout_ms;
     gdox_error_clear(error);
     *transferred = 0U;
+    fake->cached_sense_bytes = 0U;
+    if (!fake->device_present) {
+        return fail(
+            error,
+            GDOX_ERROR_TRANSPORT,
+            "injected disconnected ASUS drive"
+        );
+    }
     if (cdb[0] == 0x12U && cdb_bytes == 6U
         && output_bytes == 96U) {
         memset(output, 0, output_bytes);
@@ -333,6 +345,19 @@ static bool fake_command_in(
         memcpy(output, field, output_bytes);
     } else if (cdb[0] == 0x25U && cdb_bytes == 10U
         && output_bytes == 8U) {
+        if (fake->capacity_no_medium) {
+            memset(fake->cached_sense, 0, sizeof(fake->cached_sense));
+            fake->cached_sense[0] = 0x70U;
+            fake->cached_sense[2] = 0x02U;
+            fake->cached_sense[12] = 0x3aU;
+            fake->cached_sense[13] = 0x01U;
+            fake->cached_sense_bytes = sizeof(fake->cached_sense);
+            return fail(
+                error,
+                GDOX_ERROR_TRANSPORT,
+                "injected no-medium READ CAPACITY failure"
+            );
+        }
         put_be_u32(output, fake->last_lba);
         put_be_u32(output + 4U, GDOX_LOGICAL_SECTOR_BYTES);
     } else if (cdb[0] == 0x4aU && cdb_bytes == 10U
@@ -430,6 +455,14 @@ static bool fake_command_out(
     (void)timeout_ms;
     gdox_error_clear(error);
     *transferred = 0U;
+    fake->cached_sense_bytes = 0U;
+    if (!fake->device_present) {
+        return fail(
+            error,
+            GDOX_ERROR_TRANSPORT,
+            "injected disconnected ASUS drive"
+        );
+    }
     if (cdb[0] != 0xf1U || cdb_bytes != 12U
         || cdb[1] != 0x01U || input_bytes != 4U
         || read_be_u16(cdb + 7U) != 4U
@@ -506,6 +539,14 @@ static bool fake_command_none(
     (void)name;
     (void)timeout_ms;
     gdox_error_clear(error);
+    fake->cached_sense_bytes = 0U;
+    if (!fake->device_present) {
+        return fail(
+            error,
+            GDOX_ERROR_TRANSPORT,
+            "injected disconnected ASUS drive"
+        );
+    }
     if (cdb_bytes != 6U || cdb[0] != 0U) {
         fake->invalid_command = true;
         return fail(
@@ -548,6 +589,40 @@ static bool fake_prepare_close(void *raw_context, gdox_error *error)
     return true;
 }
 
+static bool fake_last_sense(
+    const void *raw_context,
+    uint8_t *output,
+    size_t output_bytes,
+    size_t *sense_bytes
+)
+{
+    const fake_asus *fake = raw_context;
+    const size_t copied = fake->cached_sense_bytes < output_bytes
+        ? fake->cached_sense_bytes
+        : output_bytes;
+
+    if (copied == 0U) {
+        *sense_bytes = 0U;
+        return false;
+    }
+    memcpy(output, fake->cached_sense, copied);
+    *sense_bytes = copied;
+    return true;
+}
+
+static bool fake_device_present(
+    const void *raw_context,
+    bool *present,
+    gdox_error *error
+)
+{
+    const fake_asus *fake = raw_context;
+
+    *present = fake->device_present;
+    gdox_error_clear(error);
+    return true;
+}
+
 static const gdox_scsi_transport_ops fake_ops = {
     fake_command_in,
     fake_command_out,
@@ -555,7 +630,8 @@ static const gdox_scsi_transport_ops fake_ops = {
     fake_reset,
     fake_close,
     fake_prepare_close,
-    NULL,
+    fake_last_sense,
+    fake_device_present,
 };
 
 static bool fake_open(
@@ -624,6 +700,7 @@ static void fake_initialize(fake_asus *fake, bool xgd2)
     fake->last_lba = fake->stock_last_lba;
     fake->identity_valid = true;
     fake->descriptor_has_end_magic = true;
+    fake->device_present = true;
 }
 
 static bool fake_state_matches(const fake_asus *fake, bool live)
@@ -970,6 +1047,56 @@ static bool test_failed_open_restoration_retry(void)
     return true;
 }
 
+static bool test_close_restores_after_disc_removal(void)
+{
+    fake_asus fake;
+    gdox_sector_source source = {0};
+    gdox_error error;
+
+    fake_initialize(&fake, false);
+    CHECK(gdox_asus_nr09_source_open(
+        fake_open,
+        &fake,
+        0U,
+        0U,
+        &source,
+        &error
+    ));
+    fake.capacity_no_medium = true;
+    CHECK(gdox_source_close(&source, &error));
+    CHECK(!gdox_source_is_valid(&source));
+    CHECK(fake.closed);
+    CHECK(fake_state_matches(&fake, false));
+    CHECK(fake.reset_count == 0U);
+    return true;
+}
+
+static bool test_close_releases_disconnected_drive(void)
+{
+    fake_asus fake;
+    gdox_sector_source source = {0};
+    gdox_error error;
+    uint32_t write_count;
+
+    fake_initialize(&fake, false);
+    CHECK(gdox_asus_nr09_source_open(
+        fake_open,
+        &fake,
+        0U,
+        0U,
+        &source,
+        &error
+    ));
+    write_count = fake.write_count;
+    fake.device_present = false;
+    CHECK(gdox_source_close(&source, &error));
+    CHECK(!gdox_source_is_valid(&source));
+    CHECK(fake.closed);
+    CHECK(fake.write_count == write_count);
+    CHECK(fake.reset_count == 0U);
+    return true;
+}
+
 static bool test_detected_xgd2_success_and_restore(void)
 {
     fake_asus fake;
@@ -1266,6 +1393,8 @@ int main(void)
         || !test_descriptor_rejection_restores()
         || !test_failed_open_transport_prepare_retry()
         || !test_failed_open_restoration_retry()
+        || !test_close_restores_after_disc_removal()
+        || !test_close_releases_disconnected_drive()
         || !test_detected_xgd2_success_and_restore()
         || !test_detected_xgd2_failures_restore()
         || !test_detected_profiles_use_one_transport()

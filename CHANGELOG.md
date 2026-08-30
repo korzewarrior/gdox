@@ -1,5 +1,12 @@
 # changes
 
+## 0.2.4
+
+- let the ASUS SDRW-08D1S-U/A202 finish safe restoration after its disc is
+  removed once all ten volatile-memory fields verify at stock
+- release the stale Windows command channel after a confirmed ASUS USB
+  disconnect, whose power loss has already cleared the drive's volatile state
+
 ## 0.2.3
 
 - add exact-gated experimental Original Xbox support for the

@@ -56,6 +56,12 @@ typedef struct gdox_scsi_transport_ops {
         size_t output_bytes,
         size_t *sense_bytes
     );
+    /* Optional. Reports whether the exact transport device is still present. */
+    bool (*device_present)(
+        const void *context,
+        bool *present,
+        gdox_error *error
+    );
 } gdox_scsi_transport_ops;
 
 struct gdox_scsi_transport {
@@ -100,6 +106,11 @@ bool gdox_scsi_transport_last_sense(
     uint8_t *output,
     size_t output_bytes,
     size_t *sense_bytes
+);
+bool gdox_scsi_transport_device_present(
+    const gdox_scsi_transport *transport,
+    bool *present,
+    gdox_error *error
 );
 bool gdox_scsi_transport_prepare_close(
     gdox_scsi_transport *transport,

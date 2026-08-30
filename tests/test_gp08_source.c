@@ -453,6 +453,7 @@ static const gdox_scsi_transport_ops fake_ops = {
     fake_close,
     fake_prepare_close,
     NULL,
+    NULL,
 };
 
 static bool fake_open(

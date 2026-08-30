@@ -780,6 +780,7 @@ static const gdox_scsi_transport_ops usb_ops = {
     usb_close,
     usb_prepare_close,
     NULL,
+    NULL,
 };
 
 #if defined(__linux__) && !defined(__ANDROID__)

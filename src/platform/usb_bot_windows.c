@@ -21,6 +21,7 @@
 
 typedef struct gdox_windows_scsi_context {
     HANDLE device;
+    gdox_usb_bot_identity identity;
     uint8_t last_sense[GDOX_WINDOWS_SENSE_BYTES];
     size_t last_sense_bytes;
 } gdox_windows_scsi_context;
@@ -327,6 +328,12 @@ static bool windows_last_sense(
     return true;
 }
 
+static bool windows_device_present(
+    const void *raw_context,
+    bool *present,
+    gdox_error *error
+);
+
 static const gdox_scsi_transport_ops windows_ops = {
     windows_command_in,
     windows_command_out,
@@ -335,6 +342,7 @@ static const gdox_scsi_transport_ops windows_ops = {
     windows_close,
     NULL,
     windows_last_sense,
+    windows_device_present,
 };
 
 static bool descriptor_string_copy(
@@ -623,6 +631,7 @@ bool gdox_usb_bot_open(
         return false;
     }
     context->device = device;
+    context->identity = requested_identity;
     transport->context = context;
     transport->ops = &windows_ops;
     return true;
@@ -867,5 +876,21 @@ bool gdox_usb_bot_present_all(
     for (index = 0U; index < GDOX_USB_BOT_IDENTITY_COUNT; ++index) {
         drive_present[index] = observations[index].drive_present;
     }
+    return true;
+}
+
+static bool windows_device_present(
+    const void *raw_context,
+    bool *present,
+    gdox_error *error
+)
+{
+    const gdox_windows_scsi_context *context = raw_context;
+    bool drive_present[GDOX_USB_BOT_IDENTITY_COUNT];
+
+    if (!gdox_usb_bot_present_all(drive_present, error)) {
+        return false;
+    }
+    *present = drive_present[(size_t)context->identity];
     return true;
 }

@@ -120,6 +120,7 @@ static const gdox_scsi_transport_ops test_ops = {
     close_transport,
     prepare_close_transport,
     NULL,
+    NULL,
 };
 
 void gdox_test_scsi_transport(void)

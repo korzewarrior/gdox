@@ -149,6 +149,36 @@ bool gdox_scsi_transport_last_sense(
     );
 }
 
+bool gdox_scsi_transport_device_present(
+    const gdox_scsi_transport *transport,
+    bool *present,
+    gdox_error *error
+)
+{
+    gdox_error_clear(error);
+    if (!gdox_scsi_transport_is_valid(transport) || present == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_INVALID_ARGUMENT,
+            "open transport and presence output are required"
+        );
+        return false;
+    }
+    if (transport->ops->device_present == NULL) {
+        gdox_error_set(
+            error,
+            GDOX_ERROR_UNSUPPORTED,
+            "transport cannot confirm device presence"
+        );
+        return false;
+    }
+    return transport->ops->device_present(
+        transport->context,
+        present,
+        error
+    );
+}
+
 bool gdox_scsi_transport_prepare_close(
     gdox_scsi_transport *transport,
     gdox_error *error

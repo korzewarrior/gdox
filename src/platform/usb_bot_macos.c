@@ -261,6 +261,7 @@ static const gdox_scsi_transport_ops macos_ops = {
     macos_close,
     NULL,
     macos_last_sense,
+    NULL,
 };
 
 static bool supported_identity(gdox_usb_bot_identity identity)
