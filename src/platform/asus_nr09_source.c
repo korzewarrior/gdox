@@ -379,14 +379,12 @@ static bool read_state(
         );
 }
 
-static bool state_matches(
+static bool state_memory_matches(
     const gdox_asus_media_profile *profile,
     const gdox_asus_state *state,
     bool live
 )
 {
-    const uint32_t expected_lba =
-        live ? profile->live_last_lba : profile->stock_last_lba;
     size_t index;
 
     for (index = 0U; index < GDOX_ASUS_FIELD_COUNT; ++index) {
@@ -411,9 +409,58 @@ static bool state_matches(
             state->complemented_start,
             profile->fixed_complemented_start,
             sizeof(state->complemented_start)
-        ) == 0
+        ) == 0;
+}
+
+static bool state_matches(
+    const gdox_asus_media_profile *profile,
+    const gdox_asus_state *state,
+    bool live
+)
+{
+    const uint32_t expected_lba =
+        live ? profile->live_last_lba : profile->stock_last_lba;
+    return state_memory_matches(profile, state, live)
         && state->last_lba == expected_lba
         && state->block_size == GDOX_LOGICAL_SECTOR_BYTES;
+}
+
+static bool last_sense_is_no_medium(const gdox_scsi_transport *transport)
+{
+    uint8_t sense[32] = {0};
+    size_t sense_bytes = 0U;
+    uint8_t sense_key;
+    uint8_t additional_code;
+
+    if (!gdox_scsi_transport_last_sense(
+            transport,
+            sense,
+            sizeof(sense),
+            &sense_bytes
+        )) {
+        return false;
+    }
+    switch (sense[0] & 0x7fU) {
+    case 0x70U:
+    case 0x71U:
+        if (sense_bytes < 13U) {
+            return false;
+        }
+        sense_key = sense[2] & 0x0fU;
+        additional_code = sense[12];
+        break;
+    case 0x72U:
+    case 0x73U:
+        if (sense_bytes < 3U) {
+            return false;
+        }
+        sense_key = sense[1] & 0x0fU;
+        additional_code = sense[2];
+        break;
+    default:
+        return false;
+    }
+    return sense_key == 0x02U && additional_code == 0x3aU;
 }
 
 static bool state_is_known_partial(
@@ -477,7 +524,7 @@ static const gdox_asus_media_profile *select_known_profile(
 
 static bool apply_live(gdox_asus_context *context, gdox_error *error)
 {
-    gdox_asus_state observed;
+    gdox_asus_state observed = {0};
     size_t index;
 
     for (index = 0U; index < GDOX_ASUS_FIELD_COUNT; ++index) {
@@ -524,7 +571,7 @@ static bool restore_stock(gdox_asus_context *context, gdox_error *error)
     };
     gdox_error first_error;
     gdox_error current;
-    gdox_asus_state observed;
+    gdox_asus_state observed = {0};
     bool command_failed = false;
     size_t index;
 
@@ -547,7 +594,21 @@ static bool restore_stock(gdox_asus_context *context, gdox_error *error)
             NULL,
             &observed,
             &current
-        ) && state_matches(context->profile, &observed, false)) {
+        )) {
+        if (state_matches(context->profile, &observed, false)) {
+            return true;
+        }
+        gdox_error_set(
+            &current,
+            GDOX_ERROR_TRANSPORT,
+            "stock ASUS NR09 volatile state did not verify"
+        );
+    } else if (last_sense_is_no_medium(&context->transport)
+        && state_memory_matches(context->profile, &observed, false)) {
+        /*
+         * READ CAPACITY requires media. The eight writable fields and the
+         * two fixed fields already prove that the drive is back at stock.
+         */
         return true;
     }
     if (command_failed) {
@@ -562,6 +623,19 @@ static bool restore_stock(gdox_asus_context *context, gdox_error *error)
         );
     }
     return false;
+}
+
+static bool transport_is_confirmed_absent(gdox_asus_context *context)
+{
+    gdox_error ignored;
+    bool present = true;
+
+    return gdox_scsi_transport_device_present(
+            &context->transport,
+            &present,
+            &ignored
+        )
+        && !present;
 }
 
 static bool restore_stock_after_streaming(
@@ -1046,7 +1120,18 @@ static bool asus_prepare_close(void *raw_context, gdox_error *error)
     gdox_error_clear(&restore_error);
     if (gdox_mutex_lock(&context->mutex)) {
         if (context->active) {
-            restored = restore_stock_after_streaming(context, &restore_error);
+            if (transport_is_confirmed_absent(context)) {
+                /* USB power loss clears every ASUS NR09 volatile field. */
+                restored = true;
+            } else {
+                restored = restore_stock_after_streaming(
+                    context,
+                    &restore_error
+                );
+                if (!restored && transport_is_confirmed_absent(context)) {
+                    restored = true;
+                }
+            }
             if (restored) {
                 context->active = false;
             }

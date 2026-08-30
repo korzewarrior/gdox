@@ -51,7 +51,12 @@ last, then reads the complete state back. Restoration writes the capacity
 field first, restores the remaining fields, and verifies the complete original
 state. Initialization, validation, read recovery, normal shutdown, and failed
 shutdown all use the same restoration contract. If transport loss prevents
-verification, GDOX asks for a drive power cycle.
+verification while the drive is still connected, GDOX asks for a drive power
+cycle. When no disc is present, restoration succeeds after all ten memory
+fields verify at stock; `READ CAPACITY(10)` is intentionally skipped because
+that command requires media. On Windows, a confirmed USB disconnect releases
+the stale command channel because power loss has already cleared the volatile
+state.
 
 ## Disc validation and reads
 

@@ -163,6 +163,7 @@ static const gdox_scsi_transport_ops fake_ops = {
     close_transport,
     NULL,
     last_sense,
+    NULL,
 };
 
 static void test_inquiry(void)

@@ -30,6 +30,12 @@ On Windows, keep the standard Microsoft CD-ROM and USB mass-storage drivers
 assigned to the drive. GDOX uses Windows' native optical command channel; a
 WinUSB or other replacement driver prevents that path from opening.
 
+Current GDOX builds can finish ASUS A202 restoration after the disc has been
+removed, and release an expired Windows command channel after the USB-powered
+drive is confirmed disconnected. If an older build is already stuck on a
+restoration warning, leave the drive unplugged, end `gdox.exe` in Task Manager,
+and restart Windows before reconnecting it.
+
 ## macOS says the disc was mounted first
 
 Leave GDOX open, eject the disc, and insert it again. The mount guard normally
