@@ -6,6 +6,7 @@
 
 #include "core/xemu_capabilities.h"
 #include "platform/xemu_helper_process.h"
+#include "platform/portable_sync.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -17,6 +18,7 @@
 #include <windows.h>
 #else
 #include <time.h>
+#include <unistd.h>
 #endif
 
 static bool capability_environment_isolated(void)
@@ -89,6 +91,28 @@ int gdox_test_xemu_capabilities(void)
 {
     const char *mode = getenv("GDOX_TEST_XEMU_CAPABILITY_MODE");
 
+    if (mode != NULL && (strcmp(mode, "continuous-stdout") == 0
+            || strcmp(mode, "continuous-stderr") == 0)) {
+        const bool diagnostic = strcmp(mode, "continuous-stderr") == 0;
+        FILE *stream = diagnostic ? stderr : stdout;
+        char chunk[8192];
+        const uint64_t started_ms = gdox_monotonic_ms();
+#if defined(_WIN32)
+        const unsigned long pid = GetCurrentProcessId();
+#else
+        const unsigned long pid = (unsigned long)getpid();
+#endif
+        memset(chunk, 'x', sizeof(chunk));
+        (void)setvbuf(stream, NULL, _IONBF, 0U);
+        (void)fprintf(stream, "%lu\n", pid);
+        /* A ceiling keeps a broken parent from leaving permanent writers. */
+        while (gdox_monotonic_ms() - started_ms < UINT64_C(10000)) {
+            if (fwrite(chunk, 1U, sizeof(chunk), stream) != sizeof(chunk)) {
+                return 10;
+            }
+        }
+        return 11;
+    }
     if (mode != NULL && strcmp(mode, "hang") == 0) {
 #if defined(_WIN32)
         Sleep(10000U);

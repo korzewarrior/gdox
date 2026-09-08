@@ -24,9 +24,7 @@ constexpr int desktop_width = 880;
 constexpr int desktop_height = 680;
 constexpr int desktop_min_width = 680;
 constexpr int desktop_min_height = 560;
-constexpr unsigned int shutdown_attempts = 4U;
 constexpr auto shutdown_retry_delay = std::chrono::milliseconds(100);
-constexpr auto shutdown_recovery_delay = std::chrono::seconds(1);
 constexpr auto gaming_playback_poll_delay = std::chrono::milliseconds(100);
 
 bool gaming_mode()
@@ -203,18 +201,36 @@ void import_dropped_files(gdox_app &app)
         return;
     }
     const FilePathList dropped = LoadDroppedFiles();
+    gdox::ui::clear_notice();
     for (unsigned int index = 0U; index < dropped.count; ++index) {
         (void)gdox_app_import_firmware(&app, dropped.paths[index]);
     }
     UnloadDroppedFiles(dropped);
 }
 
-bool draw_frame(gdox_app &app, bool deck)
+bool draw_frame(gdox_app &app, bool deck, bool closing = false)
 {
     BeginDrawing();
     ClearBackground(background);
     rlImGuiBegin();
-    const bool quit_requested = gdox::ui::draw_application(app, deck);
+    bool quit_requested = false;
+    if (closing) {
+        const gdox_app_snapshot *snapshot = gdox_app_snapshot_get(&app);
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+        ImGui::Begin("##closing", nullptr,
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::TextUnformatted("Closing GDOX");
+        ImGui::Spacing();
+        ImGui::TextWrapped("%s", snapshot->drive);
+        ImGui::TextWrapped("%s", snapshot->notice);
+        if (snapshot->pending_cleanup_count != 0U) {
+            ImGui::TextWrapped("%s", snapshot->pending_cleanup_notice);
+        }
+        ImGui::End();
+    } else {
+        quit_requested = gdox::ui::draw_application(app, deck);
+    }
     rlImGuiEnd();
     EndDrawing();
     return quit_requested;
@@ -227,41 +243,31 @@ void close_desktop_window()
     CloseWindow();
 }
 
-bool shutdown_application_batch(gdox_app &app, gdox_error &error)
-{
-    for (unsigned int attempt = 0U; attempt < shutdown_attempts; ++attempt) {
-        if (gdox_app_shutdown(&app, &error)) {
-            return true;
-        }
-        if (app.runtime == nullptr) {
-            return false;
-        }
-        if (attempt + 1U < shutdown_attempts) {
-            std::this_thread::sleep_for(shutdown_retry_delay);
-        }
-    }
-    return false;
-}
-
-bool shutdown_application(gdox_app &app)
+bool shutdown_application(gdox_app &app, gdox_app_background *background_host)
 {
     gdox_error error;
 
-    while (!shutdown_application_batch(app, error)) {
+    while (!gdox_app_shutdown(&app, &error)) {
         if (app.runtime == nullptr) {
-            std::fprintf(
-                stderr,
-                "GDOX: shutdown completed with an error: %s\n",
-                error.message
-            );
+            std::fprintf(stderr, "GDOX: shutdown completed with an error: %s\n",
+                error.message);
             return false;
         }
-        std::fprintf(
-            stderr,
-            "GDOX: shutdown is waiting for safe device cleanup: %s\n",
-            error.message
-        );
-        std::this_thread::sleep_for(shutdown_recovery_delay);
+        /* This also dispatches WM_ENDSESSION while the desktop window is
+         * hidden. The native callback guards recursive shutdown requests. */
+        (void)gdox_app_background_poll(background_host, !IsWindowReady());
+        if (app.runtime == nullptr) {
+            /* A native end-session callback completed cleanup while pumping. */
+            return true;
+        }
+        gdox_app_tick(&app);
+        gdox_app_background_set_status(background_host, app.snapshot.notice);
+        if (IsWindowReady()) {
+            /* The existing runtime worker restores the drive; the window keeps
+             * repainting and pumping OS events until that owner is released. */
+            (void)draw_frame(app, gaming_mode(), true);
+        }
+        std::this_thread::sleep_for(shutdown_retry_delay);
     }
     return true;
 }
@@ -269,7 +275,9 @@ bool shutdown_application(gdox_app &app)
 #if defined(_WIN32)
 struct native_shutdown_context {
     gdox_app *app;
+    gdox_app_background *background_host;
     bool initialized;
+    bool in_progress;
     bool complete;
     bool success;
 };
@@ -281,8 +289,27 @@ void complete_native_shutdown(void *opaque)
     if (context == nullptr || !context->initialized || context->complete) {
         return;
     }
-    context->success = shutdown_application(*context->app);
-    context->complete = true;
+    if (context->in_progress) {
+        /* Windows can end the process as soon as WM_ENDSESSION returns. If it
+         * arrives during normal Quit, finish polling the same worker without
+         * entering another render/message loop or starting cleanup twice. */
+        gdox_error error;
+        while (!(context->success = gdox_app_shutdown(context->app, &error))) {
+            if (context->app->runtime == nullptr) {
+                break;
+            }
+            std::this_thread::sleep_for(shutdown_retry_delay);
+        }
+        context->complete = true;
+        return;
+    }
+    context->in_progress = true;
+    const bool success = shutdown_application(*context->app, context->background_host);
+    if (!context->complete) {
+        context->success = success;
+        context->complete = true;
+    }
+    context->in_progress = false;
 }
 #endif
 
@@ -317,7 +344,7 @@ int run_application(bool start_hidden)
     bool another_instance = false;
     bool window_open = false;
 #if defined(_WIN32)
-    native_shutdown_context native_shutdown{&app, false, false, false};
+    native_shutdown_context native_shutdown{&app, nullptr, false, false, false, false};
 #endif
 #if defined(__APPLE__)
     bool close_requested_during_window_initialization = false;
@@ -342,6 +369,7 @@ int run_application(bool start_hidden)
     gdox_gamepad_input_initialize(&ui_state.gamepad);
     background_host = deck ? nullptr : gdox_app_background_create();
 #if defined(_WIN32)
+    native_shutdown.background_host = background_host;
     gdox_app_background_set_shutdown_handler(
         background_host,
         complete_native_shutdown,
@@ -513,15 +541,12 @@ int run_application(bool start_hidden)
     }
 
 #if defined(_WIN32)
-    if (!native_shutdown.complete) {
-        if (!shutdown_application(app)) {
-            exit_code = 1;
-        }
-    } else if (!native_shutdown.success) {
+    complete_native_shutdown(&native_shutdown);
+    if (!native_shutdown.success) {
         exit_code = 1;
     }
 #else
-    if (!shutdown_application(app)) {
+    if (!shutdown_application(app, background_host)) {
         exit_code = 1;
     }
 #endif

@@ -189,15 +189,16 @@ bool draw_header(gdox_app &app, const gdox_app_snapshot &snapshot)
 void draw_footer(const gdox_app_snapshot &snapshot, bool gaming_mode)
 {
     ImGui::TextColored(muted, "%s", snapshot.status);
-    if (ui_notice[0] != '\0') {
-        const float notice_width = ImGui::CalcTextSize(ui_notice.data()).x;
+    const char *notice = ui_notice[0] != '\0' ? ui_notice.data() : snapshot.notice;
+    if (notice[0] != '\0') {
+        const float notice_width = ImGui::CalcTextSize(notice).x;
         ImGui::SameLine(
             std::max(
                 ImGui::GetCursorPosX(),
                 ImGui::GetWindowContentRegionMax().x - notice_width
             )
         );
-        ImGui::TextColored(warning, "%s", ui_notice.data());
+        ImGui::TextColored(warning, "%s", notice);
     } else {
         const char *controls = gaming_mode
             ? "D-pad navigate  |  A select  |  LB/RB pages"
@@ -411,6 +412,11 @@ void initialize_presentation()
 void shutdown_presentation()
 {
     detail::shutdown_dialogs();
+}
+
+void clear_notice()
+{
+    detail::set_notice("");
 }
 
 bool draw_application(gdox_app &app, bool gaming_mode)

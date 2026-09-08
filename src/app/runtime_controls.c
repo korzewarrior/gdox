@@ -3,6 +3,7 @@
 #include "app/runtime_playback.h"
 #include "app/runtime_xenia.h"
 #include "app/runtime_drives.h"
+#include "app/runtime_setup.h"
 #include "platform/user_storage.h"
 
 #include <stdio.h>
@@ -15,6 +16,9 @@ static bool enqueue_request(
 )
 {
     if (!runtime->device_selection_requested
+        && (!runtime->setup_request_pending
+            || request->kind == GDOX_RUNTIME_REQUEST_APPLY_DISPLAY)
+        && !atomic_load_explicit(&runtime->stopping, memory_order_acquire)
         && gdox_runtime_request_enqueue(&runtime->requests, request)) {
         return true;
     }
@@ -35,104 +39,19 @@ static bool enqueue_simple_request(
     return enqueue_request(runtime, &request);
 }
 
-static bool persist_preferences(
-    gdox_runtime *runtime,
-    const gdox_preferences *preferences
-)
-{
-    gdox_error error;
-
-    if (gdox_preferences_save(preferences, &error)) {
-        return true;
-    }
-    if (gdox_mutex_lock(&runtime->mutex)) {
-        (void)snprintf(
-            runtime->snapshot.notice,
-            sizeof(runtime->snapshot.notice),
-            "Could not save settings: %.132s",
-            error.message
-        );
-        gdox_mutex_unlock(&runtime->mutex);
-    }
-    return false;
-}
-
-static bool import_firmware(
-    gdox_runtime *runtime,
-    const char *path,
-    bool detect_kind,
-    gdox_firmware_kind requested_kind
-)
-{
-    gdox_runtime_bundle_status bundle;
-    gdox_firmware_kind kind = requested_kind;
-    gdox_error error;
-    char executable_override[GDOX_EMULATOR_PATH_CAPACITY];
-    bool imported;
-
-    if (runtime == NULL || path == NULL || path[0] == '\0') {
-        return false;
-    }
-    if (!gdox_mutex_lock(&runtime->mutex)) {
-        return false;
-    }
-    gdox_runtime_copy_text(
-        executable_override,
-        sizeof(executable_override),
-        runtime->snapshot.settings.xemu_override
-    );
-    gdox_mutex_unlock(&runtime->mutex);
-    imported = detect_kind
-        ? gdox_runtime_bundle_import_firmware_auto(
-              path, executable_override, &kind, &bundle, &error
-          )
-        : gdox_runtime_bundle_import_firmware(
-              requested_kind,
-              path,
-              executable_override,
-              &bundle,
-              &error
-          );
-    if (!imported) {
-        if (gdox_mutex_lock(&runtime->mutex)) {
-            (void)snprintf(
-                runtime->snapshot.notice,
-                sizeof(runtime->snapshot.notice),
-                "Firmware import: %.140s",
-                error.message
-            );
-            gdox_mutex_unlock(&runtime->mutex);
-        }
-        return false;
-    }
-    if (gdox_mutex_lock(&runtime->mutex)) {
-        runtime->bundle = bundle;
-        gdox_runtime_copy_bundle_status(&runtime->snapshot, &bundle);
-        gdox_runtime_describe_bundle(&runtime->snapshot, &bundle);
-        gdox_runtime_copy_text(
-            runtime->snapshot.notice,
-            sizeof(runtime->snapshot.notice),
-            kind == GDOX_FIRMWARE_MCPX ? "MCPX boot ROM imported"
-                                       : "Xbox BIOS imported"
-        );
-        gdox_mutex_unlock(&runtime->mutex);
-    }
-    return true;
-}
-
 bool gdox_runtime_import_firmware(gdox_runtime *runtime, const char *path)
 {
-    return import_firmware(runtime, path, true, GDOX_FIRMWARE_MCPX);
+    return gdox_runtime_setup_submit(runtime, GDOX_RUNTIME_REQUEST_IMPORT_FIRMWARE, path);
 }
 
 bool gdox_runtime_import_mcpx(gdox_runtime *runtime, const char *path)
 {
-    return import_firmware(runtime, path, false, GDOX_FIRMWARE_MCPX);
+    return gdox_runtime_setup_submit(runtime, GDOX_RUNTIME_REQUEST_IMPORT_MCPX, path);
 }
 
 bool gdox_runtime_import_bios(gdox_runtime *runtime, const char *path)
 {
-    return import_firmware(runtime, path, false, GDOX_FIRMWARE_FLASH);
+    return gdox_runtime_setup_submit(runtime, GDOX_RUNTIME_REQUEST_IMPORT_BIOS, path);
 }
 
 gdox_runtime_destroy_result gdox_runtime_destroy(
@@ -140,78 +59,44 @@ gdox_runtime_destroy_result gdox_runtime_destroy(
     gdox_error *error
 )
 {
-    gdox_error cleanup_error;
-    gdox_error terminal_error;
-    gdox_runtime_playback_owner cleanup_owner;
     bool terminal_failure;
+    gdox_error terminal_error;
 
     gdox_error_clear(error);
     if (runtime == NULL) {
         return GDOX_RUNTIME_DESTROYED;
     }
-    atomic_store_explicit(&runtime->stopping, true, memory_order_release);
+    if (!atomic_exchange_explicit(&runtime->stopping, true, memory_order_acq_rel)
+        && gdox_mutex_lock(&runtime->mutex)) {
+        gdox_runtime_copy_text(runtime->snapshot.status,
+            sizeof(runtime->snapshot.status), "Closing GDOX");
+        gdox_runtime_copy_text(runtime->snapshot.notice,
+            sizeof(runtime->snapshot.notice),
+            "Waiting for the current operation and safe drive cleanup");
+        gdox_mutex_unlock(&runtime->mutex);
+    }
     atomic_store_explicit(
         &runtime->preservation_cancelled, true, memory_order_release
     );
     if (runtime->thread_started) {
+        /* The worker owns in-flight drive commands and their restoration.
+         * Poll completion so the UI can keep processing events while it exits. */
+        if (!atomic_load_explicit(&runtime->worker_finished, memory_order_acquire)) {
+            gdox_error_set(error, GDOX_ERROR_IO,
+                "Waiting for the current operation and safe drive cleanup");
+            return GDOX_RUNTIME_DESTROY_RETRY;
+        }
         if (!gdox_thread_join(&runtime->thread)) {
-            gdox_error_set(
-                error,
-                GDOX_ERROR_INTERNAL,
-                "runtime worker could not be joined; ownership retained"
-            );
+            gdox_error_set(error, GDOX_ERROR_INTERNAL,
+                "runtime worker could not be joined; ownership retained");
             return GDOX_RUNTIME_DESTROY_RETRY;
         }
         runtime->thread_started = false;
+    } else if (!gdox_runtime_cleanup(runtime, error)) {
+        return GDOX_RUNTIME_DESTROY_RETRY;
     }
     terminal_failure = runtime->terminal_shutdown_failed;
     terminal_error = runtime->terminal_shutdown_error;
-    cleanup_owner = runtime->playback_owner;
-    if (!gdox_runtime_playback_shutdown(runtime, &cleanup_error)
-        && !gdox_runtime_playback_running(runtime)
-        && (cleanup_owner == GDOX_RUNTIME_PLAYBACK_XEMU
-            || (cleanup_owner == GDOX_RUNTIME_PLAYBACK_XENIA
-                && !runtime->xenia_storage.session.active))) {
-        terminal_failure = true;
-        terminal_error = cleanup_error;
-        runtime->terminal_shutdown_failed = true;
-        runtime->terminal_shutdown_error = cleanup_error;
-    }
-    if (gdox_runtime_playback_running(runtime)) {
-        if (gdox_error_is_set(&cleanup_error)) {
-            *error = cleanup_error;
-        } else {
-            gdox_error_set(
-                error,
-                GDOX_ERROR_IO,
-                "playback cleanup is incomplete; ownership retained"
-            );
-        }
-        return GDOX_RUNTIME_DESTROY_RETRY;
-    }
-    if (!gdox_runtime_xenia_cleanup(runtime, &cleanup_error)) {
-        *error = cleanup_error;
-        return GDOX_RUNTIME_DESTROY_RETRY;
-    }
-    if (gdox_runtime_media_is_owned(&runtime->media)) {
-        if (!gdox_runtime_media_close(&runtime->media, &cleanup_error)
-            && gdox_runtime_media_is_owned(&runtime->media)) {
-            if (gdox_error_is_set(&cleanup_error)) {
-                *error = cleanup_error;
-            } else {
-                gdox_error_set(
-                    error,
-                    GDOX_ERROR_IO,
-                    "media cleanup is incomplete; ownership retained"
-                );
-            }
-            return GDOX_RUNTIME_DESTROY_RETRY;
-        }
-    }
-    if (!gdox_runtime_drives_close_pending(runtime, &cleanup_error)) {
-        *error = cleanup_error;
-        return GDOX_RUNTIME_DESTROY_RETRY;
-    }
     gdox_mutex_destroy(&runtime->mutex);
     free(runtime);
     if (terminal_failure) {
@@ -227,6 +112,69 @@ gdox_runtime_destroy_result gdox_runtime_destroy(
         return GDOX_RUNTIME_DESTROYED_WITH_ERROR;
     }
     return GDOX_RUNTIME_DESTROYED;
+}
+
+bool gdox_runtime_cleanup(gdox_runtime *runtime, gdox_error *error)
+{
+    gdox_error cleanup_error;
+    gdox_runtime_playback_owner cleanup_owner;
+
+    gdox_error_clear(error);
+    /* Persist accepted settings once before a potentially long restoration.
+     * A settings failure never blocks cleanup or replaces a checkpoint error. */
+    if (!runtime->shutdown_preferences_attempted) {
+        runtime->shutdown_preferences_attempted = true;
+        if (!gdox_runtime_setup_flush_preferences(runtime, true, &cleanup_error)
+            && !runtime->terminal_shutdown_failed) {
+            runtime->terminal_shutdown_failed = true;
+            runtime->terminal_shutdown_error = cleanup_error;
+        }
+    }
+    cleanup_owner = runtime->playback_owner;
+    if (!gdox_runtime_playback_shutdown(runtime, &cleanup_error)
+        && !gdox_runtime_playback_running(runtime)
+        && (cleanup_owner == GDOX_RUNTIME_PLAYBACK_XEMU
+            || (cleanup_owner == GDOX_RUNTIME_PLAYBACK_XENIA
+                && !runtime->xenia_storage.session.active))) {
+        runtime->terminal_shutdown_failed = true;
+        runtime->terminal_shutdown_error = cleanup_error;
+    }
+    if (gdox_runtime_playback_running(runtime)) {
+        if (gdox_error_is_set(&cleanup_error)) {
+            *error = cleanup_error;
+        } else {
+            gdox_error_set(
+                error,
+                GDOX_ERROR_IO,
+                "playback cleanup is incomplete; ownership retained"
+            );
+        }
+        return false;
+    }
+    if (!gdox_runtime_xenia_cleanup(runtime, &cleanup_error)) {
+        *error = cleanup_error;
+        return false;
+    }
+    if (gdox_runtime_media_is_owned(&runtime->media)) {
+        if (!gdox_runtime_media_close(&runtime->media, &cleanup_error)
+            && gdox_runtime_media_is_owned(&runtime->media)) {
+            if (gdox_error_is_set(&cleanup_error)) {
+                *error = cleanup_error;
+            } else {
+                gdox_error_set(
+                    error,
+                    GDOX_ERROR_IO,
+                    "media cleanup is incomplete; ownership retained"
+                );
+            }
+            return false;
+        }
+    }
+    if (!gdox_runtime_drives_close_pending(runtime, &cleanup_error)) {
+        *error = cleanup_error;
+        return false;
+    }
+    return true;
 }
 
 void gdox_runtime_copy_snapshot(
@@ -245,15 +193,14 @@ void gdox_runtime_copy_snapshot(
 
 void gdox_runtime_set_auto_start(gdox_runtime *runtime, bool enabled)
 {
-    gdox_preferences preferences;
-
     if (runtime != NULL && gdox_mutex_lock(&runtime->mutex)) {
+        if (atomic_load_explicit(&runtime->stopping, memory_order_acquire)) {
+            gdox_mutex_unlock(&runtime->mutex);
+            return;
+        }
         runtime->snapshot.settings.auto_start = enabled;
-        gdox_runtime_preferences_from_snapshot(
-            &runtime->snapshot, &preferences
-        );
+        gdox_runtime_setup_mark_preferences_dirty(runtime);
         gdox_mutex_unlock(&runtime->mutex);
-        (void)persist_preferences(runtime, &preferences);
     }
 }
 
@@ -370,7 +317,6 @@ void gdox_runtime_set_display(
     uint16_t window_height
 )
 {
-    gdox_preferences preferences;
     uint8_t effective_scale;
 
     if (runtime == NULL || internal_resolution_scale < 1U
@@ -389,6 +335,10 @@ void gdox_runtime_set_display(
         runtime->host_profile, internal_resolution_scale
     );
     if (gdox_mutex_lock(&runtime->mutex)) {
+        if (atomic_load_explicit(&runtime->stopping, memory_order_acquire)) {
+            gdox_mutex_unlock(&runtime->mutex);
+            return;
+        }
         runtime->snapshot.settings.internal_resolution_scale =
             effective_scale;
         runtime->snapshot.settings.display_aspect = aspect;
@@ -399,90 +349,14 @@ void gdox_runtime_set_display(
         (void)enqueue_simple_request(
             runtime, GDOX_RUNTIME_REQUEST_APPLY_DISPLAY
         );
-        gdox_runtime_preferences_from_snapshot(
-            &runtime->snapshot, &preferences
-        );
+        gdox_runtime_setup_mark_preferences_dirty(runtime);
         gdox_mutex_unlock(&runtime->mutex);
-        (void)persist_preferences(runtime, &preferences);
     }
 }
 
 bool gdox_runtime_set_xemu_override(gdox_runtime *runtime, const char *path)
 {
-    gdox_runtime_bundle_status bundle;
-    gdox_preferences preferences;
-    gdox_error error;
-    const char *selected = path != NULL ? path : "";
-
-    gdox_error_clear(&error);
-    if (runtime == NULL) {
-        return false;
-    }
-    if (strlen(selected) >= GDOX_EMULATOR_PATH_CAPACITY
-        || strchr(selected, '\n') != NULL || strchr(selected, '\r') != NULL
-        || !gdox_runtime_bundle_prepare(
-            selected, &bundle, &error
-        )) {
-        if (error.code == GDOX_ERROR_NONE) {
-            gdox_error_set(
-                &error,
-                GDOX_ERROR_INVALID_ARGUMENT,
-                "selected xemu path is invalid"
-            );
-        }
-        if (gdox_mutex_lock(&runtime->mutex)) {
-            (void)snprintf(
-                runtime->snapshot.notice,
-                sizeof(runtime->snapshot.notice),
-                "xemu selection: %.140s",
-                error.message
-            );
-            gdox_mutex_unlock(&runtime->mutex);
-        }
-        return false;
-    }
-    if (!bundle.xemu_available || !bundle.configuration_ready) {
-        gdox_error_set(
-            &error, GDOX_ERROR_NOT_FOUND, "selected xemu could not be prepared"
-        );
-        if (gdox_mutex_lock(&runtime->mutex)) {
-            gdox_runtime_copy_text(
-                runtime->snapshot.notice,
-                sizeof(runtime->snapshot.notice),
-                error.message
-            );
-            gdox_mutex_unlock(&runtime->mutex);
-        }
-        return false;
-    }
-    if (!gdox_mutex_lock(&runtime->mutex)) {
-        return false;
-    }
-    runtime->bundle = bundle;
-    gdox_runtime_copy_text(
-        runtime->snapshot.settings.xemu_override,
-        sizeof(runtime->snapshot.settings.xemu_override),
-        selected
-    );
-    gdox_runtime_copy_bundle_status(&runtime->snapshot, &bundle);
-    gdox_runtime_describe_bundle(&runtime->snapshot, &bundle);
-    if (runtime->snapshot.can_preserve) {
-        runtime->snapshot.can_start =
-            !runtime->snapshot.can_close && runtime->snapshot.xemu_ready;
-        runtime->snapshot.can_restart = runtime->snapshot.xemu_ready;
-    }
-    gdox_runtime_copy_text(
-        runtime->snapshot.notice,
-        sizeof(runtime->snapshot.notice),
-        strcmp(selected, GDOX_XEMU_INCLUDED_SELECTION) == 0
-            ? "Using the xemu included with GDOX"
-            : selected[0] == '\0' ? "Using automatically discovered xemu"
-                                   : "Using your selected xemu"
-    );
-    (void)enqueue_simple_request(runtime, GDOX_RUNTIME_REQUEST_APPLY_DISPLAY);
-    gdox_runtime_preferences_from_snapshot(&runtime->snapshot, &preferences);
-    gdox_mutex_unlock(&runtime->mutex);
-    return persist_preferences(runtime, &preferences);
+    return gdox_runtime_setup_submit(runtime, GDOX_RUNTIME_REQUEST_SET_XEMU, path);
 }
 
 bool gdox_runtime_use_bundled_xemu(gdox_runtime *runtime)
@@ -502,7 +376,8 @@ bool gdox_runtime_select_drive(gdox_runtime *runtime, const char *id)
         || !gdox_mutex_lock(&runtime->mutex)) {
         return false;
     }
-    if (runtime->snapshot.can_close
+    if (atomic_load_explicit(&runtime->stopping, memory_order_acquire)
+        || runtime->snapshot.can_close
         || runtime->snapshot.phase == GDOX_RUNTIME_PLAYING
         || runtime->snapshot.phase == GDOX_RUNTIME_PRESERVING
         || runtime->snapshot.phase == GDOX_RUNTIME_PREPARING
@@ -531,7 +406,6 @@ bool gdox_runtime_set_preservation_directory(
     const char *path
 )
 {
-    gdox_preferences preferences;
     gdox_error error;
 
     if (runtime == NULL || path == NULL || path[0] == '\0'
@@ -541,12 +415,16 @@ bool gdox_runtime_set_preservation_directory(
         || !gdox_mutex_lock(&runtime->mutex)) {
         return false;
     }
+    if (atomic_load_explicit(&runtime->stopping, memory_order_acquire)) {
+        gdox_mutex_unlock(&runtime->mutex);
+        return false;
+    }
     gdox_runtime_copy_text(
         runtime->snapshot.settings.preservation_directory,
         sizeof(runtime->snapshot.settings.preservation_directory),
         path
     );
-    gdox_runtime_preferences_from_snapshot(&runtime->snapshot, &preferences);
+    gdox_runtime_setup_mark_preferences_dirty(runtime);
     gdox_mutex_unlock(&runtime->mutex);
-    return persist_preferences(runtime, &preferences);
+    return true;
 }

@@ -1,5 +1,18 @@
 # changes
 
+## 0.2.8
+
+- keep the interface responsive while preparing xemu, importing firmware,
+  and waiting for safe drive cleanup on quit
+- apply queued drive choices before starting another drive scan
+- retain the requested xemu choice when setup fails and show its actual
+  error; on Windows, show the expected path when included xemu is missing
+- serialize settings writes so concurrent UI and drive changes cannot
+  overwrite each other; preserve both firmware files when dropped together
+- enforce xemu helper time limits even when a helper continuously writes output
+- test the complete Windows package after relocation, forced termination,
+  and restart, including runtime setup and preservation of existing user files
+
 ## 0.2.7
 
 - choose a physical drive from Play or Preserve, including multiple USB or

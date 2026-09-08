@@ -49,6 +49,7 @@ void gdox_test_xbe_patch_source(void);
 void gdox_test_xdvdfs(void);
 void gdox_test_xdvdfs_directory_cache(void);
 void gdox_test_xemu_capabilities(void);
+void gdox_test_xemu_helper_drain(void);
 void gdox_test_xemu_performance(void);
 void gdox_test_xemu_save_storage(void);
 void gdox_test_xenia_patches(void);

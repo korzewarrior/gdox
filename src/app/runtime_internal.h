@@ -36,12 +36,17 @@ struct gdox_runtime {
     gdox_thread thread;
     gdox_mutex mutex;
     atomic_bool stopping;
+    atomic_bool worker_finished;
+    bool shutdown_preferences_attempted;
     atomic_bool preservation_cancelled;
     bool thread_started;
     bool terminal_shutdown_failed;
     gdox_error terminal_shutdown_error;
     bool preservation_hold;
     gdox_runtime_request_queue requests;
+    bool setup_request_pending;
+    bool preferences_dirty;
+    bool preferences_save_requested;
     gdox_runtime_snapshot snapshot;
     gdox_runtime_media_session media;
     gdox_runtime_playback_owner playback_owner;
@@ -61,6 +66,8 @@ struct gdox_runtime {
     uint64_t preservation_inventory_refresh_ms;
     gdox_runtime_bundle_status bundle;
 };
+
+bool gdox_runtime_cleanup(gdox_runtime *runtime, gdox_error *error);
 
 void gdox_runtime_copy_text(
     char *output,

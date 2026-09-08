@@ -311,21 +311,36 @@ bool gdox_emulator_discover_bundled_executable(
 )
 {
     wchar_t base[GDOX_WINDOWS_PATH_CAPACITY];
+    wchar_t expected[GDOX_WINDOWS_PATH_CAPACITY];
+    DWORD attributes;
 
     gdox_error_clear(error);
     if (output == NULL) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "emulator path output is required");
         return false;
     }
-    if (module_directory(base)
-        && candidate(base, L"runtime\\xemu\\xemu.exe", output)) {
+    output[0] = '\0';
+    if (!module_directory(base)
+        || !append_wide_path(base, L"runtime\\xemu\\xemu.exe", expected)
+        || !wide_to_utf8(expected, output)) {
+        gdox_error_set(error, GDOX_ERROR_IO,
+            "could not resolve the xemu path beside GDOX");
+        return false;
+    }
+    attributes = GetFileAttributesW(expected);
+    if (attributes != INVALID_FILE_ATTRIBUTES
+        && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0U) {
         return true;
     }
-    output[0] = '\0';
+    if (attributes == INVALID_FILE_ATTRIBUTES
+        && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) {
+        gdox_windows_io_error(error, "could not access included xemu", GetLastError());
+        return false;
+    }
     gdox_error_set(
         error,
         GDOX_ERROR_NOT_FOUND,
-        "included xemu was not found; extract the complete GDOX download"
+        "included xemu was not found at the shown path beside GDOX"
     );
     return false;
 }

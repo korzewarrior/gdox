@@ -6,7 +6,9 @@ param(
 
     [switch]$InteractiveProbe,
 
-    [string]$ResultPath
+    [string]$ResultPath,
+
+    [string]$RuntimeProbe
 )
 
 $ErrorActionPreference = "Stop"
@@ -61,53 +63,91 @@ public static class GdoxWindow {
     public static extern bool IsWindowVisible(IntPtr handle);
 }
 "@
-        $Process = Start-Process `
-            -FilePath $Executable `
-            -ArgumentList "--background" `
-            -WorkingDirectory $PackageRoot `
-            -PassThru
-        $BackgroundWindow = [IntPtr]::Zero
-        for ($Attempt = 0; $Attempt -lt 40; $Attempt++) {
+        $PreservedFiles = @{}
+        if ($RuntimeProbe) {
+            $Firmware = Join-Path $env:GDOX_DATA_HOME "xemu/firmware/bios.bin"
+            New-Item -ItemType Directory -Path (Split-Path $Firmware) -Force | Out-Null
+            # Synthetic size-valid BIOS; no game or copyrighted firmware is booted.
+            [IO.File]::WriteAllBytes($Firmware, [byte[]]::new(262144))
+            $Preferences = Join-Path $env:GDOX_CONFIG_HOME "settings.conf"
+            New-Item -ItemType Directory -Path $env:GDOX_CONFIG_HOME -Force | Out-Null
+            Set-Content -LiteralPath $Preferences -Encoding Ascii -Value @(
+                "schema=1", "auto_start=0", "internal_resolution_scale=2",
+                "display_aspect=0", "display_fit=1", "fullscreen=0",
+                "window_width=880", "window_height=680", "xemu_override=@included"
+            )
+            & $RuntimeProbe --prepare
+            if ($LASTEXITCODE -ne 0) { throw "Included runtime preparation failed." }
+            foreach ($Path in @(
+                $Firmware,
+                $Preferences,
+                (Join-Path $PackageRoot "runtime/xemu/xemu.exe"),
+                (Join-Path $PackageRoot "runtime/hdd/xbox_hdd.qcow2")
+            )) {
+                $PreservedFiles[$Path] = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+            }
+        }
+        $Passes = if ($RuntimeProbe) { 2 } else { 1 }
+        for ($Pass = 0; $Pass -lt $Passes; $Pass++) {
+            $Process = Start-Process `
+                -FilePath $Executable `
+                -ArgumentList "--background" `
+                -WorkingDirectory $PackageRoot `
+                -PassThru
+            $BackgroundWindow = [IntPtr]::Zero
+            for ($Attempt = 0; $Attempt -lt 40; $Attempt++) {
+                $Process.Refresh()
+                if ($Process.HasExited) {
+                    break
+                }
+                $BackgroundWindow = [GdoxWindow]::FindWindow(
+                    "GDOXBackgroundHost",
+                    "GDOX background host"
+                )
+                if ($BackgroundWindow -ne [IntPtr]::Zero) {
+                    break
+                }
+                Start-Sleep -Milliseconds 250
+            }
+            if ($Process.HasExited) {
+                throw "GDOX exited before the background check (code $($Process.ExitCode))."
+            }
+            if ($BackgroundWindow -eq [IntPtr]::Zero) {
+                throw "GDOX did not create its notification-area host."
+            }
+            [uint32]$BackgroundProcessId = 0
+            [void][GdoxWindow]::GetWindowThreadProcessId(
+                $BackgroundWindow,
+                [ref]$BackgroundProcessId
+            )
+            if ($BackgroundProcessId -ne $Process.Id) {
+                throw "The notification-area host belongs to another process."
+            }
+            if ([GdoxWindow]::IsWindowVisible($BackgroundWindow)) {
+                throw "The notification-area host unexpectedly became visible."
+            }
+            Start-Sleep -Seconds $Seconds
             $Process.Refresh()
             if ($Process.HasExited) {
-                break
+                throw "GDOX did not remain active in the notification area."
             }
-            $BackgroundWindow = [GdoxWindow]::FindWindow(
+            if ([GdoxWindow]::FindWindow(
                 "GDOXBackgroundHost",
                 "GDOX background host"
-            )
-            if ($BackgroundWindow -ne [IntPtr]::Zero) {
-                break
+            ) -ne $BackgroundWindow) {
+                throw "GDOX replaced or removed its notification-area host."
             }
-            Start-Sleep -Milliseconds 250
-        }
-        if ($Process.HasExited) {
-            throw "GDOX exited before the background check (code $($Process.ExitCode))."
-        }
-        if ($BackgroundWindow -eq [IntPtr]::Zero) {
-            throw "GDOX did not create its notification-area host."
-        }
-        [uint32]$BackgroundProcessId = 0
-        [void][GdoxWindow]::GetWindowThreadProcessId(
-            $BackgroundWindow,
-            [ref]$BackgroundProcessId
-        )
-        if ($BackgroundProcessId -ne $Process.Id) {
-            throw "The notification-area host belongs to another process."
-        }
-        if ([GdoxWindow]::IsWindowVisible($BackgroundWindow)) {
-            throw "The notification-area host unexpectedly became visible."
-        }
-        Start-Sleep -Seconds $Seconds
-        $Process.Refresh()
-        if ($Process.HasExited) {
-            throw "GDOX did not remain active in the notification area."
-        }
-        if ([GdoxWindow]::FindWindow(
-            "GDOXBackgroundHost",
-            "GDOX background host"
-        ) -ne $BackgroundWindow) {
-            throw "GDOX replaced or removed its notification-area host."
+            if ($Pass + 1 -lt $Passes) {
+                Stop-Process -Id $Process.Id -Force
+                if (-not $Process.WaitForExit(5000)) { throw "Force-close did not finish." }
+                foreach ($Path in $PreservedFiles.Keys) {
+                    if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ne $PreservedFiles[$Path]) {
+                        throw "Force-close changed a persistent runtime file: $Path"
+                    }
+                }
+                & $RuntimeProbe --prepare
+                if ($LASTEXITCODE -ne 0) { throw "Included runtime failed after force-close." }
+            }
         }
         if (-not [GdoxWindow]::PostMessage(
             $BackgroundWindow,
@@ -130,6 +170,15 @@ public static class GdoxWindow {
         }
         if ($Process.ExitCode -ne 0) {
             throw "GDOX exited with code $($Process.ExitCode)."
+        }
+        if ($RuntimeProbe) {
+            & $RuntimeProbe --prepare
+            if ($LASTEXITCODE -ne 0) { throw "Included runtime failed after normal shutdown." }
+            foreach ($Path in $PreservedFiles.Keys) {
+                if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ne $PreservedFiles[$Path]) {
+                    throw "Shutdown changed a persistent runtime file: $Path"
+                }
+            }
         }
         Set-Content -LiteralPath $ResultPath -Value "passed" -Encoding Ascii
     } catch {
@@ -162,6 +211,7 @@ $Arguments = @(
     "-Seconds $Seconds"
     "-InteractiveProbe"
     "-ResultPath `"$ResultPath`""
+    $(if ($RuntimeProbe) { "-RuntimeProbe `"$RuntimeProbe`"" })
 ) -join " "
 $Action = New-ScheduledTaskAction `
     -Execute "powershell.exe" `
@@ -196,6 +246,7 @@ try {
         throw $Result
     }
     Write-Output "windows_background_lifecycle=passed"
+    if ($RuntimeProbe) { Write-Output "windows_runtime_restart=passed" }
 } finally {
     Unregister-ScheduledTask `
         -TaskName $TaskName `

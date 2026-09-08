@@ -37,6 +37,8 @@ typedef enum gdox_runtime_destroy_result {
 } gdox_runtime_destroy_result;
 
 gdox_runtime *gdox_runtime_create(gdox_host_profile host_profile);
+/* Requests shutdown and polls the existing worker. RETRY retains ownership;
+ * callers keep pumping UI events and retry until cleanup completes. */
 gdox_runtime_destroy_result gdox_runtime_destroy(
     gdox_runtime *runtime,
     gdox_error *error

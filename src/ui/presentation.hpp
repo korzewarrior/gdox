@@ -9,6 +9,7 @@ namespace gdox::ui {
 
 void initialize_presentation();
 void shutdown_presentation();
+void clear_notice();
 bool draw_application(gdox_app &app, bool gaming_mode);
 
 }

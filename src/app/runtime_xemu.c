@@ -15,12 +15,21 @@ static bool read_launch_state(
         );
         return false;
     }
+    if (runtime->setup_request_pending) {
+        gdox_mutex_unlock(&runtime->mutex);
+        gdox_error_set(error, GDOX_ERROR_NOT_FOUND, "xemu setup is still being prepared");
+        return false;
+    }
     *bundle = runtime->bundle;
     if (settings != NULL) {
         *settings = runtime->snapshot.settings;
     }
     gdox_mutex_unlock(&runtime->mutex);
     if (!gdox_runtime_bundle_complete(bundle)) {
+        if (gdox_error_is_set(&bundle->setup_error)) {
+            *error = bundle->setup_error;
+            return false;
+        }
         gdox_error_set(
             error,
             GDOX_ERROR_NOT_FOUND,

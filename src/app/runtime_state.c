@@ -1,4 +1,5 @@
 #include "app/runtime_internal.h"
+#include "app/runtime_setup.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -135,7 +136,9 @@ void gdox_runtime_publish(
 
         runtime->snapshot = *snapshot;
         runtime->snapshot.settings = settings;
-        runtime->snapshot.can_select_drive = !runtime->device_selection_requested
+        runtime->snapshot.can_select_drive =
+            !atomic_load_explicit(&runtime->stopping, memory_order_acquire)
+            && !runtime->device_selection_requested
             && !runtime->snapshot.can_close
             && runtime->snapshot.phase != GDOX_RUNTIME_PLAYING
             && runtime->snapshot.phase != GDOX_RUNTIME_PRESERVING
@@ -145,6 +148,17 @@ void gdox_runtime_publish(
             runtime->snapshot.can_preserve = false;
         }
         gdox_runtime_copy_bundle_status(&runtime->snapshot, &runtime->bundle);
+        gdox_runtime_setup_describe_pending(runtime, &runtime->snapshot);
+        if (atomic_load_explicit(&runtime->stopping, memory_order_acquire)) {
+            runtime->snapshot.can_select_drive = false;
+            runtime->snapshot.can_start = false;
+            runtime->snapshot.can_restart = false;
+            runtime->snapshot.can_preserve = false;
+            runtime->snapshot.can_close = false;
+            runtime->snapshot.can_eject = false;
+            gdox_runtime_copy_text(runtime->snapshot.status,
+                sizeof(runtime->snapshot.status), "Closing GDOX");
+        }
         gdox_mutex_unlock(&runtime->mutex);
     }
 }

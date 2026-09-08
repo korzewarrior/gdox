@@ -6,6 +6,8 @@
 
 #include "core/xemu_capabilities.h"
 #include "gdox/emulator.h"
+#include "platform/portable_sync.h"
+#include "platform/xemu_helper_process.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +36,8 @@ static void clear_environment(const char *name)
     (void)SetEnvironmentVariableA(name, NULL);
 }
 #else
+#include <errno.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #define gdox_test_getpid getpid
@@ -85,6 +89,21 @@ static bool path_exists(const char *path)
     }
     (void)fclose(file);
     return true;
+}
+
+static bool helper_has_exited(unsigned long pid)
+{
+#if defined(_WIN32)
+    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
+    if (process == NULL) {
+        return GetLastError() == ERROR_INVALID_PARAMETER;
+    }
+    const bool exited = WaitForSingleObject(process, 0U) == WAIT_OBJECT_0;
+    (void)CloseHandle(process);
+    return exited;
+#else
+    return kill((pid_t)pid, 0) != 0 && errno == ESRCH;
+#endif
 }
 
 #if defined(_WIN32)
@@ -148,6 +167,8 @@ void gdox_test_xemu_capabilities(void)
     bool save_export = true;
     bool root_created = false;
     bool home_created = false;
+
+    gdox_test_xemu_helper_drain();
 
     (void)snprintf(
         root,
@@ -248,6 +269,23 @@ void gdox_test_xemu_capabilities(void)
         gdox_test_program_path, &save_export, &error
     ));
     CAPABILITY_CHECK(error.code == GDOX_ERROR_UNSUPPORTED);
+
+    for (unsigned int stream = 0U; stream < 2U; ++stream) {
+        const char *const arguments[] = {GDOX_XEMU_CAPABILITIES_ARGUMENT, NULL};
+        gdox_xemu_helper_result helper;
+        unsigned long child_pid = 0U;
+        CAPABILITY_CHECK(set_environment("GDOX_TEST_XEMU_CAPABILITY_MODE",
+            stream == 0U ? "continuous-stdout" : "continuous-stderr"));
+        const uint64_t started_ms = gdox_monotonic_ms();
+        CAPABILITY_CHECK(gdox_xemu_helper_run(
+            gdox_test_program_path, arguments, 500U, &helper, &error));
+        const uint64_t elapsed_ms = gdox_monotonic_ms() - started_ms;
+        CAPABILITY_CHECK(elapsed_ms < UINT64_C(2500));
+        CAPABILITY_CHECK(helper.timed_out && helper.overflow);
+        CAPABILITY_CHECK(sscanf(stream == 0U ? helper.output : helper.diagnostics,
+            "%lu", &child_pid) == 1 && child_pid != 0U);
+        CAPABILITY_CHECK(helper_has_exited(child_pid));
+    }
 
     CAPABILITY_CHECK(gdox_test_mkdir(root) == 0);
     root_created = true;
