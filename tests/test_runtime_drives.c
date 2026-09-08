@@ -16,6 +16,8 @@ typedef struct fake_owner {
 static gdox_optical_device inventory[4];
 static size_t inventory_count;
 static bool last_query_media;
+static unsigned int media_queries[4];
+static size_t last_excluded_count;
 static bool playing;
 static bool inventory_fails;
 static gdox_preferences saved_preferences;
@@ -40,9 +42,9 @@ bool gdox_preferences_save(const gdox_preferences *preferences, gdox_error *erro
     return true;
 }
 
-bool gdox_optical_list_devices(
+bool gdox_optical_list_devices_filtered(
     gdox_optical_device *devices, size_t capacity, size_t *count,
-    bool query_media, gdox_error *error
+    const gdox_optical_media_query *query, gdox_error *error
 )
 {
     if (inventory_fails) {
@@ -56,7 +58,22 @@ bool gdox_optical_list_devices(
     }
     memcpy(devices, inventory, inventory_count * sizeof(*devices));
     *count = inventory_count;
-    last_query_media = query_media;
+    last_query_media = query->enabled;
+    last_excluded_count = query->excluded_device_count;
+    memset(media_queries, 0, sizeof(media_queries));
+    for (size_t index = 0U; index < inventory_count; ++index) {
+        bool excluded = !query->enabled;
+        for (size_t owner = 0U; owner < query->excluded_device_count; ++owner) {
+            excluded = excluded
+                || strcmp(devices[index].id, query->excluded_device_ids[owner]) == 0;
+        }
+        if (excluded) {
+            devices[index].media_status_known = false;
+            devices[index].media_present = false;
+        } else {
+            ++media_queries[index];
+        }
+    }
     gdox_error_clear(error);
     return true;
 }
@@ -166,9 +183,23 @@ static void run(gdox_runtime *runtime, gdox_runtime_snapshot *snapshot)
     GDOX_TEST_CHECK(runtime->pending_cleanup[0].media.validated_disc.context == &old);
     GDOX_TEST_CHECK(runtime->pending_cleanup[0].media.exported == (gdox_nbd_export *)&old);
     GDOX_TEST_CHECK(gdox_runtime_drives_refresh(runtime, snapshot, &error));
-    GDOX_TEST_CHECK(!last_query_media);
+    GDOX_TEST_CHECK(last_query_media && last_excluded_count == 1U);
+    GDOX_TEST_CHECK(media_queries[0] == 0U && media_queries[1] == 1U
+        && media_queries[2] == 1U);
     GDOX_TEST_CHECK(gdox_runtime_drives_resolve(runtime, snapshot, &presence, &error));
     GDOX_TEST_CHECK(strcmp(runtime->optical_device.id, "usb:one") == 0);
+    /* Pending restoration must not trap Automatic on an empty healthy drive. */
+    runtime->snapshot.settings.optical_device_id[0] = '\0';
+    inventory[1].media_present = false;
+    inventory[2].media_present = true;
+    GDOX_TEST_CHECK(gdox_runtime_drives_refresh(runtime, snapshot, &error));
+    GDOX_TEST_CHECK(gdox_runtime_drives_resolve(runtime, snapshot, &presence, &error));
+    GDOX_TEST_CHECK(strcmp(runtime->optical_device.id, "usb:two") == 0);
+    GDOX_TEST_CHECK(presence.media_status_known && presence.media_present);
+    GDOX_TEST_CHECK(media_queries[0] == 0U && old.closes == 1U);
+    GDOX_TEST_CHECK(runtime->pending_cleanup[0].media.retained_source.context == &old);
+    GDOX_TEST_CHECK(gdox_runtime_drives_select(runtime, snapshot, "usb:one", &error));
+    GDOX_TEST_CHECK(gdox_runtime_drives_resolve(runtime, snapshot, &presence, &error));
     own(&runtime->media, &current);
     gdox_runtime_drives_retry_cleanup(runtime);
     GDOX_TEST_CHECK(old.closes == 1U);
@@ -176,6 +207,9 @@ static void run(gdox_runtime *runtime, gdox_runtime_snapshot *snapshot)
     inventory[1].media_present = false;
     inventory[2].media_present = true;
     GDOX_TEST_CHECK(gdox_runtime_drives_refresh(runtime, snapshot, &error));
+    GDOX_TEST_CHECK(!last_query_media && last_excluded_count == 2U);
+    GDOX_TEST_CHECK(media_queries[0] == 0U && media_queries[1] == 0U
+        && media_queries[2] == 0U);
     GDOX_TEST_CHECK(gdox_runtime_drives_resolve(runtime, snapshot, &presence, &error));
     GDOX_TEST_CHECK(strcmp(runtime->optical_device.id, "usb:one") == 0);
     inventory_fails = true;
@@ -216,6 +250,18 @@ static void run(gdox_runtime *runtime, gdox_runtime_snapshot *snapshot)
     GDOX_TEST_CHECK(gdox_runtime_media_close(&runtime->media, &error));
     GDOX_TEST_CHECK(gdox_runtime_drives_refresh(runtime, snapshot, &error));
     GDOX_TEST_CHECK(last_query_media);
+    /* Busy states remain non-commanding even without runtime->media ownership. */
+    playing = true;
+    GDOX_TEST_CHECK(gdox_runtime_drives_refresh(runtime, snapshot, &error));
+    GDOX_TEST_CHECK(!last_query_media);
+    playing = false;
+    snapshot->phase = GDOX_RUNTIME_PRESERVING;
+    GDOX_TEST_CHECK(gdox_runtime_drives_refresh(runtime, snapshot, &error));
+    GDOX_TEST_CHECK(!last_query_media);
+    snapshot->phase = GDOX_RUNTIME_PREPARING;
+    GDOX_TEST_CHECK(gdox_runtime_drives_refresh(runtime, snapshot, &error));
+    GDOX_TEST_CHECK(!last_query_media);
+    snapshot->phase = GDOX_RUNTIME_EMPTY;
 
     for (size_t index = 0U; index < GDOX_OPTICAL_MAX_DEVICES; ++index) {
         full[index].fail = true;

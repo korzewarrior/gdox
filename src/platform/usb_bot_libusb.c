@@ -1641,6 +1641,13 @@ bool gdox_usb_bot_open_device(
 }
 
 #if !defined(__linux__) || defined(__ANDROID__)
+bool gdox_usb_bot_list_devices_filtered(gdox_usb_bot_device *devices, size_t capacity,
+    size_t *count, const gdox_optical_media_query *query, gdox_error *error)
+{
+    (void)query;
+    return gdox_usb_bot_list_devices(devices, capacity, count, false, error);
+}
+
 bool gdox_usb_bot_list_devices(gdox_usb_bot_device *devices, size_t capacity,
     size_t *count, bool query_media, gdox_error *error)
 {

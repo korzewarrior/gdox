@@ -85,6 +85,13 @@ typedef struct gdox_optical_device {
     bool accessible;
 } gdox_optical_device;
 
+/* Exclusions suppress media commands for exact owned devices, not their rows. */
+typedef struct gdox_optical_media_query {
+    bool enabled;
+    const char *const *excluded_device_ids;
+    size_t excluded_device_count;
+} gdox_optical_media_query;
+
 typedef struct gdox_optical_presence {
     bool drive_present;
     bool media_status_known;
@@ -121,6 +128,13 @@ bool gdox_optical_list_devices(
     size_t capacity,
     size_t *count,
     bool query_media,
+    gdox_error *error
+);
+bool gdox_optical_list_devices_filtered(
+    gdox_optical_device *devices,
+    size_t capacity,
+    size_t *count,
+    const gdox_optical_media_query *query,
     gdox_error *error
 );
 bool gdox_optical_device_connected(

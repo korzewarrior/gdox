@@ -74,7 +74,7 @@ int gdox_macos_scsi_command_none(
 void gdox_macos_scsi_close(GdoxMacScsiDevice *device);
 void gdox_macos_scsi_clear_mount_guard(uint64_t registry_id);
 bool gdox_macos_scsi_list_devices(gdox_usb_bot_device *devices, size_t capacity,
-    size_t *count, bool query_media, gdox_error *error);
+    size_t *count, const gdox_optical_media_query *query, gdox_error *error);
 
 typedef struct gdox_macos_scsi_context {
     GdoxMacScsiDevice *device;
@@ -397,7 +397,14 @@ bool gdox_usb_bot_open_device(
 bool gdox_usb_bot_list_devices(gdox_usb_bot_device *devices, size_t capacity,
     size_t *count, bool query_media, gdox_error *error)
 {
-    return gdox_macos_scsi_list_devices(devices, capacity, count, query_media, error);
+    const gdox_optical_media_query query = {.enabled = query_media};
+    return gdox_usb_bot_list_devices_filtered(devices, capacity, count, &query, error);
+}
+
+bool gdox_usb_bot_list_devices_filtered(gdox_usb_bot_device *devices, size_t capacity,
+    size_t *count, const gdox_optical_media_query *query, gdox_error *error)
+{
+    return gdox_macos_scsi_list_devices(devices, capacity, count, query, error);
 }
 
 bool gdox_usb_bot_device_connected(gdox_usb_bot_identity identity,

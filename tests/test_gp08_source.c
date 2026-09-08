@@ -95,6 +95,12 @@ typedef struct fake_gp08 {
     uint32_t fail_write_number;
     uint32_t prepare_close_calls;
     uint32_t prepare_close_failures;
+    bool fail_memory;
+    bool fail_memory_until_reset;
+    bool change_media_on_reset;
+    bool corrupt_on_failed_write;
+    bool capacity_no_medium;
+    bool cached_no_medium;
     bool fail_stock_capacity;
     bool descriptor_has_end_magic;
     bool identity_valid;
@@ -209,6 +215,7 @@ static bool fake_command_in(
     (void)timeout_ms;
     gdox_error_clear(error);
     *transferred = 0U;
+    fake->cached_no_medium = false;
     if (cdb[0] == 0x12U && cdb_bytes == 6U && output_bytes == 96U) {
         memset(output, 0, output_bytes);
         memcpy(output + 8U, "HL-DT-ST", 8U);
@@ -252,6 +259,9 @@ static bool fake_command_in(
         const uint32_t length = read_be_u24(cdb + 6U);
         uint8_t *field;
 
+        if (fake->fail_memory || fake->fail_memory_until_reset) {
+            return fail(error, GDOX_ERROR_TRANSPORT, "injected memory read failure");
+        }
         if (cdb[1] != 0x05U || cdb[2] != 0U || cdb[9] != 0U
             || length != output_bytes
             || !memory_field(fake, address, output_bytes, &field)) {
@@ -272,6 +282,10 @@ static bool fake_command_in(
         memcpy(output, field, output_bytes);
     } else if (cdb[0] == 0x25U && cdb_bytes == 10U
         && output_bytes == 8U) {
+        if (fake->capacity_no_medium) {
+            fake->cached_no_medium = true;
+            return fail(error, GDOX_ERROR_TRANSPORT, "injected no medium");
+        }
         memset(output, 0, output_bytes);
         put_be_u32(output, fake->last_lba);
         put_be_u32(output + 4U, GDOX_LOGICAL_SECTOR_BYTES);
@@ -366,6 +380,7 @@ static bool fake_command_out(
     }
     ++fake->write_count;
     if (fake->write_count == fake->fail_write_number) {
+        if (fake->corrupt_on_failed_write) fake->zone0[0] = 0xeeU;
         return fail(error, GDOX_ERROR_TRANSPORT, "injected GP08 write failure");
     }
     if (address == GP08_CAPACITY_ADDRESS
@@ -417,6 +432,8 @@ static bool fake_reset(void *raw_context, gdox_error *error)
 {
     fake_gp08 *fake = raw_context;
     ++fake->reset_count;
+    fake->fail_memory_until_reset = false;
+    if (fake->change_media_on_reset) fake->zone0[0] = 0xeeU;
     gdox_error_clear(error);
     return true;
 }
@@ -445,6 +462,20 @@ static bool fake_prepare_close(void *raw_context, gdox_error *error)
     return true;
 }
 
+static bool fake_last_sense(const void *context, uint8_t *output,
+    size_t output_bytes, size_t *sense_bytes)
+{
+    const fake_gp08 *fake = context;
+    *sense_bytes = 0U;
+    if (!fake->cached_no_medium || output_bytes < 18U) return false;
+    memset(output, 0, 18U);
+    output[0] = 0x70U;
+    output[2] = 0x02U;
+    output[12] = 0x3aU;
+    *sense_bytes = 18U;
+    return true;
+}
+
 static const gdox_scsi_transport_ops fake_ops = {
     fake_command_in,
     fake_command_out,
@@ -452,7 +483,7 @@ static const gdox_scsi_transport_ops fake_ops = {
     fake_reset,
     fake_close,
     fake_prepare_close,
-    NULL,
+    fake_last_sense,
     NULL,
 };
 
@@ -683,7 +714,8 @@ static bool test_activation_failures_restore(void)
         CHECK(fake.closed);
         CHECK(fake_is_stock(&fake));
         CHECK(fake.read_capacity_count >= 2U);
-        CHECK(log_tail_matches(
+        CHECK(fake.write_count == stage + (stage == 1U ? 0U : 6U));
+        CHECK(stage == 1U || log_tail_matches(
             &fake,
             restore_addresses,
             restore_lengths,
@@ -912,9 +944,86 @@ static bool test_recovery_stops_before_load_on_post_reset_sense(void)
     return true;
 }
 
+static bool test_close_revalidates_retained_state(void)
+{
+    for (unsigned int scenario = 0U; scenario < 4U; ++scenario) {
+        fake_gp08 fake;
+        gdox_sector_source source = {0};
+        gdox_error error;
+        fake_initialize(&fake);
+        CHECK(gdox_gp08_source_open(fake_open, &fake, 0U, 0U, &source, &error));
+        const fake_gp08 live = fake;
+        const uint32_t writes = fake.write_count;
+        if (scenario == 0U) fake.zone0[0] = 0xeeU;
+        if (scenario == 1U) fake.last_lba = 12345U;
+        if (scenario == 2U) {
+            fake.fail_memory_until_reset = true;
+            fake.change_media_on_reset = true;
+        }
+        if (scenario == 3U) {
+            fake.fail_memory = true;
+            fake.capacity_no_medium = true;
+            fake.cached_no_medium = true;
+        }
+        CHECK(!gdox_source_close(&source, &error));
+        CHECK(fake.write_count == writes);
+        CHECK(gdox_source_is_valid(&source) && !fake.closed);
+        fake = live;
+        CHECK(gdox_source_close(&source, &error));
+        CHECK(fake_is_stock(&fake));
+    }
+    return true;
+}
+
+static bool test_close_no_medium_and_already_stock(void)
+{
+    for (unsigned int scenario = 0U; scenario < 2U; ++scenario) {
+        fake_gp08 fake;
+        gdox_sector_source source = {0};
+        gdox_error error;
+        fake_initialize(&fake);
+        CHECK(gdox_gp08_source_open(fake_open, &fake, 0U, 0U, &source, &error));
+        const uint32_t writes = fake.write_count;
+        if (scenario == 0U) {
+            fake.capacity_no_medium = true;
+        } else {
+            fake_initialize(&fake);
+            fake.write_count = writes;
+        }
+        CHECK(gdox_source_close(&source, &error));
+        CHECK(fake_is_stock(&fake));
+        CHECK(fake.write_count == writes + (scenario == 0U ? 6U : 0U));
+    }
+    return true;
+}
+
+static bool test_partial_activation_retains_cleanup_owner(void)
+{
+    fake_gp08 fake;
+    gdox_sector_source source = {0};
+    gdox_error error;
+    fake_initialize(&fake);
+    fake.fail_write_number = 2U;
+    fake.corrupt_on_failed_write = true;
+    CHECK(!gdox_gp08_source_open(fake_open, &fake, 0U, 0U, &source, &error));
+    CHECK(fake.write_count == 2U);
+    CHECK(gdox_source_is_valid(&source) && !fake.closed);
+    /* Only repair the injected unknown fixed byte. The first activation
+     * write remains live, so closing must still roll back that partial state. */
+    fake.zone0[0] = stock_zone0[0];
+    fake.corrupt_on_failed_write = false;
+    CHECK(gdox_source_close(&source, &error));
+    CHECK(fake.write_count == 8U && fake_is_stock(&fake));
+    CHECK(fake.closed && !gdox_source_is_valid(&source));
+    return true;
+}
+
 int main(void)
 {
-    if (!test_success_and_chunking()
+    if (!test_close_revalidates_retained_state()
+        || !test_close_no_medium_and_already_stock()
+        || !test_partial_activation_retains_cleanup_owner()
+        || !test_success_and_chunking()
         || !test_activation_failures_restore()
         || !test_identity_and_stock_must_match()
         || !test_descriptor_rejection_restores()

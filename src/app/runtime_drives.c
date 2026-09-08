@@ -72,14 +72,33 @@ bool gdox_runtime_drives_refresh(
 )
 {
     gdox_optical_device devices[GDOX_OPTICAL_MAX_DEVICES];
+    const char *excluded[GDOX_OPTICAL_MAX_DEVICES + 1U];
     size_t count = 0U;
-    const bool query_media = !gdox_runtime_media_is_owned(&runtime->media)
-        && !gdox_runtime_drives_cleanup_pending(runtime)
-        && snapshot->phase != GDOX_RUNTIME_PRESERVING
-        && snapshot->phase != GDOX_RUNTIME_PREPARING;
+    const bool active_owned = gdox_runtime_media_is_owned(&runtime->media);
+    gdox_optical_media_query query = {
+        .enabled = !active_owned && !gdox_runtime_playback_running(runtime)
+            && snapshot->phase != GDOX_RUNTIME_PRESERVING
+            && snapshot->phase != GDOX_RUNTIME_PREPARING,
+        .excluded_device_ids = excluded,
+    };
 
-    if (!gdox_optical_list_devices(
-            devices, GDOX_OPTICAL_MAX_DEVICES, &count, query_media, error
+    if (active_owned && runtime->optical_device.id[0] != '\0') {
+        excluded[query.excluded_device_count++] = runtime->optical_device.id;
+    }
+    for (size_t index = 0U; index < GDOX_OPTICAL_MAX_DEVICES; ++index) {
+        const gdox_runtime_pending_cleanup *pending = &runtime->pending_cleanup[index];
+        if (!gdox_runtime_media_is_owned(&pending->media)) {
+            continue;
+        }
+        if (pending->device.id[0] == '\0') {
+            query.enabled = false;
+        } else {
+            excluded[query.excluded_device_count++] = pending->device.id;
+        }
+    }
+
+    if (!gdox_optical_list_devices_filtered(
+            devices, GDOX_OPTICAL_MAX_DEVICES, &count, &query, error
         )) {
         gdox_runtime_copy_text(snapshot->optical_inventory_notice,
             sizeof(snapshot->optical_inventory_notice),

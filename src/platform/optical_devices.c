@@ -1,4 +1,5 @@
 #include "platform/optical_driver.h"
+#include "platform/optical_inventory_filter.h"
 
 #include "platform/asus_nr09_source.h"
 #include "platform/gp08_source.h"
@@ -36,6 +37,18 @@ bool gdox_optical_list_devices(
     gdox_error *error
 )
 {
+    const gdox_optical_media_query query = {.enabled = query_media};
+    return gdox_optical_list_devices_filtered(devices, capacity, count, &query, error);
+}
+
+bool gdox_optical_list_devices_filtered(
+    gdox_optical_device *devices,
+    size_t capacity,
+    size_t *count,
+    const gdox_optical_media_query *query,
+    gdox_error *error
+)
+{
     gdox_usb_bot_device *observations;
     size_t observed = 0U;
     size_t index;
@@ -44,6 +57,9 @@ bool gdox_optical_list_devices(
     gdox_error_clear(error);
     if (count != NULL) {
         *count = 0U;
+    }
+    if (!gdox_optical_media_query_valid(query, error)) {
+        return false;
     }
     if (devices == NULL || count == NULL || capacity == 0U
         || capacity > SIZE_MAX / sizeof(*observations)) {
@@ -57,8 +73,8 @@ bool gdox_optical_list_devices(
             "could not allocate optical device inventory");
         return false;
     }
-    success = gdox_usb_bot_list_devices(
-        observations, capacity, &observed, query_media, error
+    success = gdox_usb_bot_list_devices_filtered(
+        observations, capacity, &observed, query, error
     );
     if (observed > capacity) {
         free(observations);

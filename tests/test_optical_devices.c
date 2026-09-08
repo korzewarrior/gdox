@@ -18,6 +18,8 @@ static bool fail_with_owned_source;
 static bool list_failure;
 static bool list_overflow;
 static bool listed_query_media;
+static size_t listed_excluded_count;
+static char listed_excluded_id[GDOX_OPTICAL_DEVICE_ID_CAPACITY];
 static gdox_usb_bot_device inventory[3];
 static gdox_mt1887_media_profile selected_media;
 static gdox_asus_nr09_media_kind selected_asus_media;
@@ -77,11 +79,16 @@ bool gdox_usb_bot_device_connected(gdox_usb_bot_identity identity, const char *i
     return success;
 }
 
-bool gdox_usb_bot_list_devices(gdox_usb_bot_device *devices, size_t capacity,
-    size_t *count, bool query_media, gdox_error *error)
+bool gdox_usb_bot_list_devices_filtered(gdox_usb_bot_device *devices, size_t capacity,
+    size_t *count, const gdox_optical_media_query *query, gdox_error *error)
 {
     ++backend_calls;
-    listed_query_media = query_media;
+    listed_query_media = query->enabled;
+    listed_excluded_count = query->excluded_device_count;
+    if (listed_excluded_count != 0U) {
+        (void)snprintf(listed_excluded_id, sizeof(listed_excluded_id), "%s",
+            query->excluded_device_ids[0]);
+    }
     *count = capacity < 3U ? capacity : 3U;
     memcpy(devices, inventory, *count * sizeof(*devices));
     if (list_overflow) *count = capacity + 1U;
@@ -233,6 +240,27 @@ static void test_inventory_mapping(void)
     check(devices[0].media_present && devices[0].media_status_known
         && devices[0].accessible && devices[0].connection == GDOX_OPTICAL_CONNECTION_USB,
         "inventory copies per-device state");
+    {
+        const char *excluded[] = {"z-drive"};
+        gdox_optical_media_query query = {
+            .enabled = true, .excluded_device_ids = excluded,
+            .excluded_device_count = 1U,
+        };
+        check(gdox_optical_list_devices_filtered(devices, 3U, &count, &query, &error)
+            && count == 3U && listed_query_media && listed_excluded_count == 1U
+            && strcmp(listed_excluded_id, "z-drive") == 0,
+            "exact media-query exclusions reach backend without hiding inventory rows");
+        query.excluded_device_ids = NULL;
+        check(!gdox_optical_list_devices_filtered(devices, 3U, &count, &query, &error)
+            && count == 0U && error.code == GDOX_ERROR_INVALID_ARGUMENT,
+            "missing exclusion storage is rejected");
+        excluded[0] = "";
+        query.excluded_device_ids = excluded;
+        check(!gdox_optical_list_devices_filtered(devices, 3U, &count, &query, &error),
+            "empty excluded IDs are rejected");
+        check(!gdox_optical_list_devices_filtered(devices, 3U, &count, NULL, &error),
+            "missing media query options are rejected");
+    }
     list_failure = true;
     check(!gdox_optical_list_devices(devices, 3U, &count, true, &error)
         && count == 3U && listed_query_media && error.code == GDOX_ERROR_IO,

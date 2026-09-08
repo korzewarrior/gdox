@@ -25,6 +25,14 @@ bool gdox_usb_bot_linux_list_fixture(
     bool query_media,
     gdox_error *error
 );
+bool gdox_usb_bot_linux_list_filtered_fixture(
+    const gdox_linux_device_roots *roots,
+    gdox_usb_bot_device *devices,
+    size_t capacity,
+    size_t *count,
+    const gdox_optical_media_query *query,
+    gdox_error *error
+);
 #endif
 
 #endif

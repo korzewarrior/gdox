@@ -10,6 +10,8 @@
   drive's cleanup ownership and warning separately
 - keep Windows reconnect recovery tied to the selected physical device and
   revalidate its identity before reopening a stale command channel
+- verify retained disc state before cleanup writes and keep failed partial
+  activation owned until restoration succeeds
 
 ## 0.2.6
 

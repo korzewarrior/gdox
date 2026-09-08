@@ -61,6 +61,7 @@ typedef struct fake_device {
 
 static fake_device fake[TEST_DEVICES];
 static unsigned int scsi_commands;
+static unsigned int device_scsi_commands[TEST_DEVICES];
 static unsigned int last_scsi_device;
 static unsigned int opened_count[TEST_DEVICES];
 static unsigned int closed_count;
@@ -79,6 +80,7 @@ static void reset_inventory(void)
     memset(fake, 0, sizeof(fake));
     memset(opened_count, 0, sizeof(opened_count));
     scsi_commands = 0U;
+    memset(device_scsi_commands, 0, sizeof(device_scsi_commands));
     last_scsi_device = UINT_MAX;
     closed_count = 0U;
     fake[0] = (fake_device){true, true, true, true, true, false, 0U,
@@ -238,6 +240,7 @@ static BOOL test_ioctl(HANDLE handle, DWORD operation, LPVOID input, DWORD input
     if (operation == IOCTL_SCSI_PASS_THROUGH_DIRECT) {
         gdox_windows_scsi_packet *packet = input;
         ++scsi_commands;
+        ++device_scsi_commands[index];
         last_scsi_device = index;
         check(input == output, "pass-through uses shared response packet");
         check(packet->command.CdbLength == 6U && packet->command.Cdb[0] == 0U,
@@ -325,6 +328,32 @@ static void test_inventory(void)
         "inventory capacity errors are explicit with bounded count");
     check(!gdox_usb_bot_list_devices(NULL, 0U, &count, false, &error)
         && error.code == GDOX_ERROR_INVALID_ARGUMENT, "empty inventory output is rejected");
+    {
+        char active_id[64];
+        char pending_id[64];
+        const char *excluded[] = {active_id, pending_id};
+        gdox_optical_media_query query = {true, excluded, 2U};
+        reset_inventory();
+        device_id_string(0U, active_id);
+        device_id_string(2U, pending_id);
+        check(gdox_usb_bot_list_devices_filtered(devices, TEST_DEVICES, &count, &query, &error)
+            && count == TEST_DEVICES, "filtered query still lists owned and unowned drives");
+        check(device_scsi_commands[0] == 0U && device_scsi_commands[2] == 0U,
+            "active and pending exact device IDs receive no media commands");
+        check(device_scsi_commands[1] == 1U && devices[1].media_status_known
+            && devices[1].media_present && device_scsi_commands[3] == 1U,
+            "other devices, including the same model, retain media observation");
+        check(!devices[0].media_status_known && !devices[2].media_status_known,
+            "owned rows do not invent media status");
+        query.enabled = false;
+        scsi_commands = 0U;
+        check(gdox_usb_bot_list_devices_filtered(devices, TEST_DEVICES, &count, &query, &error)
+            && scsi_commands == 0U, "globally passive mode suppresses all media commands");
+        query.excluded_device_ids = NULL;
+        check(!gdox_usb_bot_list_devices_filtered(devices, TEST_DEVICES, &count, &query, &error)
+            && count == 0U && error.code == GDOX_ERROR_INVALID_ARGUMENT,
+            "invalid filter fails before device commands");
+    }
 }
 
 static void test_pinned_open_and_recovery(void)

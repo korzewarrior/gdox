@@ -5,6 +5,7 @@
 #include "platform/asus_nr09_source.h"
 #include "platform/mmc_commands.h"
 #include "platform/optical_driver.h"
+#include "platform/optical_restore.h"
 #include "platform/portable_sync.h"
 #include "platform/scsi_transport.h"
 #include "platform/usb_bot.h"
@@ -335,7 +336,7 @@ static bool ladder_aborted(const atomic_bool *abort, gdox_error *error)
     return false;
 }
 
-static bool read_state(
+static bool read_memory_state(
     gdox_asus_context *context,
     const gdox_asus_media_profile *layout,
     const atomic_bool *abort,
@@ -369,14 +370,25 @@ static bool read_state(
             UINT32_C(0x1904),
             state->complemented_start,
             error
-        )
-        && gdox_mmc_read_capacity_10(
-            &context->transport,
-            UINT32_C(10000),
-            &state->last_lba,
-            &state->block_size,
-            error
         );
+}
+
+static bool read_state(gdox_asus_context *context,
+    const gdox_asus_media_profile *layout, const atomic_bool *abort,
+    gdox_asus_state *state, gdox_error *error)
+{
+    return read_memory_state(context, layout, abort, state, error)
+        && gdox_mmc_read_capacity_10(&context->transport, UINT32_C(10000),
+            &state->last_lba, &state->block_size, error);
+}
+
+static bool read_restore_state(gdox_asus_context *context,
+    gdox_asus_state *state, bool *no_medium, gdox_error *error)
+{
+    return read_memory_state(context, context->profile, NULL, state, error)
+        && gdox_optical_restore_read_capacity(&context->transport, UINT32_C(10000),
+            context->profile->stock_last_lba, &state->last_lba, &state->block_size,
+            no_medium, error);
 }
 
 static bool state_memory_matches(
@@ -423,44 +435,6 @@ static bool state_matches(
     return state_memory_matches(profile, state, live)
         && state->last_lba == expected_lba
         && state->block_size == GDOX_LOGICAL_SECTOR_BYTES;
-}
-
-static bool last_sense_is_no_medium(const gdox_scsi_transport *transport)
-{
-    uint8_t sense[32] = {0};
-    size_t sense_bytes = 0U;
-    uint8_t sense_key;
-    uint8_t additional_code;
-
-    if (!gdox_scsi_transport_last_sense(
-            transport,
-            sense,
-            sizeof(sense),
-            &sense_bytes
-        )) {
-        return false;
-    }
-    switch (sense[0] & 0x7fU) {
-    case 0x70U:
-    case 0x71U:
-        if (sense_bytes < 13U) {
-            return false;
-        }
-        sense_key = sense[2] & 0x0fU;
-        additional_code = sense[12];
-        break;
-    case 0x72U:
-    case 0x73U:
-        if (sense_bytes < 3U) {
-            return false;
-        }
-        sense_key = sense[1] & 0x0fU;
-        additional_code = sense[2];
-        break;
-    default:
-        return false;
-    }
-    return sense_key == 0x02U && additional_code == 0x3aU;
 }
 
 static bool state_is_known_partial(
@@ -573,6 +547,7 @@ static bool restore_stock(gdox_asus_context *context, gdox_error *error)
     gdox_error current;
     gdox_asus_state observed = {0};
     bool command_failed = false;
+    bool no_medium;
     size_t index;
 
     gdox_error_clear(&first_error);
@@ -588,13 +563,7 @@ static bool restore_stock(gdox_asus_context *context, gdox_error *error)
             command_failed = true;
         }
     }
-    if (read_state(
-            context,
-            context->profile,
-            NULL,
-            &observed,
-            &current
-        )) {
+    if (read_restore_state(context, &observed, &no_medium, &current)) {
         if (state_matches(context->profile, &observed, false)) {
             return true;
         }
@@ -603,13 +572,6 @@ static bool restore_stock(gdox_asus_context *context, gdox_error *error)
             GDOX_ERROR_TRANSPORT,
             "stock ASUS NR09 volatile state did not verify"
         );
-    } else if (last_sense_is_no_medium(&context->transport)
-        && state_memory_matches(context->profile, &observed, false)) {
-        /*
-         * READ CAPACITY requires media. The eight writable fields and the
-         * two fixed fields already prove that the drive is back at stock.
-         */
-        return true;
     }
     if (command_failed) {
         *error = first_error;
@@ -638,6 +600,22 @@ static bool transport_is_confirmed_absent(gdox_asus_context *context)
         && !present;
 }
 
+static bool guarded_restore_stock(gdox_asus_context *context, gdox_error *error)
+{
+    gdox_asus_state observed = {0};
+    bool no_medium;
+    if (!read_restore_state(context, &observed, &no_medium, error)) return false;
+    if (!state_is_known_partial(context->profile, &observed)) {
+        gdox_error_set(error, GDOX_ERROR_UNSUPPORTED,
+            "refusing ASUS restoration because retained media state is unknown");
+        return false;
+    }
+    /* NR09 patches parsed PFI mirrors. Require the complete retained
+     * memory/fixed-field layout rather than assuming a physical PFI view. */
+    return state_matches(context->profile, &observed, false)
+        || restore_stock(context, error);
+}
+
 static bool restore_stock_after_streaming(
     gdox_asus_context *context,
     gdox_error *error
@@ -646,7 +624,7 @@ static bool restore_stock_after_streaming(
     gdox_error last;
     uint32_t attempt;
 
-    if (restore_stock(context, &last)) {
+    if (guarded_restore_stock(context, &last)) {
         return true;
     }
     for (attempt = 0U; attempt < 2U; ++attempt) {
@@ -654,7 +632,7 @@ static bool restore_stock_after_streaming(
 
         (void)gdox_scsi_transport_reset(&context->transport, &ignored);
         gdox_sleep_ms(UINT32_C(100) * (attempt + 1U));
-        if (restore_stock(context, &last)) {
+        if (guarded_restore_stock(context, &last)) {
             return true;
         }
     }

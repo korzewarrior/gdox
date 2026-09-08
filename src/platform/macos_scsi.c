@@ -1,4 +1,5 @@
 #include "platform/usb_bot.h"
+#include "platform/optical_inventory_filter.h"
 #include "platform/usb_bot_identity.h"
 #include "platform/macos_mount_guard.h"
 
@@ -386,13 +387,14 @@ static int service_has_media(io_service_t drive)
 }
 
 bool gdox_macos_scsi_list_devices(gdox_usb_bot_device *devices, size_t capacity,
-    size_t *count, bool query_media, gdox_error *error)
+    size_t *count, const gdox_optical_media_query *query, gdox_error *error)
 {
     io_iterator_t iterator = IO_OBJECT_NULL;
     io_service_t service;
     bool success = true;
     gdox_error_clear(error);
     if (count != NULL) *count = 0U;
+    if (!gdox_optical_media_query_valid(query, error)) return false;
     if (devices == NULL || capacity == 0U || count == NULL) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT,
                        "a nonempty optical inventory is required");
@@ -444,7 +446,7 @@ bool gdox_macos_scsi_list_devices(gdox_usb_bot_device *devices, size_t capacity,
                                interconnect);
             }
         }
-        if (query_media) {
+        if (gdox_optical_media_query_allows(query, device.id)) {
             device.media_status_known = true;
             device.media_present = service_has_media(service) != 0;
         }

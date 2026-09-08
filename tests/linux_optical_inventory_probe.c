@@ -10,6 +10,7 @@ struct libusb_device { uint8_t port; };
 static struct libusb_device fake_usb[] = {{1U}, {2U}, {3U}};
 static libusb_device *fake_list[] = {&fake_usb[0], &fake_usb[1], &fake_usb[2], NULL};
 static unsigned int device_opens;
+static char last_device_open[GDOX_OPTICAL_DEVICE_ID_CAPACITY];
 
 int libusb_init(libusb_context **context) { *context = NULL; return LIBUSB_SUCCESS; }
 void libusb_exit(libusb_context *context) { (void)context; }
@@ -32,21 +33,31 @@ int libusb_get_port_numbers(libusb_device *device, uint8_t *ports, int length)
 
 /* Direct device open is permitted only for query_media=true. */
 int open(const char *path, int flags, ...)
-{ (void)path; (void)flags; ++device_opens; return -1; }
+{
+    (void)flags;
+    ++device_opens;
+    (void)snprintf(last_device_open, sizeof(last_device_open), "%s", path);
+    return -1;
+}
 
 int main(int argc, char **argv)
 {
     gdox_usb_bot_device devices[8];
     gdox_error error;
     size_t count = 0U;
-    if (argc != 6) return 2;
+    if (argc < 6) return 2;
     const gdox_linux_device_roots roots = {argv[1], argv[2], argv[3]};
     const size_t capacity = (size_t)strtoul(argv[4], NULL, 10);
-    const bool query_media = strcmp(argv[5], "1") == 0;
+    const gdox_optical_media_query query = {
+        .enabled = strcmp(argv[5], "1") == 0,
+        .excluded_device_ids = (const char *const *)(argv + 6),
+        .excluded_device_count = (size_t)(argc - 6),
+    };
     if (capacity > 8U) return 2;
-    const bool success = gdox_usb_bot_linux_list_fixture(
-        &roots, devices, capacity, &count, query_media, &error);
-    (void)printf("status\t%d\t%zu\t%u\t%d\n", success, count, device_opens, error.code);
+    const bool success = gdox_usb_bot_linux_list_filtered_fixture(
+        &roots, devices, capacity, &count, &query, &error);
+    (void)printf("status\t%d\t%zu\t%u\t%d\t%s\n", success, count, device_opens,
+        error.code, last_device_open);
     for (size_t index = 0U; index < count; ++index) {
         (void)printf("device\t%u\t%s\t%s\t%d\t%d\t%d\n",
             (unsigned int)devices[index].identity, devices[index].id,

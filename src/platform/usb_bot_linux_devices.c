@@ -3,6 +3,7 @@
 #if defined(__linux__) && !defined(__ANDROID__)
 
 #include "platform/usb_bot_linux_devices.h"
+#include "platform/optical_inventory_filter.h"
 
 #include <libusb.h>
 
@@ -166,7 +167,7 @@ static bool usb_accessible(const gdox_linux_device_roots *roots,
 }
 
 static bool describe_block(const gdox_linux_device_roots *roots,
-                           const char *name, bool query_media,
+                           const char *name, const gdox_optical_media_query *query,
                            gdox_usb_bot_device *device)
 {
     char block[PATH_MAX];
@@ -218,7 +219,7 @@ static bool describe_block(const gdox_linux_device_roots *roots,
             ? GDOX_OPTICAL_CONNECTION_SATA : GDOX_OPTICAL_CONNECTION_OTHER;
         device->accessible = access(node, R_OK) == 0;
     }
-    if (query_media) {
+    if (gdox_optical_media_query_allows(query, device->id)) {
         const int descriptor = open(node, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (descriptor >= 0) {
             const int status = ioctl(descriptor, CDROM_DRIVE_STATUS, CDSL_CURRENT);
@@ -277,13 +278,14 @@ static bool append_unbound(const gdox_linux_device_roots *roots,
 
 static bool list_devices(const gdox_linux_device_roots *roots,
                          gdox_usb_bot_device *devices, size_t capacity, size_t *count,
-                         bool query_media, gdox_error *error)
+                         const gdox_optical_media_query *query, gdox_error *error)
 {
     DIR *blocks;
     struct dirent *entry;
     bool success = true;
     gdox_error_clear(error);
     if (count != NULL) *count = 0U;
+    if (!gdox_optical_media_query_valid(query, error)) return false;
     if (devices == NULL || capacity == 0U || count == NULL) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "a nonempty optical inventory is required");
         return false;
@@ -296,7 +298,7 @@ static bool list_devices(const gdox_linux_device_roots *roots,
     while ((entry = readdir(blocks)) != NULL) {
         gdox_usb_bot_device device;
         if (strncmp(entry->d_name, "sr", 2U) != 0
-            || !describe_block(roots, entry->d_name, query_media, &device)) continue;
+            || !describe_block(roots, entry->d_name, query, &device)) continue;
         if (!append_device(devices, capacity, count, &device, error)) {
             success = false;
             break;
@@ -309,7 +311,14 @@ static bool list_devices(const gdox_linux_device_roots *roots,
 bool gdox_usb_bot_list_devices(gdox_usb_bot_device *devices, size_t capacity,
     size_t *count, bool query_media, gdox_error *error)
 {
-    return list_devices(&system_roots, devices, capacity, count, query_media, error);
+    const gdox_optical_media_query query = {.enabled = query_media};
+    return gdox_usb_bot_list_devices_filtered(devices, capacity, count, &query, error);
+}
+
+bool gdox_usb_bot_list_devices_filtered(gdox_usb_bot_device *devices, size_t capacity,
+    size_t *count, const gdox_optical_media_query *query, gdox_error *error)
+{
+    return list_devices(&system_roots, devices, capacity, count, query, error);
 }
 
 bool gdox_usb_bot_device_connected(gdox_usb_bot_identity identity,
@@ -340,7 +349,15 @@ bool gdox_usb_bot_linux_list_fixture(const gdox_linux_device_roots *roots,
     gdox_usb_bot_device *devices, size_t capacity, size_t *count,
     bool query_media, gdox_error *error)
 {
-    return list_devices(roots, devices, capacity, count, query_media, error);
+    const gdox_optical_media_query query = {.enabled = query_media};
+    return list_devices(roots, devices, capacity, count, &query, error);
+}
+
+bool gdox_usb_bot_linux_list_filtered_fixture(const gdox_linux_device_roots *roots,
+    gdox_usb_bot_device *devices, size_t capacity, size_t *count,
+    const gdox_optical_media_query *query, gdox_error *error)
+{
+    return list_devices(roots, devices, capacity, count, query, error);
 }
 #endif
 

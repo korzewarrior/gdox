@@ -42,9 +42,9 @@ def main() -> None:
         optical(2, "DVDRAM GP63EX70", "RF02")
         optical(3, "DVDRAM GP57EB40", "PB00")
 
-        def run(capacity: int = 8, media: bool = False):
+        def run(capacity: int = 8, media: bool = False, excluded: tuple[str, ...] = ()):
             result = subprocess.run(
-                [str(args.probe), str(blocks), str(usb), str(dev), str(capacity), str(int(media))],
+                [str(args.probe), str(blocks), str(usb), str(dev), str(capacity), str(int(media)), *excluded],
                 capture_output=True, text=True, timeout=10, check=False,
             )
             lines = [line.split("\t") for line in result.stdout.splitlines()]
@@ -58,6 +58,13 @@ def main() -> None:
         assert unsupported[1] != "0" and unsupported[1] != "6", unsupported
         assert all(row[4:] == ["1", "1", "0"] for row in devices.values()), devices
         original_id = a[2]
+        result, status, filtered = run(media=True, excluded=(a[2], b[2]))
+        assert result.returncode == 0 and status[2:4] == ["3", "1"], (result, status)
+        assert Path(status[5]).name == "sr2" and len(filtered) == 3, (status, filtered)
+        result, status, _ = run(media=True, excluded=(a[2],))
+        assert result.returncode == 0 and status[3] == "2", (result, status)
+        result, status, _ = run(media=False, excluded=(a[2],))
+        assert result.returncode == 0 and status[3] == "0", (result, status)
         # Device numbers may change while topology and serial remain stable.
         (blocks / "sr0").rename(blocks / "sr7")
         result, _, devices = run()

@@ -62,6 +62,14 @@ typedef struct fake_mt1887 {
     bool descriptor_valid;
     bool descriptor_trailing_valid;
     bool pfi_valid;
+    bool capacity_no_medium;
+    bool cached_no_medium;
+    bool descriptor_sense;
+    uint16_t fail_memory_address_until_reset;
+    bool change_guard_on_reset;
+    bool fail_memory;
+    bool change_media_on_reset;
+    bool fail_memory_until_reset;
     bool fail_stock_capacity;
     bool fail_read_once;
     bool reset_to_stock;
@@ -261,6 +269,7 @@ static bool fake_command_in(
     (void)name;
     (void)cdb_bytes;
     memset(output, 0, output_bytes);
+    fake->cached_no_medium = false;
     if (cdb[0] == 0x12U && output_bytes >= 36U) {
         memcpy(output + 8U, fake->asus_mt1862 ? "ASUS    " : "HL-DT-ST", 8U);
         memcpy(
@@ -293,12 +302,22 @@ static bool fake_command_in(
         const uint16_t address =
             (uint16_t)((uint16_t)cdb[4] << 8U | cdb[5]);
         uint8_t *value = fake_xdata(fake, address);
+        if (fake->fail_memory || fake->fail_memory_until_reset
+            || fake->fail_memory_address_until_reset == address) {
+            gdox_error_set(error, GDOX_ERROR_TRANSPORT, "injected memory read failure");
+            return false;
+        }
         if (value == NULL) {
             gdox_error_set(error, GDOX_ERROR_TRANSPORT, "unknown XDATA read");
             return false;
         }
         output[3] = *value;
     } else if (cdb[0] == 0x25U && output_bytes == 8U) {
+        if (fake->capacity_no_medium) {
+            fake->cached_no_medium = true;
+            gdox_error_set(error, GDOX_ERROR_TRANSPORT, "injected no medium");
+            return false;
+        }
         put_be_u32(
             output,
             fake->invalid_live_last_lba && fake_is_live(fake)
@@ -466,6 +485,14 @@ static bool fake_reset(void *context, gdox_error *error)
 {
     fake_mt1887 *fake = context;
     ++fake->reset_count;
+    fake->fail_memory_until_reset = false;
+    fake->fail_memory_address_until_reset = 0U;
+    if (fake->change_guard_on_reset) fake->fixed_values[0] = 0xeeU;
+    if (fake->change_media_on_reset) {
+        fake->media = FAKE_MEDIA_XGD3;
+        memcpy(fake->capacity, fake_stock_capacity(fake), 3U);
+        memcpy(fake->geometry, fake_stock_geometry(fake), 3U);
+    }
     if (fake->eject_after_reset) {
         fake->eject_after_reset = false;
         fake->eject_requested = true;
@@ -513,6 +540,20 @@ static bool fake_prepare_close(void *raw_context, gdox_error *error)
     return true;
 }
 
+static bool fake_last_sense(const void *context, uint8_t *output,
+    size_t output_bytes, size_t *sense_bytes)
+{
+    const fake_mt1887 *fake = context;
+    *sense_bytes = 0U;
+    if (!fake->cached_no_medium || output_bytes < 18U) return false;
+    memset(output, 0, 18U);
+    output[0] = fake->descriptor_sense ? 0x72U : 0x70U;
+    output[fake->descriptor_sense ? 1U : 2U] = 0x02U;
+    output[fake->descriptor_sense ? 2U : 12U] = 0x3aU;
+    *sense_bytes = 18U;
+    return true;
+}
+
 static const gdox_scsi_transport_ops fake_ops = {
     fake_command_in,
     fake_command_out,
@@ -520,7 +561,7 @@ static const gdox_scsi_transport_ops fake_ops = {
     fake_reset,
     fake_close,
     fake_prepare_close,
-    NULL,
+    fake_last_sense,
     NULL,
 };
 
@@ -2131,8 +2172,8 @@ static bool test_xgd3_each_activation_failure_restores(void)
                 error.message,
                 "injected volatile write failure"
             ) != NULL, "XGD3 activation error is preserved")
-            || !check(fake.write_count == index + 7U,
-                "XGD3 activation failure runs six-byte rollback")
+            || !check(fake.write_count == index + (index == 0U ? 1U : 7U),
+                "XGD3 rollback skips verified unchanged stock")
             || !check(memcmp(
                 fake.capacity,
                 xgd3_stock_capacity,
@@ -2552,9 +2593,82 @@ static bool test_gp57_failures_restore(void)
     return true;
 }
 
+static bool test_close_revalidates_retained_media(void)
+{
+    /* Every refusal must keep the source as the restoration owner. */
+    for (unsigned int scenario = 0U; scenario < 7U; ++scenario) {
+        fake_mt1887 fake = fake_gp57_stock();
+        gdox_sector_source source = {0};
+        gdox_error error;
+        if (!check(open_gp57(&fake, &source, &error), "guard test opens GP57")) return false;
+        const fake_mt1887 live = fake;
+        const size_t writes = fake.write_count;
+        if (scenario == 0U) fake.capacity[0] = 0xeeU;
+        if (scenario == 1U) fake.fixed_values[2] ^= 1U;
+        if (scenario == 2U) fake.pfi_valid = false;
+        if (scenario == 3U) fake.forced_block_size = 4096U;
+        if (scenario == 4U) {
+            fake.fail_memory_until_reset = true;
+            fake.change_media_on_reset = true;
+        }
+        if (scenario == 5U) {
+            fake.fail_memory = true;
+            fake.capacity_no_medium = true;
+            fake.cached_no_medium = true;
+        }
+        if (scenario == 6U) {
+            /* Fail after the first four guard reads. Reopening changes a guard
+             * already seen in the abandoned snapshot and removes the disc. */
+            fake.fail_memory_address_until_reset = 0x8a38U;
+            fake.change_guard_on_reset = true;
+            fake.capacity_no_medium = true;
+        }
+        if (!check(!gdox_source_close(&source, &error), "unknown retained state blocks close")
+            || !check(fake.write_count == writes, "guard sends zero writes including reset retries")
+            || !check(gdox_source_is_valid(&source) && !fake.closed,
+                "guard failure retains restoration ownership")) return false;
+        fake = live;
+        if (!check(gdox_source_close(&source, &error), "same media can retry restoration")
+            || !check(fake.closed && !gdox_source_is_valid(&source), "retry releases source")) return false;
+    }
+    return true;
+}
+
+static bool test_close_known_state_and_no_medium(void)
+{
+    for (unsigned int scenario = 0U; scenario < 5U; ++scenario) {
+        fake_mt1887 fake = fake_gp57_stock();
+        gdox_sector_source source = {0};
+        gdox_error error;
+        if (!check(open_gp57(&fake, &source, &error), "known-state test opens GP57")) return false;
+        const size_t writes = fake.write_count;
+        if (scenario < 2U) {
+            fake.capacity_no_medium = true;
+            fake.descriptor_sense = scenario == 1U;
+        } else if (scenario == 2U) {
+            memcpy(fake.capacity, xgd2_wave2_stock_capacity, 3U);
+        } else if (scenario == 3U) {
+            fake.fail_memory_until_reset = true;
+            fake.reset_to_stock = true;
+        } else {
+            memcpy(fake.capacity, xgd2_wave2_stock_capacity, 3U);
+            memcpy(fake.geometry, xgd2_wave2_stock_geometry, 3U);
+        }
+        if (!check(gdox_source_close(&source, &error), "known retained state closes")
+            || !check(fake.write_count == writes + (scenario < 3U ? 6U : 0U),
+                "known stock skips writes; live and partial restore completely")
+            || !check(memcmp(fake.capacity, xgd2_wave2_stock_capacity, 3U) == 0
+                && memcmp(fake.geometry, xgd2_wave2_stock_geometry, 3U) == 0,
+                "complete stock memory verified")) return false;
+    }
+    return true;
+}
+
 int main(void)
 {
-    if (!test_gp57_transaction()
+    if (!test_close_revalidates_retained_media()
+        || !test_close_known_state_and_no_medium()
+        || !test_gp57_transaction()
         || !test_gp57_manual_recovery()
         || !test_gp57_rejections()
         || !test_gp57_failures_restore()

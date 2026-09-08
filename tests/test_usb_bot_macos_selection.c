@@ -27,11 +27,11 @@ void gdox_macos_scsi_clear_mount_guard(uint64_t registry_id)
 }
 
 bool gdox_macos_scsi_list_devices(gdox_usb_bot_device *devices, size_t capacity,
-    size_t *count, bool query_media, gdox_error *error)
+    size_t *count, const gdox_optical_media_query *query, gdox_error *error)
 {
     const size_t total = selected_present ? 2U : 1U;
     gdox_error_clear(error);
-    check(!query_media, "selection inventory remains non-commanding");
+    check(!query->enabled, "selection inventory remains non-commanding");
     if (capacity < total) return false;
     memset(devices, 0, total * sizeof(*devices));
     for (size_t index = 0U; index < total; ++index) {

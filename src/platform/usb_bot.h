@@ -44,6 +44,13 @@ bool gdox_usb_bot_list_devices(
     bool query_media,
     gdox_error *error
 );
+bool gdox_usb_bot_list_devices_filtered(
+    gdox_usb_bot_device *devices,
+    size_t capacity,
+    size_t *count,
+    const gdox_optical_media_query *query,
+    gdox_error *error
+);
 bool gdox_usb_bot_open_device(
     gdox_usb_bot_identity identity,
     const char *device_id,

@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include "platform/usb_bot.h"
+#include "platform/optical_inventory_filter.h"
 #include "platform/usb_bot_identity.h"
 
 #include <windows.h>
@@ -815,7 +816,7 @@ typedef struct windows_inventory_request {
     gdox_usb_bot_device *devices;
     size_t capacity;
     size_t count;
-    bool query_media;
+    const gdox_optical_media_query *query;
 } windows_inventory_request;
 
 static bool inventory_windows_candidate(HDEVINFO devices, SP_DEVINFO_DATA *device_info,
@@ -874,7 +875,7 @@ static bool inventory_windows_candidate(HDEVINFO devices, SP_DEVINFO_DATA *devic
             : observed.bus != BusTypeUnknown ? GDOX_OPTICAL_CONNECTION_OTHER
             : GDOX_OPTICAL_CONNECTION_UNKNOWN;
     }
-    if (request->query_media && entry->accessible) {
+    if (entry->accessible && gdox_optical_media_query_allows(request->query, entry->id)) {
         observe_windows_media(device, entry);
     }
     (void)CloseHandle(device);
@@ -884,9 +885,18 @@ static bool inventory_windows_candidate(HDEVINFO devices, SP_DEVINFO_DATA *devic
 bool gdox_usb_bot_list_devices(gdox_usb_bot_device *devices, size_t capacity,
     size_t *count, bool query_media, gdox_error *error)
 {
-    windows_inventory_request request = {devices, capacity, 0U, query_media};
+    const gdox_optical_media_query query = {.enabled = query_media};
+    return gdox_usb_bot_list_devices_filtered(devices, capacity, count, &query, error);
+}
+
+bool gdox_usb_bot_list_devices_filtered(gdox_usb_bot_device *devices, size_t capacity,
+    size_t *count, const gdox_optical_media_query *query, gdox_error *error)
+{
+    windows_inventory_request request = {devices, capacity, 0U, query};
     bool success;
     gdox_error_clear(error);
+    if (count != NULL) *count = 0U;
+    if (!gdox_optical_media_query_valid(query, error)) return false;
     if (count == NULL || capacity == 0U || devices == NULL) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT,
             "optical device inventory and count outputs are required");

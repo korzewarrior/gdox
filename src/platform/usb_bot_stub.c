@@ -21,6 +21,15 @@ bool gdox_usb_bot_list_devices(
     return false;
 }
 
+bool gdox_usb_bot_list_devices_filtered(
+    gdox_usb_bot_device *devices, size_t capacity, size_t *count,
+    const gdox_optical_media_query *query, gdox_error *error
+)
+{
+    (void)query;
+    return gdox_usb_bot_list_devices(devices, capacity, count, false, error);
+}
+
 bool gdox_usb_bot_open_device(
     gdox_usb_bot_identity identity, const char *device_id,
     gdox_scsi_transport *transport, gdox_error *error
