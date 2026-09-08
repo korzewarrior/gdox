@@ -2,6 +2,20 @@
 
 This guide covers the Original Xbox and Xbox 360 desktop paths in GDOX.
 
+## GDOX shows another drive
+
+Choose the intended model and drive letter or location in **Drive** on Play or
+Preserve. Multiple USB and SATA drives can remain connected. **Automatic**
+prefers a supported drive with media; a saved explicit choice stays selected
+when unplugged until you select another drive or Automatic.
+If you move a drive to another USB port or hub, select it again.
+
+Stop playback or preservation before switching. If another drive has a
+restoration warning, selecting a healthy drive keeps the old warning and
+cleanup ownership separate. Windows reconnect recovery reopens only the
+previously selected device after checking its identity. Close Drive Reporter
+and other drive diagnostics if the selected drive reports access unavailable.
+
 ## Supported drive unavailable
 
 Confirm the identity on Details. A supported drive must report one complete

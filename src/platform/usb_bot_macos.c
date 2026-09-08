@@ -18,6 +18,8 @@ typedef struct GdoxMacScsiDevice GdoxMacScsiDevice;
 int gdox_macos_scsi_start_mount_guard(char *error, size_t error_capacity);
 int gdox_macos_scsi_release_system_media(
     int identity,
+    const char *device_id,
+    uint64_t registry_id,
     char *error,
     size_t error_capacity
 );
@@ -27,6 +29,8 @@ int gdox_macos_scsi_observe_all(
 );
 int gdox_macos_scsi_open(
     int identity,
+    const char *device_id,
+    uint64_t *registry_id,
     GdoxMacScsiDevice **output,
     char *error,
     size_t error_capacity
@@ -68,6 +72,9 @@ int gdox_macos_scsi_command_none(
     size_t error_capacity
 );
 void gdox_macos_scsi_close(GdoxMacScsiDevice *device);
+void gdox_macos_scsi_clear_mount_guard(uint64_t registry_id);
+bool gdox_macos_scsi_list_devices(gdox_usb_bot_device *devices, size_t capacity,
+    size_t *count, const gdox_optical_media_query *query, gdox_error *error);
 
 typedef struct gdox_macos_scsi_context {
     GdoxMacScsiDevice *device;
@@ -275,17 +282,21 @@ static bool supported_identity(gdox_usb_bot_identity identity)
 
 static bool open_native_device(
     gdox_usb_bot_identity identity,
+    const char *device_id,
     GdoxMacScsiDevice **device,
     gdox_error *error
 )
 {
     bool released_system_media = false;
     uint32_t attempt;
+    uint64_t registry_id = 0U;
 
     for (attempt = 0U; attempt < GDOX_MACOS_OPEN_ATTEMPTS; ++attempt) {
         char detail[GDOX_MACOS_ERROR_CAPACITY] = {0};
         const int status = gdox_macos_scsi_open(
             (int)identity,
+            device_id,
+            &registry_id,
             device,
             detail,
             sizeof(detail)
@@ -297,6 +308,8 @@ static bool open_native_device(
             char release_detail[GDOX_MACOS_ERROR_CAPACITY] = {0};
             if (gdox_macos_scsi_release_system_media(
                     (int)identity,
+                    device_id,
+                    registry_id,
                     release_detail,
                     sizeof(release_detail)
                 ) != 0) {
@@ -305,6 +318,7 @@ static bool open_native_device(
                     "release macOS optical media session",
                     release_detail
                 );
+                gdox_macos_scsi_clear_mount_guard(registry_id);
                 return false;
             }
             released_system_media = true;
@@ -315,6 +329,7 @@ static bool open_native_device(
                 "open the macOS optical command channel",
                 detail
             );
+            gdox_macos_scsi_clear_mount_guard(registry_id);
             return false;
         }
         gdox_sleep_ms(UINT32_C(100));
@@ -324,11 +339,13 @@ static bool open_native_device(
         GDOX_ERROR_TRANSPORT,
         "macOS optical command channel did not become available"
     );
+    gdox_macos_scsi_clear_mount_guard(registry_id);
     return false;
 }
 
-bool gdox_usb_bot_open(
+bool gdox_usb_bot_open_device(
     gdox_usb_bot_identity identity,
+    const char *device_id,
     gdox_scsi_transport *transport,
     gdox_error *error
 )
@@ -337,8 +354,11 @@ bool gdox_usb_bot_open(
     char detail[GDOX_MACOS_ERROR_CAPACITY] = {0};
 
     gdox_error_clear(error);
-    if (transport == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "transport output is required");
+    if (transport == NULL || gdox_scsi_transport_is_valid(transport)
+        || device_id == NULL || device_id[0] == '\0'
+        || strlen(device_id) >= GDOX_OPTICAL_DEVICE_ID_CAPACITY) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT,
+                       "an empty transport and physical optical device ID are required");
         return false;
     }
     transport->context = NULL;
@@ -362,6 +382,7 @@ bool gdox_usb_bot_open(
     }
     if (!open_native_device(
             identity,
+            device_id,
             &context->device,
             error
         )) {
@@ -371,6 +392,57 @@ bool gdox_usb_bot_open(
     transport->context = context;
     transport->ops = &macos_ops;
     return true;
+}
+
+bool gdox_usb_bot_list_devices(gdox_usb_bot_device *devices, size_t capacity,
+    size_t *count, bool query_media, gdox_error *error)
+{
+    const gdox_optical_media_query query = {.enabled = query_media};
+    return gdox_usb_bot_list_devices_filtered(devices, capacity, count, &query, error);
+}
+
+bool gdox_usb_bot_list_devices_filtered(gdox_usb_bot_device *devices, size_t capacity,
+    size_t *count, const gdox_optical_media_query *query, gdox_error *error)
+{
+    return gdox_macos_scsi_list_devices(devices, capacity, count, query, error);
+}
+
+bool gdox_usb_bot_device_connected(gdox_usb_bot_identity identity,
+    const char *device_id, bool *connected, gdox_error *error)
+{
+    gdox_usb_bot_device devices[GDOX_OPTICAL_MAX_DEVICES];
+    size_t count;
+    gdox_error_clear(error);
+    if (connected != NULL) *connected = false;
+    if (device_id == NULL || device_id[0] == '\0' || connected == NULL
+        || (unsigned int)identity >= GDOX_USB_BOT_IDENTITY_COUNT) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT,
+                       "a physical optical device ID is required");
+        return false;
+    }
+    if (!gdox_usb_bot_list_devices(devices, GDOX_OPTICAL_MAX_DEVICES, &count, false, error)) return false;
+    for (size_t index = 0U; index < count; ++index) {
+        if (strcmp(device_id, devices[index].id) == 0) {
+            *connected = true;
+            break;
+        }
+    }
+    return true;
+}
+
+bool gdox_usb_bot_open(gdox_usb_bot_identity identity,
+    gdox_scsi_transport *transport, gdox_error *error)
+{
+    gdox_usb_bot_device devices[GDOX_OPTICAL_MAX_DEVICES];
+    size_t count;
+    if (!gdox_usb_bot_list_devices(devices, GDOX_OPTICAL_MAX_DEVICES, &count, false, error)) return false;
+    for (size_t index = 0U; index < count; ++index) {
+        if (devices[index].identity == identity) {
+            return gdox_usb_bot_open_device(identity, devices[index].id, transport, error);
+        }
+    }
+    gdox_error_set(error, GDOX_ERROR_NOT_FOUND, "the requested optical drive is not connected");
+    return false;
 }
 
 bool gdox_usb_bot_observe_all(

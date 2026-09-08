@@ -39,6 +39,23 @@ extension is installed.
 Open `gdox.exe`. GDOX uses Windows' standard optical-storage driver; do not
 replace it with WinUSB or install a third-party device driver.
 
+## Choosing a drive
+
+Use **Drive** on Play or Preserve to select a physical drive. The list shows
+its model, connection, and drive letter or location, so separate units of the
+same model can be distinguished. Unsupported drives remain visible with their
+status; selecting one does not add firmware or media support.
+
+**Automatic** prefers an accessible supported drive with media and keeps the
+active session on that drive. An explicit choice is remembered across restarts
+and remains selected if disconnected. Choose another drive or Automatic to
+change it. Stop playback or preservation before switching.
+
+If restoration fails, you can choose another drive. GDOX keeps the failed
+drive's cleanup ownership and warning separately, and retries that exact drive
+when idle. A warning about the previous drive does not describe the newly
+selected one. Close drive diagnostics before using the drive in GDOX.
+
 ## Background operation
 
 On Windows, macOS, and supported Linux desktops, closing the GDOX window keeps

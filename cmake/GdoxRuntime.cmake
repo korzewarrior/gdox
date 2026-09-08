@@ -7,6 +7,8 @@ add_library(
         src/app/runtime_actions.c
         src/app/runtime_bundle.c
         src/app/runtime_controls.c
+        src/app/runtime_drives.c
+        src/app/runtime_drive_loop.c
         src/app/runtime_media.c
         src/app/runtime_playback.c
         src/app/runtime_physical.c

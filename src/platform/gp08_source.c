@@ -5,6 +5,7 @@
 #include "platform/gp08_source.h"
 #include "platform/mmc_commands.h"
 #include "platform/optical_driver.h"
+#include "platform/optical_restore.h"
 #include "platform/portable_sync.h"
 #include "platform/scsi_transport.h"
 #include "platform/usb_bot.h"
@@ -214,7 +215,7 @@ static bool ladder_aborted(const atomic_bool *abort, gdox_error *error)
     return false;
 }
 
-static bool read_state(
+static bool read_memory_state(
     gdox_gp08_context *context,
     const atomic_bool *abort,
     gdox_gp08_state *state,
@@ -265,14 +266,24 @@ static bool read_state(
             state->pfi_end,
             sizeof(state->pfi_end),
             error
-        )
-        && gdox_mmc_read_capacity_10(
-            &context->transport,
-            UINT32_C(10000),
-            &state->last_lba,
-            &state->block_size,
-            error
         );
+}
+
+static bool read_state(gdox_gp08_context *context, const atomic_bool *abort,
+    gdox_gp08_state *state, gdox_error *error)
+{
+    return read_memory_state(context, abort, state, error)
+        && gdox_mmc_read_capacity_10(&context->transport, UINT32_C(10000),
+            &state->last_lba, &state->block_size, error);
+}
+
+static bool read_restore_state(gdox_gp08_context *context,
+    gdox_gp08_state *state, bool *no_medium, gdox_error *error)
+{
+    return read_memory_state(context, NULL, state, error)
+        && gdox_optical_restore_read_capacity(&context->transport, UINT32_C(10000),
+            context->stock.last_lba, &state->last_lba, &state->block_size,
+            no_medium, error);
 }
 
 static void make_live_zone0(uint8_t output[16])
@@ -460,6 +471,7 @@ static bool restore_stock(gdox_gp08_context *context, gdox_error *error)
     gdox_error first_error;
     gdox_error current;
     gdox_gp08_state observed;
+    bool no_medium;
     bool command_failed = false;
 
     gdox_error_clear(&first_error);
@@ -536,7 +548,7 @@ static bool restore_stock(gdox_gp08_context *context, gdox_error *error)
         &first_error
     );
 
-    if (read_state(context, NULL, &observed, &current)
+    if (read_restore_state(context, &observed, &no_medium, &current)
         && memcmp(&observed, &context->stock, sizeof(observed)) == 0) {
         return true;
     }
@@ -550,6 +562,22 @@ static bool restore_stock(gdox_gp08_context *context, gdox_error *error)
     return false;
 }
 
+static bool guarded_restore_stock(gdox_gp08_context *context, gdox_error *error)
+{
+    gdox_gp08_state observed;
+    bool no_medium;
+    if (!read_restore_state(context, &observed, &no_medium, error)) return false;
+    if (!state_is_known_partial(&observed, &context->stock)) {
+        gdox_error_set(error, GDOX_ERROR_UNSUPPORTED,
+            "refusing GP08 restoration because retained media state is unknown");
+        return false;
+    }
+    /* These profiles expose mutable PFI caches. The complete retained
+     * memory state and fixed neighbors establish the known layout. */
+    return memcmp(&observed, &context->stock, sizeof(observed)) == 0
+        || restore_stock(context, error);
+}
+
 static bool restore_stock_after_streaming(
     gdox_gp08_context *context,
     gdox_error *error
@@ -558,7 +586,7 @@ static bool restore_stock_after_streaming(
     gdox_error last;
     uint32_t attempt;
 
-    if (restore_stock(context, &last)) {
+    if (guarded_restore_stock(context, &last)) {
         return true;
     }
     for (attempt = 0U; attempt < 2U; ++attempt) {
@@ -566,7 +594,7 @@ static bool restore_stock_after_streaming(
 
         (void)gdox_scsi_transport_reset(&context->transport, &ignored);
         gdox_sleep_ms(UINT32_C(100) * (attempt + 1U));
-        if (restore_stock(context, &last)) {
+        if (guarded_restore_stock(context, &last)) {
             return true;
         }
     }
@@ -1245,8 +1273,10 @@ static bool apply_live_with_rollback(
 {
     gdox_error operation_error;
 
+    /* A failed write may still have changed volatile state. Keep ownership
+     * until rollback verifies, including failures before activation ends. */
+    context->active = true;
     if (apply_live(context, error)) {
-        context->active = true;
         return true;
     }
     operation_error = *error;
@@ -1257,6 +1287,7 @@ static bool apply_live_with_rollback(
             "GP08 initialization failed and volatile-state restoration also failed; power-cycle the drive"
         );
     } else {
+        context->active = false;
         *error = operation_error;
     }
     return false;
@@ -1400,7 +1431,11 @@ bool gdox_optical_open_gp08(
     );
 }
 
-bool gdox_optical_eject_gp08(gdox_error *error)
+bool gdox_gp08_source_eject(
+    gdox_gp08_transport_opener opener,
+    void *opener_context,
+    gdox_error *error
+)
 {
     gdox_scsi_transport transport = {0};
     gdox_mmc_identity identity;
@@ -1410,9 +1445,15 @@ bool gdox_optical_eject_gp08(gdox_error *error)
     gdox_error close_error;
     bool success;
 
+    gdox_error_clear(error);
+    if (opener == NULL) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT,
+            "a GP08 transport opener is required for ejection");
+        return false;
+    }
     if (!open_validated_transport(
-            open_discovered_gp08,
-            NULL,
+            opener,
+            opener_context,
             &transport,
             &identity,
             error
@@ -1440,4 +1481,9 @@ bool gdox_optical_eject_gp08(gdox_error *error)
         success = false;
     }
     return success;
+}
+
+bool gdox_optical_eject_gp08(gdox_error *error)
+{
+    return gdox_gp08_source_eject(open_discovered_gp08, NULL, error);
 }

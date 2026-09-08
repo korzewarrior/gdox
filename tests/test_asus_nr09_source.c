@@ -166,6 +166,9 @@ typedef struct fake_asus {
     bool fail_prepare_close;
     bool fail_stock_writes;
     bool device_present;
+    bool fail_memory;
+    bool fail_memory_until_reset;
+    bool change_media_on_reset;
     bool capacity_no_medium;
     uint8_t cached_sense[18];
     size_t cached_sense_bytes;
@@ -324,6 +327,9 @@ static bool fake_command_in(
         const uint32_t address = read_be_u32(cdb + 2U);
         uint8_t *field;
 
+        if (fake->fail_memory || fake->fail_memory_until_reset) {
+            return fail(error, GDOX_ERROR_TRANSPORT, "injected memory read failure");
+        }
         if (!memory_field(fake, address, cdb[9], &field)
             || !log_command(
                 fake,
@@ -562,6 +568,8 @@ static bool fake_reset(void *raw_context, gdox_error *error)
 {
     fake_asus *fake = raw_context;
     ++fake->reset_count;
+    fake->fail_memory_until_reset = false;
+    if (fake->change_media_on_reset) fake->complemented_start[0] = 0xeeU;
     gdox_error_clear(error);
     return true;
 }
@@ -1385,9 +1393,61 @@ static bool test_recovery_stops_live_reentry_on_post_reset_event(void)
     return true;
 }
 
+static bool test_close_revalidates_retained_state(void)
+{
+    for (unsigned int scenario = 0U; scenario < 5U; ++scenario) {
+        fake_asus fake;
+        gdox_sector_source source = {0};
+        gdox_error error;
+        fake_initialize(&fake, false);
+        CHECK(gdox_asus_nr09_source_open(fake_open, &fake, 0U, 0U, &source, &error));
+        const fake_asus live = fake;
+        const uint32_t writes = fake.write_count;
+        if (scenario == 0U) fake.start_psn[0] = 0xeeU;
+        if (scenario == 1U) fake.values[3][0] = 0xeeU;
+        if (scenario == 2U) fake.last_lba = 12345U;
+        if (scenario == 3U) {
+            fake.fail_memory_until_reset = true;
+            fake.change_media_on_reset = true;
+        }
+        if (scenario == 4U) {
+            fake.fail_memory = true;
+            fake.capacity_no_medium = true;
+            fake.cached_sense_bytes = sizeof(fake.cached_sense);
+            fake.cached_sense[0] = 0x70U;
+            fake.cached_sense[2] = 0x02U;
+            fake.cached_sense[12] = 0x3aU;
+        }
+        CHECK(!gdox_source_close(&source, &error));
+        CHECK(fake.write_count == writes);
+        CHECK(gdox_source_is_valid(&source) && !fake.closed);
+        fake = live;
+        CHECK(gdox_source_close(&source, &error));
+        CHECK(fake_state_matches(&fake, false));
+    }
+    return true;
+}
+
+static bool test_close_already_stock_is_write_free(void)
+{
+    fake_asus fake;
+    gdox_sector_source source = {0};
+    gdox_error error;
+    fake_initialize(&fake, false);
+    CHECK(gdox_asus_nr09_source_open(fake_open, &fake, 0U, 0U, &source, &error));
+    const uint32_t writes = fake.write_count;
+    fake_initialize(&fake, false);
+    fake.write_count = writes;
+    CHECK(gdox_source_close(&source, &error));
+    CHECK(fake.write_count == writes && fake.closed);
+    return true;
+}
+
 int main(void)
 {
-    if (!test_success_and_chunking()
+    if (!test_close_revalidates_retained_state()
+        || !test_close_already_stock_is_write_free()
+        || !test_success_and_chunking()
         || !test_activation_failures_restore()
         || !test_identity_and_stock_gate()
         || !test_descriptor_rejection_restores()

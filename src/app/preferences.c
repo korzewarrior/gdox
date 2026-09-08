@@ -21,6 +21,8 @@ typedef struct decoded_fields {
     bool xemu_override;
     bool legacy_hdd_override;
     bool preservation_directory;
+    bool optical_device_id;
+    bool optical_device_label;
 } decoded_fields;
 
 void gdox_preferences_defaults(gdox_preferences *preferences)
@@ -36,6 +38,8 @@ void gdox_preferences_defaults(gdox_preferences *preferences)
         true,
         1280U,
         720U,
+        "",
+        "",
         "",
         "",
     };
@@ -238,6 +242,18 @@ static bool assign_field(
 {
     const string_field_binding strings[] = {
         {
+            "optical_device_id", 17U,
+            preferences->optical_device_id,
+            sizeof(preferences->optical_device_id),
+            &fields->optical_device_id,
+        },
+        {
+            "optical_device_label", 20U,
+            preferences->optical_device_label,
+            sizeof(preferences->optical_device_label),
+            &fields->optical_device_label,
+        },
+        {
             "xemu_override",
             13U,
             preferences->xemu_override,
@@ -365,12 +381,15 @@ bool gdox_preferences_save(
     gdox_error *error
 )
 {
-    char text[GDOX_EMULATOR_PATH_CAPACITY * 2U + 512U];
+    char text[GDOX_EMULATOR_PATH_CAPACITY * 2U
+        + GDOX_OPTICAL_DEVICE_ID_CAPACITY + GDOX_APP_DRIVE_LABEL_CAPACITY + 512U];
     int bytes;
     const bool xemu_override =
         preferences != NULL && preferences->xemu_override[0] != '\0';
     const bool preservation_directory =
         preferences != NULL && preferences->preservation_directory[0] != '\0';
+    const bool optical_device =
+        preferences != NULL && preferences->optical_device_id[0] != '\0';
 
     gdox_error_clear(error);
     if (preferences == NULL
@@ -382,6 +401,10 @@ bool gdox_preferences_save(
         || strchr(preferences->xemu_override, '\r') != NULL
         || strchr(preferences->preservation_directory, '\n') != NULL
         || strchr(preferences->preservation_directory, '\r') != NULL
+        || strchr(preferences->optical_device_id, '\n') != NULL
+        || strchr(preferences->optical_device_id, '\r') != NULL
+        || strchr(preferences->optical_device_label, '\n') != NULL
+        || strchr(preferences->optical_device_label, '\r') != NULL
         || preferences->window_width < 640U
         || preferences->window_width > 7680U
         || preferences->window_height < 480U
@@ -401,6 +424,8 @@ bool gdox_preferences_save(
         "window_width=%u\n"
         "window_height=%u\n"
         "%s%s%s"
+        "%s%s%s"
+        "%s%s%s"
         "%s%s%s",
         GDOX_PREFERENCES_SCHEMA,
         preferences->auto_start ? 1U : 0U,
@@ -415,7 +440,15 @@ bool gdox_preferences_save(
         xemu_override ? "\n" : "",
         preservation_directory ? "preservation_directory=" : "",
         preservation_directory ? preferences->preservation_directory : "",
-        preservation_directory ? "\n" : ""
+        preservation_directory ? "\n" : "",
+        optical_device ? "optical_device_id=" : "",
+        optical_device ? preferences->optical_device_id : "",
+        optical_device ? "\n" : "",
+        optical_device && preferences->optical_device_label[0] != '\0'
+            ? "optical_device_label=" : "",
+        optical_device ? preferences->optical_device_label : "",
+        optical_device && preferences->optical_device_label[0] != '\0'
+            ? "\n" : ""
     );
     if (bytes < 0 || (size_t)bytes >= sizeof(text)) {
         gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not encode preferences");

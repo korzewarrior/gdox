@@ -1,5 +1,18 @@
 # changes
 
+## 0.2.7
+
+- choose a physical drive from Play or Preserve, including multiple USB or
+  SATA drives and separate units of the same model
+- keep explicit drive choices across restarts and reconnects; Automatic
+  prefers a drive with media and keeps the active session on its drive
+- allow switching away from a failed restoration while retaining that
+  drive's cleanup ownership and warning separately
+- keep Windows reconnect recovery tied to the selected physical device and
+  revalidate its identity before reopening a stale command channel
+- verify retained disc state before cleanup writes and keep failed partial
+  activation owned until restoration succeeds
+
 ## 0.2.6
 
 - import valid BIOS and boot ROM files independently of xemu setup, keep

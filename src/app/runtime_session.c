@@ -163,7 +163,7 @@ gdox_runtime_live_prepare_result gdox_runtime_session_prepare_live(
     gdox_runtime_set_controls(snapshot, runtime->optical_drive, false, false);
     gdox_runtime_publish(runtime, snapshot);
     if (!gdox_runtime_media_open_physical(
-            runtime->optical_drive, &runtime->media, &result, error
+            &runtime->optical_device, &runtime->media, &result, error
         )) {
         (void)gdox_runtime_apply_media_open_result(snapshot, &result);
         gdox_runtime_attention(
@@ -322,6 +322,7 @@ void gdox_runtime_session_select_physical(
     );
     snapshot->phase = GDOX_RUNTIME_DISCOVERING;
     runtime->optical_drive = GDOX_OPTICAL_DRIVE_NONE;
+    memset(&runtime->optical_device, 0, sizeof(runtime->optical_device));
     gdox_runtime_copy_text(
         snapshot->drive, sizeof(snapshot->drive), "Checking optical drive"
     );

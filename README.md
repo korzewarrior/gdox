@@ -25,6 +25,9 @@ host, media, and validation matrix is in [Xbox 360 support](docs/XBOX360.md).
 similar drive names, firmware revisions, and USB bridges are not
 interchangeable.
 
+Use **Drive** on Play or Preserve to choose among connected USB and SATA
+drives, or leave it on **Automatic** to prefer a drive with media.
+
 Experimental Windows readers for [ASUS DRW-24D5MT 2.00](docs/ASUS_MT1862.md)
 (native SATA) and [GP57EB40 PB00](docs/GP57EB40_PB00.md) (USB) accept XGD2
 Wave 2 only. Reads and restoration are verified through diagnostics; Hexode

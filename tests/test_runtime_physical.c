@@ -32,6 +32,8 @@ typedef struct fake_runtime_physical {
     bool authorization_blocked;
     bool leave_media_open;
     gdox_optical_eject_completion eject_completion;
+    char connected_id[GDOX_OPTICAL_DEVICE_ID_CAPACITY];
+    char ejected_id[GDOX_OPTICAL_DEVICE_ID_CAPACITY];
 } fake_runtime_physical;
 
 static fake_runtime_physical fake;
@@ -83,25 +85,25 @@ bool gdox_nbd_runtime_error(
     return false;
 }
 
-bool gdox_optical_connected(
-    gdox_optical_drive drive,
+bool gdox_optical_device_connected(
+    const gdox_optical_device *device,
     bool *connected,
     gdox_error *error
 )
 {
-    (void)drive;
+    (void)snprintf(fake.connected_id, sizeof(fake.connected_id), "%s", device->id);
     *connected = true;
     gdox_error_clear(error);
     return true;
 }
 
-bool gdox_optical_complete_eject_request(
-    gdox_optical_drive drive,
+bool gdox_optical_complete_device_eject_request(
+    const gdox_optical_device *device,
     gdox_optical_eject_completion *completion,
     gdox_error *error
 )
 {
-    (void)drive;
+    (void)snprintf(fake.ejected_id, sizeof(fake.ejected_id), "%s", device->id);
     append_action('E');
     ++fake.eject_count;
     if (!fake.eject_succeeds) {
@@ -206,6 +208,9 @@ static void initialize_runtime(
     runtime->media.open = true;
     runtime->media.exported = test_export();
     runtime->optical_drive = GDOX_OPTICAL_DRIVE_GP65;
+    runtime->optical_device.drive = runtime->optical_drive;
+    (void)snprintf(runtime->optical_device.id, sizeof(runtime->optical_device.id),
+        "usb:physical-drive-two");
     snapshot->can_eject = true;
     gdox_runtime_physical_initialize(state);
     gdox_optical_monitor_initialize(monitor);
@@ -258,6 +263,8 @@ static bool test_current_request_ejects_after_close(void)
     CHECK(fake.end_count == 1U);
     CHECK(fake.end_reason == GDOX_RUNTIME_PHYSICAL_EJECT_REQUESTED);
     CHECK(fake.eject_count == 1U);
+    CHECK(strcmp(fake.connected_id, "usb:physical-drive-two") == 0);
+    CHECK(strcmp(fake.ejected_id, "usb:physical-drive-two") == 0);
     CHECK(fake.action_count == 2U);
     CHECK(fake.actions[0] == 'C' && fake.actions[1] == 'E');
     CHECK(monitor.attempt_permitted);
@@ -410,11 +417,14 @@ static bool test_cleanup_retry_revalidates_request(void)
     CHECK(state.eject_generation == UINT64_C(20));
     gdox_runtime_physical_validate_cleanup(&runtime, &state);
     CHECK(state.cleanup == GDOX_RUNTIME_PHYSICAL_CLEANUP_EJECT);
+    (void)snprintf(runtime.optical_device.id, sizeof(runtime.optical_device.id),
+        "usb:unrelated-new-selection");
     gdox_error_clear(&error);
     gdox_runtime_physical_cleanup_completed(
         &runtime, &snapshot, &state, &monitor, &error
     );
     CHECK(fake.eject_count == 1U);
+    CHECK(strcmp(fake.ejected_id, "usb:physical-drive-two") == 0);
     CHECK(fake.action_count == 2U);
     CHECK(fake.actions[0] == 'C' && fake.actions[1] == 'E');
 

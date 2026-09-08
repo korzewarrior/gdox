@@ -14,6 +14,12 @@ typedef bool (*gdox_gp08_transport_opener)(
     gdox_error *error
 );
 
+bool gdox_gp08_source_eject(
+    gdox_gp08_transport_opener opener,
+    void *opener_context,
+    gdox_error *error
+);
+
 /*
  * Opens one validated GP08 source using a caller-supplied transport opener.
  * The opener is responsible for enforcing USB identity. The resulting source

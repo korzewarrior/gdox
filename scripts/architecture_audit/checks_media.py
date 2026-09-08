@@ -25,7 +25,8 @@ def _check_optical_api(repository: Repository) -> list[str]:
     registry = repository.source("src/platform/optical.c")
     runtime = repository.source("src/app/runtime_media.c")
 
-    if not public.declares_c_function("gdox_optical_open_media"):
+    devices = repository.source("src/platform/optical_devices.c")
+    if not public.declares_c_function("gdox_optical_open_device_media"):
         failures.append("public optical API omits detected-media opening")
     obsolete = (
         "gdox_optical_open_xgd2",
@@ -48,8 +49,13 @@ def _check_optical_api(repository: Repository) -> list[str]:
             break
     if any(runtime.has_identifier(symbol) for symbol in obsolete):
         failures.append("runtime media opening bypasses canonical optical detection")
-    if "gdox_optical_open_media" not in runtime.calls:
+    if "gdox_optical_open_device_media" not in runtime.calls:
         failures.append("runtime media omits canonical optical detection")
+    for required in ("gdox_usb_bot_open_device", "gdox_usb_bot_device_connected"):
+        if required not in devices.calls:
+            failures.append("physical optical operations omit exact device selection")
+    if "gdox_usb_bot_open" in devices.calls:
+        failures.append("physical optical operations fall back to model selection")
 
     implementations = (
         repository.source("src/platform/mt1887_source.c"),

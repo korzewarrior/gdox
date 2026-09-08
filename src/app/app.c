@@ -209,6 +209,12 @@ bool gdox_app_use_bundled_xemu(gdox_app *app)
         && gdox_runtime_use_bundled_xemu(app->runtime);
 }
 
+bool gdox_app_select_drive(gdox_app *app, const char *id)
+{
+    return app != NULL && app->runtime != NULL
+        && gdox_runtime_select_drive(app->runtime, id);
+}
+
 bool gdox_app_set_preservation_directory(gdox_app *app, const char *path)
 {
     return app != NULL && app->runtime != NULL

@@ -125,6 +125,7 @@ void draw_preserve(gdox_app &app, const gdox_app_snapshot &snapshot)
         ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened
     );
     const bool compact_layout = ImGui::GetWindowHeight() < 420.0F;
+    draw_drive_selector(app, snapshot);
     if (snapshot.phase == GDOX_APP_PRESERVING) {
         draw_preservation_progress(app, snapshot);
         ImGui::EndChild();

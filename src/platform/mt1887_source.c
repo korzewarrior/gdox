@@ -7,6 +7,7 @@
 #include "platform/mt1887_source.h"
 #include "platform/mt1887_profile.h"
 #include "platform/optical_driver.h"
+#include "platform/optical_restore.h"
 #include "platform/portable_sync.h"
 #include "platform/scsi_transport.h"
 #include "platform/usb_bot.h"
@@ -138,6 +139,7 @@ static bool read_xdata(
     uint16_t address,
     uint8_t *value,
     uint64_t deadline_ms,
+    bool retry,
     gdox_error *error
 )
 {
@@ -150,7 +152,7 @@ static bool read_xdata(
 
     cdb[4] = (uint8_t)(address >> 8U);
     cdb[5] = (uint8_t)(address & 0xffU);
-    for (attempt = 0U; attempt < GDOX_MT_DIAGNOSTIC_ATTEMPTS; ++attempt) {
+    for (attempt = 0U; attempt < (retry ? GDOX_MT_DIAGNOSTIC_ATTEMPTS : 1U); ++attempt) {
         size_t transferred;
         if (ladder_aborted(abort, error)) {
             return false;
@@ -187,7 +189,7 @@ static bool read_xdata(
         if (error->code == GDOX_ERROR_NOT_FOUND) {
             return false;
         }
-        if (attempt + 1U < GDOX_MT_DIAGNOSTIC_ATTEMPTS) {
+        if (retry && attempt + 1U < GDOX_MT_DIAGNOSTIC_ATTEMPTS) {
             gdox_error ignored;
             const uint32_t backoff_ms =
                 UINT32_C(100) * (attempt + 1U);
@@ -255,6 +257,7 @@ static bool read_triplet(
     const uint16_t addresses[3],
     uint8_t values[3],
     uint64_t deadline_ms,
+    bool retry,
     gdox_error *error
 )
 {
@@ -266,6 +269,7 @@ static bool read_triplet(
                 addresses[index],
                 &values[index],
                 deadline_ms,
+                retry,
                 error
             )) {
             return false;
@@ -318,6 +322,7 @@ static bool verify_fixed_fields(
     const gdox_mt1887_profile *profile,
     const atomic_bool *abort,
     uint64_t deadline_ms,
+    bool retry,
     gdox_error *error
 )
 {
@@ -328,7 +333,7 @@ static bool verify_fixed_fields(
         uint8_t value;
         if (!read_xdata(transport, abort,
                 (uint16_t)(profile->fixed_address + index), &value,
-                deadline_ms, error)) {
+                deadline_ms, retry, error)) {
             return false;
         }
         if (value != profile->fixed_values[index]) {
@@ -340,25 +345,25 @@ static bool verify_fixed_fields(
     return true;
 }
 
-static bool read_state(
+static bool read_memory_state(
     gdox_scsi_transport *transport,
     const gdox_mt1887_profile *profile,
     const atomic_bool *abort,
     gdox_mt1887_state *state,
     uint64_t deadline_ms,
+    bool retry,
     gdox_error *error
 )
 {
-    uint32_t timeout_ms;
-
     memset(state, 0, sizeof(*state));
-    return verify_fixed_fields(transport, profile, abort, deadline_ms, error)
+    return verify_fixed_fields(transport, profile, abort, deadline_ms, retry, error)
         && read_triplet(
             transport,
             abort,
             profile->capacity_addresses,
             state->capacity,
             deadline_ms,
+            retry,
             error
         )
         && read_triplet(
@@ -367,6 +372,7 @@ static bool read_state(
             profile->geometry_addresses,
             state->geometry,
             deadline_ms,
+            retry,
             error
         )
         && (!profile->auxiliary_present
@@ -376,21 +382,35 @@ static bool read_state(
                 profile->auxiliary_addresses,
                 state->auxiliary,
                 deadline_ms,
+                retry,
                 error
-            ))
-        && deadline_timeout(
-            deadline_ms,
-            UINT32_C(10000),
-            &timeout_ms,
-            error
-        )
-        && gdox_mmc_read_capacity_10(
-            transport,
-            timeout_ms,
-            &state->last_lba,
-            &state->block_size,
-            error
-        );
+            ));
+}
+
+static bool read_state(
+    gdox_scsi_transport *transport, const gdox_mt1887_profile *profile,
+    const atomic_bool *abort, gdox_mt1887_state *state, uint64_t deadline_ms,
+    gdox_error *error)
+{
+    uint32_t timeout_ms;
+    return read_memory_state(transport, profile, abort, state, deadline_ms, true, error)
+        && deadline_timeout(deadline_ms, UINT32_C(10000), &timeout_ms, error)
+        && gdox_mmc_read_capacity_10(transport, timeout_ms,
+            &state->last_lba, &state->block_size, error);
+}
+
+static bool read_restore_state(
+    gdox_scsi_transport *transport, const gdox_mt1887_profile *profile,
+    const gdox_mt1887_media_profile *media, const atomic_bool *abort,
+    gdox_mt1887_state *state, uint64_t deadline_ms, bool *no_medium, gdox_error *error)
+{
+    uint32_t timeout_ms;
+    /* Retry the whole snapshot after reset; never combine bytes from two
+     * command channels or two media states. */
+    return read_memory_state(transport, profile, abort, state, deadline_ms, false, error)
+        && deadline_timeout(deadline_ms, UINT32_C(10000), &timeout_ms, error)
+        && gdox_optical_restore_read_capacity(transport, timeout_ms, media->stock_last_lba,
+            &state->last_lba, &state->block_size, no_medium, error);
 }
 
 static bool restore_stock(
@@ -406,6 +426,7 @@ static bool restore_stock(
     gdox_error current;
     bool failed = false;
     gdox_mt1887_state state;
+    bool no_medium;
 
     gdox_error_clear(&first_error);
     if (!write_triplet(
@@ -446,8 +467,8 @@ static bool restore_stock(
         *error = first_error;
         return false;
     }
-    if (!read_state(
-            transport, profile, abort, &state, deadline_ms, error
+    if (!read_restore_state(
+            transport, profile, media, abort, &state, deadline_ms, &no_medium, error
         )) {
         return false;
     }
@@ -457,6 +478,30 @@ static bool restore_stock(
         return false;
     }
     return true;
+}
+
+static bool guarded_restore_stock(
+    gdox_scsi_transport *transport, const gdox_mt1887_profile *profile,
+    const gdox_mt1887_media_profile *media, gdox_error *error)
+{
+    gdox_mt1887_state state;
+    bool no_medium;
+    gdox_mt1887_media_state_class state_class;
+    if (!read_restore_state(transport, profile, media, NULL, &state, 0U, &no_medium, error)) {
+        return false;
+    }
+    state_class = gdox_mt1887_media_state_classify(media, profile, &state);
+    if (state_class == GDOX_MT1887_MEDIA_STATE_STOCK) {
+        return true;
+    }
+    if (state_class == GDOX_MT1887_MEDIA_STATE_UNKNOWN) {
+        gdox_error_set(error, GDOX_ERROR_UNSUPPORTED,
+            "refusing optical restoration because retained media state is unknown");
+        return false;
+    }
+    return gdox_optical_restore_check_geometry(transport, media->stock_geometry,
+            no_medium, error)
+        && restore_stock(transport, profile, media, NULL, 0U, error);
 }
 
 static bool restore_stock_after_streaming(
@@ -469,7 +514,7 @@ static bool restore_stock_after_streaming(
     gdox_error last;
     uint32_t attempt;
 
-    if (restore_stock(transport, profile, media, NULL, 0U, &last)) {
+    if (guarded_restore_stock(transport, profile, media, &last)) {
         return true;
     }
     for (attempt = 0U; attempt < 2U; ++attempt) {
@@ -477,7 +522,7 @@ static bool restore_stock_after_streaming(
 
         (void)gdox_scsi_transport_reset(transport, &ignored);
         gdox_sleep_ms(UINT32_C(100) * (attempt + 1U));
-        if (restore_stock(transport, profile, media, NULL, 0U, &last)) {
+        if (guarded_restore_stock(transport, profile, media, &last)) {
             return true;
         }
     }
@@ -2203,8 +2248,9 @@ bool gdox_optical_open_gp57(
     );
 }
 
-static bool eject_profile(
+bool gdox_mt1887_source_eject(
     gdox_mt1887_transport_opener opener,
+    void *opener_context,
     gdox_usb_bot_identity expected_identity,
     gdox_error *error
 )
@@ -2218,9 +2264,21 @@ static bool eject_profile(
     gdox_error close_error;
     bool success;
 
+    gdox_error_clear(error);
+    if (opener == NULL) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT,
+            "an MT1887 transport opener is required for ejection");
+        return false;
+    }
+    if (expected_identity != GDOX_USB_BOT_GP63
+        && expected_identity != GDOX_USB_BOT_GP65) {
+        gdox_error_set(error, GDOX_ERROR_UNSUPPORTED,
+            "operate the selected drive's tray manually");
+        return false;
+    }
     if (!open_validated_transport(
             opener,
-            NULL,
+            opener_context,
             expected_identity,
             &transport,
             &identity,
@@ -2254,8 +2312,9 @@ static bool eject_profile(
 
 bool gdox_optical_eject_gp63(gdox_error *error)
 {
-    return eject_profile(
+    return gdox_mt1887_source_eject(
         open_discovered_gp63,
+        NULL,
         GDOX_USB_BOT_GP63,
         error
     );
@@ -2263,8 +2322,9 @@ bool gdox_optical_eject_gp63(gdox_error *error)
 
 bool gdox_optical_eject_gp65(gdox_error *error)
 {
-    return eject_profile(
+    return gdox_mt1887_source_eject(
         open_discovered_gp65,
+        NULL,
         GDOX_USB_BOT_GP65,
         error
     );

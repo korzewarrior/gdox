@@ -112,9 +112,9 @@ def _check_runtime_target(repository: Repository) -> list[str]:
             failures.append(f"{name} exceeds its focused module boundary")
 
     physical = modules["runtime_physical.c"]
-    if "gdox_optical_connected" not in physical.calls:
+    if "gdox_optical_device_connected" not in physical.calls:
         failures.append(
-            "active playback presence must use non-commanding optical identity"
+            "active playback presence must use non-commanding physical device identity"
         )
     if "gdox_nbd_observe_media" not in physical.calls:
         failures.append(

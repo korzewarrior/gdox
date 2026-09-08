@@ -48,6 +48,9 @@ static void initialize_eject_case(
     memset(runtime, 0, sizeof(*runtime));
     memset(snapshot, 0, sizeof(*snapshot));
     runtime->optical_drive = GDOX_OPTICAL_DRIVE_GP63;
+    runtime->optical_device.drive = runtime->optical_drive;
+    (void)snprintf(runtime->optical_device.id, sizeof(runtime->optical_device.id),
+        "usb:selected-gp63-two");
     runtime->media.open = true;
     snapshot->media_source = GDOX_MEDIA_PHYSICAL_DISC;
     gdox_optical_monitor_initialize(monitor);
@@ -313,9 +316,10 @@ bool gdox_runtime_session_close(
     return true;
 }
 
-bool gdox_optical_eject(gdox_optical_drive drive, gdox_error *error)
+bool gdox_optical_eject_device(const gdox_optical_device *device, gdox_error *error)
 {
-    (void)drive;
+    check(strcmp(device->id, "usb:selected-gp63-two") == 0,
+        "eject uses the selected physical device identity");
     ++mocks.eject_calls;
     if (!mocks.eject_succeeds) {
         gdox_error_set(error, mocks.eject_error, "simulated eject failure");

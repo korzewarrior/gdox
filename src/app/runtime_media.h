@@ -51,7 +51,7 @@ typedef struct gdox_runtime_media_open_result {
 } gdox_runtime_media_open_result;
 
 bool gdox_runtime_media_open_physical(
-    gdox_optical_drive drive,
+    const gdox_optical_device *device,
     gdox_runtime_media_session *session,
     gdox_runtime_media_open_result *result,
     gdox_error *error

@@ -1,4 +1,5 @@
 #include "app/runtime_internal.h"
+#include "app/runtime_drives.h"
 
 #include "core/compact.h"
 #include "gdox/optical.h"
@@ -27,6 +28,7 @@ static void preservation_progress(
 )
 {
     gdox_runtime *runtime = context;
+    const uint64_t now = gdox_monotonic_ms();
     if (gdox_mutex_lock(&runtime->mutex)) {
         runtime->snapshot.phase = GDOX_RUNTIME_PRESERVING;
         runtime->snapshot.can_start = false;
@@ -52,6 +54,16 @@ static void preservation_progress(
                 : "Preserving disc"
         );
         gdox_mutex_unlock(&runtime->mutex);
+    }
+    if (now >= runtime->preservation_inventory_refresh_ms) {
+        gdox_runtime_snapshot inventory_snapshot;
+        gdox_error inventory_error;
+
+        gdox_runtime_copy_snapshot(runtime, &inventory_snapshot);
+        (void)gdox_runtime_drives_refresh(
+            runtime, &inventory_snapshot, &inventory_error);
+        gdox_runtime_publish(runtime, &inventory_snapshot);
+        runtime->preservation_inventory_refresh_ms = now + UINT64_C(1000);
     }
 }
 
@@ -146,11 +158,14 @@ static bool inspect_preservation_source(
     gdox_error *error
 )
 {
-    return gdox_optical_open(
-            runtime->optical_drive,
+    gdox_optical_media_info optical = {0};
+
+    return gdox_optical_open_device_media(
+            &runtime->optical_device,
             3U,
             30000U,
             &session->whole,
+            &optical,
             error
         )
         && gdox_xdvdfs_find_volume(

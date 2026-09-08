@@ -102,14 +102,14 @@ static void run(void)
     GDOX_TEST_CHECK(presence.drive == GDOX_OPTICAL_DRIVE_GP65);
 
     observations[GDOX_USB_BOT_GP08].drive_present = true;
-    GDOX_TEST_CHECK(!gdox_optical_select_presence(
+    GDOX_TEST_CHECK(gdox_optical_select_presence(
         observations,
         &presence,
         &error
     ));
-    GDOX_TEST_CHECK(error.code == GDOX_ERROR_UNSUPPORTED);
-    GDOX_TEST_CHECK(!presence.drive_present);
-    GDOX_TEST_CHECK(presence.drive == GDOX_OPTICAL_DRIVE_NONE);
+    GDOX_TEST_CHECK(!gdox_error_is_set(&error));
+    GDOX_TEST_CHECK(presence.drive_present);
+    GDOX_TEST_CHECK(presence.drive == GDOX_OPTICAL_DRIVE_GP65);
 
     GDOX_TEST_CHECK(strcmp(
         gdox_optical_drive_name(GDOX_OPTICAL_DRIVE_GP63),

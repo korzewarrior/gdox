@@ -1,5 +1,7 @@
 #include "platform/usb_bot.h"
+#include "platform/optical_inventory_filter.h"
 #include "platform/usb_bot_identity.h"
+#include "platform/macos_mount_guard.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <DiskArbitration/DiskArbitration.h>
@@ -15,9 +17,10 @@
 #include <string.h>
 #include <time.h>
 
-typedef struct {
+typedef struct GdoxMacScsiDevice {
     MMCDeviceInterface **mmc;
     SCSITaskDeviceInterface **scsi;
+    uint64_t registry_id;
 } GdoxMacScsiDevice;
 
 typedef struct {
@@ -50,6 +53,15 @@ enum {
 static pthread_once_t mount_guard_once = PTHREAD_ONCE_INIT;
 static DASessionRef mount_guard_session;
 static dispatch_queue_t mount_guard_queue;
+static pthread_mutex_t mount_guard_mutex = PTHREAD_MUTEX_INITIALIZER;
+static gdox_macos_mount_guards mount_guards;
+
+void gdox_macos_scsi_clear_mount_guard(uint64_t registry_id)
+{
+    pthread_mutex_lock(&mount_guard_mutex);
+    gdox_macos_mount_guard_release(&mount_guards, registry_id);
+    pthread_mutex_unlock(&mount_guard_mutex);
+}
 
 static void set_error(char *output, size_t capacity, const char *message)
 {
@@ -235,7 +247,8 @@ static int service_supported_identity(
          ++identity_index) {
         const gdox_usb_bot_identity candidate =
             (gdox_usb_bot_identity)identity_index;
-        if (gdox_usb_bot_identity_matches(candidate, &observed)) {
+        if (!gdox_optical_identity_requires_windows(candidate)
+            && gdox_usb_bot_identity_matches(candidate, &observed)) {
             *identity = candidate;
             return 1;
         }
@@ -255,7 +268,46 @@ static int service_is_supported_drive(
         && requested == observed;
 }
 
-static io_service_t find_supported_drive(GdoxMacDriveIdentity identity)
+static int service_string_copy(io_service_t service, CFStringRef key,
+    IOOptionBits options, char *output, size_t capacity)
+{
+    CFTypeRef value = IORegistryEntrySearchCFProperty(service, kIOServicePlane,
+        key, kCFAllocatorDefault, options);
+    int copied = value != NULL && CFGetTypeID(value) == CFStringGetTypeID()
+        && CFStringGetCString((CFStringRef)value, output, (CFIndex)capacity,
+                               kCFStringEncodingUTF8);
+    if (value != NULL) CFRelease(value);
+    return copied;
+}
+
+static int service_device_id(io_service_t service,
+    char output[GDOX_OPTICAL_DEVICE_ID_CAPACITY])
+{
+    static const char hex[] = "0123456789abcdef";
+    io_string_t path;
+    char serial[128];
+    size_t used;
+    int bytes;
+    if (IORegistryEntryGetPath(service, kIOServicePlane, path) != KERN_SUCCESS) return 0;
+    bytes = snprintf(output, GDOX_OPTICAL_DEVICE_ID_CAPACITY, "macos:%s;", path);
+    if (bytes < 0 || (size_t)bytes >= GDOX_OPTICAL_DEVICE_ID_CAPACITY) return 0;
+    used = (size_t)bytes;
+    if (service_string_copy(service, CFSTR("USB Serial Number"),
+            kIORegistryIterateRecursively | kIORegistryIterateParents,
+            serial, sizeof(serial))) {
+        for (size_t index = 0U; serial[index] != '\0'; ++index) {
+            const unsigned char value = (unsigned char)serial[index];
+            if (used + 2U >= GDOX_OPTICAL_DEVICE_ID_CAPACITY) return 0;
+            output[used++] = hex[value >> 4U];
+            output[used++] = hex[value & 0x0fU];
+        }
+    }
+    output[used] = '\0';
+    return 1;
+}
+
+static io_service_t find_supported_drive(GdoxMacDriveIdentity identity,
+    const char *device_id, uint64_t expected_registry_id)
 {
     io_iterator_t iterator = IO_OBJECT_NULL;
     kern_return_t result = IOServiceGetMatchingServices(
@@ -267,7 +319,13 @@ static io_service_t find_supported_drive(GdoxMacDriveIdentity identity)
     io_service_t selected = IO_OBJECT_NULL;
     io_service_t service;
     while ((service = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
-        if (service_is_supported_drive(service, identity)) {
+        char observed_id[GDOX_OPTICAL_DEVICE_ID_CAPACITY];
+        uint64_t registry_id;
+        if (device_id != NULL && service_is_supported_drive(service, identity)
+            && service_device_id(service, observed_id)
+            && strcmp(observed_id, device_id) == 0
+            && IORegistryEntryGetRegistryEntryID(service, &registry_id) == KERN_SUCCESS
+            && (expected_registry_id == 0U || registry_id == expected_registry_id)) {
             selected = service;
             break;
         }
@@ -277,9 +335,10 @@ static io_service_t find_supported_drive(GdoxMacDriveIdentity identity)
     return selected;
 }
 
-static io_service_t find_supported_media(GdoxMacDriveIdentity identity)
+static io_service_t find_supported_media(GdoxMacDriveIdentity identity,
+    const char *device_id, uint64_t registry_id)
 {
-    io_service_t drive = find_supported_drive(identity);
+    io_service_t drive = find_supported_drive(identity, device_id, registry_id);
     if (drive == IO_OBJECT_NULL) return IO_OBJECT_NULL;
 
     io_iterator_t iterator = IO_OBJECT_NULL;
@@ -327,6 +386,83 @@ static int service_has_media(io_service_t drive)
     return 0;
 }
 
+bool gdox_macos_scsi_list_devices(gdox_usb_bot_device *devices, size_t capacity,
+    size_t *count, const gdox_optical_media_query *query, gdox_error *error)
+{
+    io_iterator_t iterator = IO_OBJECT_NULL;
+    io_service_t service;
+    bool success = true;
+    gdox_error_clear(error);
+    if (count != NULL) *count = 0U;
+    if (!gdox_optical_media_query_valid(query, error)) return false;
+    if (devices == NULL || capacity == 0U || count == NULL) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT,
+                       "a nonempty optical inventory is required");
+        return false;
+    }
+    if (IOServiceGetMatchingServices(kIOMainPortDefault,
+            IOServiceMatching("IODVDServices"), &iterator) != KERN_SUCCESS) {
+        gdox_error_set(error, GDOX_ERROR_TRANSPORT,
+                       "could not enumerate macOS optical drives");
+        return false;
+    }
+    while ((service = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
+        gdox_usb_bot_device device = {0};
+        char vendor[32] = "";
+        char model[48] = "Optical drive";
+        char revision[16] = "";
+        char interconnect[32] = "";
+        char bsd_name[64];
+        if (!service_device_id(service, device.id)) {
+            IOObjectRelease(service);
+            continue;
+        }
+        device.identity = GDOX_USB_BOT_IDENTITY_COUNT;
+        (void)service_supported_identity(service, &device.identity);
+        (void)service_dictionary_string_copy(service, CFSTR("Device Characteristics"),
+            CFSTR("Vendor Name"), vendor, sizeof(vendor));
+        (void)service_dictionary_string_copy(service, CFSTR("Device Characteristics"),
+            CFSTR("Product Name"), model, sizeof(model));
+        (void)service_dictionary_string_copy(service, CFSTR("Device Characteristics"),
+            CFSTR("Product Revision Level"), revision, sizeof(revision));
+        (void)service_dictionary_string_copy(service, CFSTR("Protocol Characteristics"),
+            CFSTR("Physical Interconnect"), interconnect, sizeof(interconnect));
+        (void)snprintf(device.name, sizeof(device.name), "%s %s %s", vendor, model, revision);
+        device.connection = strcmp(interconnect, "USB") == 0 ? GDOX_OPTICAL_CONNECTION_USB
+            : (strcmp(interconnect, "SATA") == 0 || strcmp(interconnect, "ATA") == 0
+                || strcmp(interconnect, "ATAPI") == 0) ? GDOX_OPTICAL_CONNECTION_SATA
+            : GDOX_OPTICAL_CONNECTION_OTHER;
+        device.accessible = true;
+        if (service_string_copy(service, CFSTR("BSD Name"),
+                kIORegistryIterateRecursively, bsd_name, sizeof(bsd_name))) {
+            (void)snprintf(device.location, sizeof(device.location), "/dev/%s", bsd_name);
+        } else {
+            int location_id = 0;
+            if (service_ancestor_number(service, CFSTR("locationID"), &location_id)) {
+                (void)snprintf(device.location, sizeof(device.location), "%s location %08x",
+                               interconnect, (unsigned int)location_id);
+            } else {
+                (void)snprintf(device.location, sizeof(device.location), "%s optical drive",
+                               interconnect);
+            }
+        }
+        if (gdox_optical_media_query_allows(query, device.id)) {
+            device.media_status_known = true;
+            device.media_present = service_has_media(service) != 0;
+        }
+        IOObjectRelease(service);
+        if (*count == capacity) {
+            gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT,
+                           "optical device inventory exceeds its capacity");
+            success = false;
+            break;
+        }
+        devices[(*count)++] = device;
+    }
+    IOObjectRelease(iterator);
+    return success;
+}
+
 int gdox_macos_scsi_observe_all(
     int drive_present[GDOX_USB_BOT_IDENTITY_COUNT],
     int media_present[GDOX_USB_BOT_IDENTITY_COUNT])
@@ -363,14 +499,34 @@ int gdox_macos_scsi_observe_all(
 
 static int open_mmc(
     GdoxMacDriveIdentity identity,
+    const char *device_id,
+    uint64_t *registry_id,
     MMCDeviceInterface ***output,
     char *error,
     size_t error_capacity)
 {
-    io_service_t service = find_supported_drive(identity);
+    io_service_t service = find_supported_drive(identity, device_id, *registry_id);
     if (service == IO_OBJECT_NULL) {
         set_error(error, error_capacity, "the requested optical service is not available");
         return 1;
+    }
+
+    uint64_t observed_registry_id;
+    if (IORegistryEntryGetRegistryEntryID(service, &observed_registry_id) != KERN_SUCCESS) {
+        IOObjectRelease(service);
+        set_error(error, error_capacity, "the selected optical device disconnected");
+        return 1;
+    }
+    if (*registry_id == 0U) {
+        pthread_mutex_lock(&mount_guard_mutex);
+        const bool acquired = gdox_macos_mount_guard_acquire(&mount_guards, observed_registry_id);
+        pthread_mutex_unlock(&mount_guard_mutex);
+        if (!acquired) {
+            IOObjectRelease(service);
+            set_error(error, error_capacity, "macOS optical mount guard capacity is exhausted");
+            return kGdoxMacScsiOpenExclusive;
+        }
+        *registry_id = observed_registry_id;
     }
 
     IOCFPlugInInterface **plugin = NULL;
@@ -440,7 +596,12 @@ static int disk_is_supported_drive(DADiskRef disk)
     drive = find_dvd_service_ancestor(media);
     IOObjectRelease(media);
     if (drive == IO_OBJECT_NULL) return 0;
-    matches = service_supported_identity(drive, &identity);
+    uint64_t registry_id = 0U;
+    matches = service_supported_identity(drive, &identity)
+        && IORegistryEntryGetRegistryEntryID(drive, &registry_id) == KERN_SUCCESS;
+    pthread_mutex_lock(&mount_guard_mutex);
+    matches = matches && gdox_macos_mount_guard_contains(&mount_guards, registry_id);
+    pthread_mutex_unlock(&mount_guard_mutex);
     IOObjectRelease(drive);
     return matches;
 }
@@ -533,6 +694,8 @@ static void unmount_complete(
 
 int gdox_macos_scsi_release_system_media(
     int requested,
+    const char *device_id,
+    uint64_t registry_id,
     char *error,
     size_t error_capacity)
 {
@@ -545,7 +708,7 @@ int gdox_macos_scsi_release_system_media(
     int guard = gdox_macos_scsi_start_mount_guard(error, error_capacity);
     if (guard != 0) return guard;
 
-    io_service_t media = find_supported_media(identity);
+    io_service_t media = find_supported_media(identity, device_id, registry_id);
     if (media == IO_OBJECT_NULL) return 0;
     DADiskRef disk = DADiskCreateFromIOMedia(
         kCFAllocatorDefault,
@@ -609,6 +772,8 @@ int gdox_macos_scsi_release_system_media(
 
 int gdox_macos_scsi_open(
     int requested,
+    const char *device_id,
+    uint64_t *registry_id,
     GdoxMacScsiDevice **output,
     char *error,
     size_t error_capacity)
@@ -619,7 +784,8 @@ int gdox_macos_scsi_open(
         set_error(error, error_capacity, "the requested optical service is unsupported");
         return 1;
     }
-    if (output == NULL) {
+    if (output == NULL || device_id == NULL || device_id[0] == '\0'
+        || registry_id == NULL) {
         set_error(error, error_capacity, "the native-device output is missing");
         return 1;
     }
@@ -628,7 +794,7 @@ int gdox_macos_scsi_open(
     if (guard != 0) return guard;
 
     MMCDeviceInterface **mmc = NULL;
-    int opened = open_mmc(identity, &mmc, error, error_capacity);
+    int opened = open_mmc(identity, device_id, registry_id, &mmc, error, error_capacity);
     if (opened != 0) return opened;
     SCSITaskDeviceInterface **scsi = (*mmc)->GetSCSITaskDeviceInterface(mmc);
     if (scsi == NULL) {
@@ -672,6 +838,7 @@ int gdox_macos_scsi_open(
     }
     device->mmc = mmc;
     device->scsi = scsi;
+    device->registry_id = *registry_id;
     *output = device;
     return 0;
 }
@@ -860,6 +1027,7 @@ int gdox_macos_scsi_command_none(
 void gdox_macos_scsi_close(GdoxMacScsiDevice *device)
 {
     if (device == NULL) return;
+    gdox_macos_scsi_clear_mount_guard(device->registry_id);
     if (device->scsi != NULL) {
         (*device->scsi)->ReleaseExclusiveAccess(device->scsi);
     }

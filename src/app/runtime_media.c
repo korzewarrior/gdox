@@ -305,7 +305,7 @@ static bool build_physical_xbox_360(
 }
 
 bool gdox_runtime_media_open_physical(
-    gdox_optical_drive drive,
+    const gdox_optical_device *device,
     gdox_runtime_media_session *session,
     gdox_runtime_media_open_result *result,
     gdox_error *error
@@ -333,8 +333,8 @@ bool gdox_runtime_media_open_physical(
         );
         return false;
     }
-    if (!gdox_optical_open_media(
-            drive, 3U, 20000U, &whole, &optical, error
+    if (!gdox_optical_open_device_media(
+            device, 3U, 20000U, &whole, &optical, error
         )) {
         if (gdox_source_is_valid(&whole)) {
             gdox_error operation_error = *error;

@@ -6,6 +6,7 @@
 #include "platform/usb_bot_identity.h"
 #if defined(__linux__) && !defined(__ANDROID__)
 #include "platform/usb_bot_libusb_handoff.h"
+#include "platform/usb_bot_linux_devices.h"
 #endif
 
 #include "portable_sync.h"
@@ -49,6 +50,7 @@ typedef struct gdox_usb_bot_context {
     gdox_usb_bot_location location;
     gdox_libusb_handoff_state handoff;
     bool location_valid;
+    char device_id[GDOX_OPTICAL_DEVICE_ID_CAPACITY];
 #endif
 #if defined(__ANDROID__)
     bool reset_on_close;
@@ -919,11 +921,12 @@ static bool open_matching_identity(
         expected_location_valid = true;
     } else {
         memset(&expected_location, 0, sizeof(expected_location));
-        expected_location_valid = linux_identity_location(
-            requested,
-            &expected_location.bus,
-            &expected_location.address
-        );
+        expected_location_valid = usb->device_id[0] == '\0'
+            && linux_identity_location(
+                requested,
+                &expected_location.bus,
+                &expected_location.address
+            );
     }
     device_count = libusb_get_device_list(usb->library, &devices);
     if (device_count < 0) {
@@ -933,17 +936,22 @@ static bool open_matching_identity(
     for (index = 0; index < device_count; ++index) {
         struct libusb_device_descriptor descriptor;
         gdox_usb_bot_location observed_location;
+        char observed_id[GDOX_OPTICAL_DEVICE_ID_CAPACITY];
         gdox_error candidate_error;
         int open_result;
 
         gdox_error_clear(&candidate_error);
         if (!usb_device_location(devices[index], &observed_location)
+            || !gdox_usb_bot_linux_device_id(devices[index], observed_id)
+            || (usb->device_id[0] != '\0'
+                && strcmp(usb->device_id, observed_id) != 0)
             || (expected_location_valid
                 && !gdox_usb_bot_location_matches(
                     &expected_location,
                     &observed_location
                 ))
             || (!expected_location_valid
+                && usb->device_id[0] == '\0'
                 && linux_block_location_present(
                     observed_location.bus,
                     observed_location.address
@@ -981,6 +989,7 @@ static bool open_matching_identity(
                 usb->identity = requested;
                 usb->location = observed_location;
                 usb->location_valid = true;
+                (void)snprintf(usb->device_id, sizeof(usb->device_id), "%s", observed_id);
                 libusb_free_device_list(devices, 1);
                 return true;
             }
@@ -1518,8 +1527,9 @@ bool gdox_usb_bot_present_all(
 #endif
 }
 
-bool gdox_usb_bot_open(
+static bool open_usb_device(
     gdox_usb_bot_identity identity,
+    const char *device_id,
     gdox_scsi_transport *transport,
     gdox_error *error
 )
@@ -1532,6 +1542,9 @@ bool gdox_usb_bot_open(
     gdox_error_clear(error);
     if (transport == NULL || gdox_scsi_transport_is_valid(transport)
         || selected == NULL
+        || (device_id != NULL
+            && (device_id[0] == '\0'
+                || strlen(device_id) >= GDOX_OPTICAL_DEVICE_ID_CAPACITY))
         || gdox_optical_identity_requires_windows(identity)) {
         gdox_error_set(
             error,
@@ -1556,6 +1569,9 @@ bool gdox_usb_bot_open(
         return false;
     }
 #if defined(__linux__) && !defined(__ANDROID__)
+    if (device_id != NULL) {
+        (void)snprintf(usb->device_id, sizeof(usb->device_id), "%s", device_id);
+    }
     if (!open_matching_identity(usb, identity, error)) {
         if (usb->handle != NULL) {
             transport->context = usb;
@@ -1567,6 +1583,7 @@ bool gdox_usb_bot_open(
         return false;
     }
 #else
+    (void)device_id;
     usb->handle = libusb_open_device_with_vid_pid(
         usb->library,
         selected->vendor_id,
@@ -1589,6 +1606,71 @@ bool gdox_usb_bot_open(
     transport->ops = &usb_ops;
     return true;
 }
+
+bool gdox_usb_bot_open(
+    gdox_usb_bot_identity identity,
+    gdox_scsi_transport *transport,
+    gdox_error *error
+)
+{
+    return open_usb_device(identity, NULL, transport, error);
+}
+
+bool gdox_usb_bot_open_device(
+    gdox_usb_bot_identity identity,
+    const char *device_id,
+    gdox_scsi_transport *transport,
+    gdox_error *error
+)
+{
+    if (device_id == NULL || device_id[0] == '\0'
+        || strlen(device_id) >= GDOX_OPTICAL_DEVICE_ID_CAPACITY) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT,
+                       "a physical optical device ID is required");
+        return false;
+    }
+#if defined(__linux__) && !defined(__ANDROID__)
+    return open_usb_device(identity, device_id, transport, error);
+#else
+    (void)identity;
+    (void)transport;
+    gdox_error_set(error, GDOX_ERROR_UNSUPPORTED,
+                   "physical optical selection is unavailable on this libusb platform");
+    return false;
+#endif
+}
+
+#if !defined(__linux__) || defined(__ANDROID__)
+bool gdox_usb_bot_list_devices_filtered(gdox_usb_bot_device *devices, size_t capacity,
+    size_t *count, const gdox_optical_media_query *query, gdox_error *error)
+{
+    (void)query;
+    return gdox_usb_bot_list_devices(devices, capacity, count, false, error);
+}
+
+bool gdox_usb_bot_list_devices(gdox_usb_bot_device *devices, size_t capacity,
+    size_t *count, bool query_media, gdox_error *error)
+{
+    (void)devices;
+    (void)capacity;
+    (void)query_media;
+    if (count != NULL) *count = 0U;
+    gdox_error_set(error, GDOX_ERROR_UNSUPPORTED,
+                   "physical optical inventory is unavailable on this libusb platform");
+    return false;
+}
+
+bool gdox_usb_bot_device_connected(gdox_usb_bot_identity identity,
+    const char *device_id, bool *connected, gdox_error *error)
+{
+    (void)identity;
+    (void)device_id;
+    if (connected != NULL) *connected = false;
+    gdox_error_set(error, GDOX_ERROR_UNSUPPORTED,
+                   "physical optical inventory is unavailable on this libusb platform");
+    return false;
+}
+#endif
 
 #if defined(__ANDROID__)
 static bool open_android_file_descriptor(

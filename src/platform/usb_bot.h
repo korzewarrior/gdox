@@ -2,6 +2,7 @@
 #define GDOX_USB_BOT_H
 
 #include "platform/scsi_transport.h"
+#include "gdox/optical.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -24,6 +25,44 @@ typedef struct gdox_usb_bot_observation {
     bool media_status_known;
     bool media_present;
 } gdox_usb_bot_observation;
+
+typedef struct gdox_usb_bot_device {
+    gdox_usb_bot_identity identity;
+    char id[GDOX_OPTICAL_DEVICE_ID_CAPACITY];
+    char name[GDOX_OPTICAL_DEVICE_NAME_CAPACITY];
+    char location[GDOX_OPTICAL_DEVICE_LOCATION_CAPACITY];
+    gdox_optical_connection connection;
+    bool media_status_known;
+    bool media_present;
+    bool accessible;
+} gdox_usb_bot_device;
+
+bool gdox_usb_bot_list_devices(
+    gdox_usb_bot_device *devices,
+    size_t capacity,
+    size_t *count,
+    bool query_media,
+    gdox_error *error
+);
+bool gdox_usb_bot_list_devices_filtered(
+    gdox_usb_bot_device *devices,
+    size_t capacity,
+    size_t *count,
+    const gdox_optical_media_query *query,
+    gdox_error *error
+);
+bool gdox_usb_bot_open_device(
+    gdox_usb_bot_identity identity,
+    const char *device_id,
+    gdox_scsi_transport *transport,
+    gdox_error *error
+);
+bool gdox_usb_bot_device_connected(
+    gdox_usb_bot_identity identity,
+    const char *device_id,
+    bool *connected,
+    gdox_error *error
+);
 
 bool gdox_usb_bot_open(
     gdox_usb_bot_identity identity,

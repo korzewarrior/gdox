@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <string>
 
 namespace gdox::ui::detail {
@@ -13,6 +14,14 @@ void show_runtime_notice(gdox_app &app)
 {
     gdox_app_tick(&app);
     set_notice(gdox_app_snapshot_get(&app)->notice);
+}
+
+std::string drive_label(const gdox_optical_device &device)
+{
+    const char *connection = device.connection == GDOX_OPTICAL_CONNECTION_USB
+        ? "USB, " : device.connection == GDOX_OPTICAL_CONNECTION_SATA
+            ? "SATA, " : "";
+    return std::string(device.name) + " (" + connection + device.location + ")";
 }
 
 std::string normalize_xemu_selection(const char *path)
@@ -114,6 +123,74 @@ void source_actions_spacing()
 }
 
 }
+void draw_drive_selector(gdox_app &app, const gdox_app_snapshot &snapshot)
+{
+    const char *selected = snapshot.settings.optical_device_id;
+    std::string preview = selected[0] == '\0' ? "Automatic"
+        : snapshot.settings.optical_device_label[0] != '\0'
+            ? snapshot.settings.optical_device_label : "Selected drive";
+    bool found = false;
+    for (size_t index = 0U; index < snapshot.optical_device_count; ++index) {
+        const gdox_app_optical_device &entry = snapshot.optical_devices[index];
+        if (std::strcmp(entry.device.id, selected) == 0) {
+            found = entry.connected;
+            preview = drive_label(entry.device);
+        }
+    }
+    if (selected[0] != '\0' && !found) {
+        preview += snapshot.optical_inventory_notice[0] != '\0'
+            ? " - status unavailable" : " - disconnected";
+    }
+    ImGui::TextUnformatted("Drive");
+    ImGui::SetNextItemWidth(-1.0F);
+    ImGui::BeginDisabled(!snapshot.can_select_drive);
+    if (ImGui::BeginCombo("##drive-selection", preview.c_str())) {
+        if (ImGui::Selectable("Automatic", selected[0] == '\0')) {
+            (void)gdox_app_select_drive(&app, "");
+            show_runtime_notice(app);
+        }
+        if (selected[0] != '\0' && !found) {
+            (void)ImGui::Selectable(preview.c_str(), true);
+        }
+        for (size_t index = 0U; index < snapshot.optical_device_count; ++index) {
+            const gdox_app_optical_device &entry = snapshot.optical_devices[index];
+            std::string label = drive_label(entry.device);
+            if (!entry.connected) {
+                label += snapshot.optical_inventory_notice[0] != '\0'
+                    ? " - status unavailable" : " - disconnected";
+            } else if (entry.cleanup_pending) {
+                label += " - restoration pending";
+            } else if (entry.device.drive == GDOX_OPTICAL_DRIVE_NONE) {
+                label += " - unsupported firmware";
+            } else if (!entry.device.accessible) {
+                label += " - access unavailable";
+            } else if (entry.device.media_status_known) {
+                label += entry.device.media_present ? " - disc inserted" : " - empty";
+            }
+            ImGui::PushID(entry.device.id);
+            if (ImGui::Selectable(label.c_str(), std::strcmp(entry.device.id, selected) == 0)) {
+                (void)gdox_app_select_drive(&app, entry.device.id);
+                show_runtime_notice(app);
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+    if (snapshot.optical_inventory_notice[0] != '\0') {
+        ImGui::TextWrapped("Drive list: %s", snapshot.optical_inventory_notice);
+    }
+    if (!snapshot.can_select_drive) {
+        ImGui::TextColored(muted, "Drive selection is available after the current action finishes.");
+    }
+    if (snapshot.pending_cleanup_count != 0U) {
+        ImGui::PushStyleColor(ImGuiCol_Text, warning);
+        ImGui::TextWrapped("%s", snapshot.pending_cleanup_notice);
+        ImGui::PopStyleColor();
+    }
+    ImGui::Dummy(ImVec2(0.0F, 8.0F));
+}
+
 void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
 {
     static constexpr std::array<const char *, 4> aspect_labels = {

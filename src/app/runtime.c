@@ -4,6 +4,8 @@
 #include "app/runtime_playback.h"
 #include "app/runtime_physical.h"
 #include "app/runtime_session.h"
+#include "app/runtime_drives.h"
+#include "app/runtime_drive_loop.h"
 #include "app/optical_monitor.h"
 #include "platform/user_storage.h"
 
@@ -13,6 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static bool take_request(
     gdox_runtime *runtime,
@@ -53,7 +56,7 @@ static void publish_empty_drive(
     gdox_runtime_copy_text(
         snapshot->drive,
         sizeof(snapshot->drive),
-        gdox_optical_drive_name(runtime->optical_drive)
+        runtime->optical_device.name
     );
     gdox_runtime_copy_text(
         snapshot->disc, sizeof(snapshot->disc), "No Xbox disc"
@@ -68,17 +71,7 @@ static void publish_empty_drive(
     gdox_runtime_publish(runtime, snapshot);
 }
 
-typedef struct gdox_runtime_loop {
-    gdox_runtime_snapshot snapshot;
-    gdox_optical_monitor optical_monitor;
-    gdox_runtime_physical_state physical;
-    uint32_t observation_delay;
-    uint32_t read_stats_delay;
-    uint32_t cleanup_delay;
-    uint32_t unavailable_checks;
-    bool force_launch;
-    gdox_error error;
-} gdox_runtime_loop;
+
 
 static bool run_cleanup_cycle(
     gdox_runtime *runtime,
@@ -137,9 +130,14 @@ static void observe_available_media(
 )
 {
     gdox_optical_presence presence = {0};
+    char previous_device[GDOX_OPTICAL_DEVICE_ID_CAPACITY];
 
     gdox_runtime_refresh_bundle_snapshot(runtime, &loop->snapshot);
-    if (!gdox_optical_observe(&presence, &loop->error)) {
+    gdox_runtime_copy_text(previous_device, sizeof(previous_device),
+        runtime->optical_device.id);
+    if (!gdox_runtime_drives_resolve(
+            runtime, &loop->snapshot, &presence, &loop->error
+        )) {
         gdox_optical_monitor_observation_failed(&loop->optical_monitor);
         runtime->optical_drive = GDOX_OPTICAL_DRIVE_NONE;
         if (gdox_optical_monitor_has_pending_failure(&loop->optical_monitor)) {
@@ -150,6 +148,10 @@ static void observe_available_media(
             );
         }
         return;
+    }
+    if (strcmp(previous_device, runtime->optical_device.id) != 0) {
+        gdox_optical_monitor_retry(&loop->optical_monitor);
+        loop->unavailable_checks = 0U;
     }
     if (!presence.drive_present) {
         runtime->optical_drive = GDOX_OPTICAL_DRIVE_NONE;
@@ -169,7 +171,7 @@ static void observe_available_media(
             publish_missing_drive(
                 runtime,
                 &loop->snapshot,
-                "Connect the supported USB optical drive"
+                "Connect a supported optical drive"
             );
         }
         return;
@@ -208,7 +210,7 @@ static void observe_available_media(
         gdox_runtime_copy_text(
             loop->snapshot.drive,
             sizeof(loop->snapshot.drive),
-            gdox_optical_drive_name(runtime->optical_drive)
+            runtime->optical_device.name
         );
         gdox_runtime_copy_text(
             loop->snapshot.status,
@@ -331,6 +333,9 @@ static void run_runtime_cycle(gdox_runtime *runtime, gdox_runtime_loop *loop)
 {
     gdox_runtime_request_entry request = {0};
 
+    if (gdox_runtime_drive_loop_poll(runtime, loop)) {
+        return;
+    }
     if (run_cleanup_cycle(runtime, loop)) {
         return;
     }

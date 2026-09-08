@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 
@@ -17,6 +18,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from architecture_audit import audit_repository
 from architecture_audit.checks_layers import _reject_includes, _reject_tokens
 from architecture_audit.checks_media import _normalized_sources
+from architecture_audit.checks_media import _check_optical_api
+from architecture_audit.checks_build import _check_runtime_target
+from architecture_audit.checks_layers import check_layers
 from architecture_audit.repository import (
     CMakeProject,
     PythonDocument,
@@ -115,6 +119,33 @@ class SourceParserTests(unittest.TestCase):
 
 
 class FocusedCheckTests(unittest.TestCase):
+    def test_device_selection_guards_reject_model_fallback(self) -> None:
+        cases = (
+            ("src/app/runtime_media.c", "gdox_optical_open_device_media",
+             "gdox_optical_open_media", _check_optical_api,
+             "runtime media omits canonical optical detection"),
+            ("src/platform/optical_devices.c", "gdox_usb_bot_open_device",
+             "gdox_usb_bot_open", _check_optical_api,
+             "physical optical operations fall back to model selection"),
+            ("src/app/runtime_physical.c", "gdox_optical_device_connected",
+             "gdox_optical_connected", _check_runtime_target,
+             "active playback presence must use non-commanding physical device identity"),
+            ("src/platform/usb_bot_windows.c",
+             "gdox_usb_bot_identity_matches(requested, &usb_identity)",
+             "true", check_layers,
+             "Windows shared-USB-ID selection bypasses the exact matcher"),
+        )
+        for path, original, replacement, check, failure in cases:
+            with self.subTest(path=path):
+                repository = Repository(ROOT)
+                read_source = repository.source
+                source = read_source(path)
+                self.assertIn(original, source.text)
+                changed = SourceDocument(source.path, source.text.replace(original, replacement))
+                with patch.object(repository, "source", side_effect=lambda name:
+                                  changed if name == path else read_source(name)):
+                    self.assertIn(failure, check(repository))
+
     def test_layer_checks_report_only_real_source_relationships(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
