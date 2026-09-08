@@ -49,4 +49,17 @@ bool gdox_mt1887_detected_source_open(
     gdox_error *error
 );
 
+/* Exact identity is checked before selecting a hardware-approved media profile. */
+bool gdox_mt1887_detected_source_open_for_identity(
+    gdox_mt1887_transport_opener opener,
+    void *opener_context,
+    gdox_usb_bot_identity expected_identity,
+    uint16_t read_speed_kbps,
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    const gdox_mt1887_media_profile **selected_media,
+    gdox_error *error
+);
+
 #endif

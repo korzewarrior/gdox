@@ -13,6 +13,13 @@ Deck. macOS and Android do not have a compatible Xenia integration.
 
 ## Platform matrix
 
+GDOX also includes an experimental Windows native SATA
+interface for `ASUS DRW-24D5MT 2.00`, limited to XGD2 Wave 2. Activation,
+game-sector reads through the compiled GDOX source, and restoration were
+verified over the diagnostic connection. Native desktop detection and Xenia
+gameplay remain unvalidated. See [the drive findings](ASUS_MT1862.md).
+This candidate does not extend the validated physical playback column below.
+
 | Host | Owned image | Validated physical playback | ASUS A202 XGD2 | Runtime |
 | --- | --- | --- | --- | --- |
 | Windows x86-64 | Supported | GP63EX70/RF02 XGD2 Wave 1 and Wave 2 | Implemented; host validation not established | Reviewed native Xenia builds; transient state uses a cleanup-owned session directory |

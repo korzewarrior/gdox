@@ -31,6 +31,19 @@ bool gdox_optical_open_sp80(
     gdox_sector_source *source,
     gdox_error *error
 );
+bool gdox_optical_open_asus_mt1862(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_error *error
+);
+bool gdox_optical_open_asus_mt1862_media(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_optical_media_info *info,
+    gdox_error *error
+);
 bool gdox_optical_open_gp08(
     uint8_t read_retries,
     uint32_t ready_timeout_ms,

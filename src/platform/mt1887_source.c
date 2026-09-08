@@ -313,6 +313,33 @@ static bool write_triplet(
     return true;
 }
 
+static bool verify_fixed_fields(
+    gdox_scsi_transport *transport,
+    const gdox_mt1887_profile *profile,
+    const atomic_bool *abort,
+    uint64_t deadline_ms,
+    gdox_error *error
+)
+{
+    if (profile->fixed_address == 0U) {
+        return true;
+    }
+    for (uint16_t index = 0U; index < 4U; ++index) {
+        uint8_t value;
+        if (!read_xdata(transport, abort,
+                (uint16_t)(profile->fixed_address + index), &value,
+                deadline_ms, error)) {
+            return false;
+        }
+        if (value != profile->fixed_values[index]) {
+            gdox_error_set(error, GDOX_ERROR_UNSUPPORTED,
+                "optical firmware guard bytes do not match the validated profile");
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool read_state(
     gdox_scsi_transport *transport,
     const gdox_mt1887_profile *profile,
@@ -325,7 +352,8 @@ static bool read_state(
     uint32_t timeout_ms;
 
     memset(state, 0, sizeof(*state));
-    return read_triplet(
+    return verify_fixed_fields(transport, profile, abort, deadline_ms, error)
+        && read_triplet(
             transport,
             abort,
             profile->capacity_addresses,
@@ -382,8 +410,8 @@ static bool restore_stock(
     gdox_error_clear(&first_error);
     if (!write_triplet(
             transport,
-            profile->geometry_addresses,
-            media->stock_geometry,
+            profile->geometry_first ? profile->capacity_addresses : profile->geometry_addresses,
+            profile->geometry_first ? media->stock_capacity : media->stock_geometry,
             true,
             deadline_ms,
             &current
@@ -393,8 +421,8 @@ static bool restore_stock(
     }
     if (!write_triplet(
             transport,
-            profile->capacity_addresses,
-            media->stock_capacity,
+            profile->geometry_first ? profile->geometry_addresses : profile->capacity_addresses,
+            profile->geometry_first ? media->stock_geometry : media->stock_capacity,
             true,
             deadline_ms,
             &current
@@ -569,16 +597,16 @@ static bool apply_xgd(
 
     if (!write_triplet(
             transport,
-            profile->capacity_addresses,
-            media->live_capacity,
+            profile->geometry_first ? profile->geometry_addresses : profile->capacity_addresses,
+            profile->geometry_first ? media->live_geometry : media->live_capacity,
             false,
             deadline_ms,
             error
         )
         || !write_triplet(
             transport,
-            profile->geometry_addresses,
-            media->live_geometry,
+            profile->geometry_first ? profile->capacity_addresses : profile->geometry_addresses,
+            profile->geometry_first ? media->live_capacity : media->live_geometry,
             false,
             deadline_ms,
             error
@@ -669,6 +697,7 @@ static bool media_remains_current(
 
 static bool recover_optical(
     gdox_scsi_transport *transport,
+    bool manual_tray,
     gdox_mmc_media_tracker *media_tracker,
     uint64_t expected_generation,
     const atomic_bool *abort,
@@ -752,7 +781,7 @@ static bool recover_optical(
         )) {
         return false;
     }
-    if (!gdox_scsi_command_none(
+    if (!manual_tray && !gdox_scsi_command_none(
             transport,
             "START STOP UNIT (load/start)",
             load,
@@ -841,7 +870,7 @@ static bool recover_optical(
                 )) {
                 return false;
             }
-            if (!gdox_scsi_command_none(
+            if (!manual_tray && !gdox_scsi_command_none(
                     transport,
                     "START STOP UNIT (load/start)",
                     load,
@@ -982,6 +1011,7 @@ static bool read_range_with_recovery(
             gdox_error_clear(&recovery);
             recovered = recover_optical(
                 &context->transport,
+                context->profile->manual_tray,
                 &context->media_tracker,
                 expected_generation,
                 &context->abort,
@@ -1005,7 +1035,8 @@ static bool read_range_with_recovery(
                     break;
                 }
             } else {
-                if (gdox_monotonic_ms() < recovery_deadline_ms) {
+                if (!context->profile->retain_read_speed
+                    && gdox_monotonic_ms() < recovery_deadline_ms) {
                     (void)request_read_speed(
                         &context->transport,
                         context->read_speed_kbps,
@@ -1758,8 +1789,10 @@ static bool mt1887_source_open_for_media(
     if (opener == NULL
         || (expected_identity != GDOX_USB_BOT_GP63
             && expected_identity != GDOX_USB_BOT_GP65
-            && expected_identity != GDOX_USB_BOT_SP80)
-        || (detect_media && expected_identity != GDOX_USB_BOT_GP63)
+            && expected_identity != GDOX_USB_BOT_SP80
+            && expected_identity != GDOX_SATA_ASUS_MT1862)
+        || (detect_media && expected_identity != GDOX_USB_BOT_GP63
+            && expected_identity != GDOX_SATA_ASUS_MT1862)
         || (!detect_media
             && (media->kind == GDOX_MT1887_MEDIA_GP63_XGD2
                 || media->kind == GDOX_MT1887_MEDIA_GP63_XGD3)
@@ -1850,7 +1883,9 @@ static bool mt1887_source_open_for_media(
      * legally reject this optional command, so streaming remains available at
      * its current speed in that case.
      */
-    request_configured_read_speed(context);
+    if (!context->profile->retain_read_speed) {
+        request_configured_read_speed(context);
+    }
     if (!validate_live_descriptor(context, error)) {
         operation_error = *error;
         cleanup_failed_open(context, source, &operation_error, error);
@@ -1891,9 +1926,10 @@ bool gdox_mt1887_source_open(
     );
 }
 
-bool gdox_mt1887_detected_source_open(
+bool gdox_mt1887_detected_source_open_for_identity(
     gdox_mt1887_transport_opener opener,
     void *opener_context,
+    gdox_usb_bot_identity expected_identity,
     uint16_t read_speed_kbps,
     uint8_t read_retries,
     uint32_t ready_timeout_ms,
@@ -1908,7 +1944,7 @@ bool gdox_mt1887_detected_source_open(
         gdox_error_set(
             error,
             GDOX_ERROR_INVALID_ARGUMENT,
-            "selected GP63 media output is required"
+            "selected optical media output is required"
         );
         return false;
     }
@@ -1916,7 +1952,7 @@ bool gdox_mt1887_detected_source_open(
     if (!mt1887_source_open_for_media(
             opener,
             opener_context,
-            GDOX_USB_BOT_GP63,
+            expected_identity,
             NULL,
             read_speed_kbps,
             read_retries,
@@ -1929,6 +1965,23 @@ bool gdox_mt1887_detected_source_open(
     context = source->context;
     *selected_media = context->media;
     return true;
+}
+
+bool gdox_mt1887_detected_source_open(
+    gdox_mt1887_transport_opener opener,
+    void *opener_context,
+    uint16_t read_speed_kbps,
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    const gdox_mt1887_media_profile **selected_media,
+    gdox_error *error
+)
+{
+    return gdox_mt1887_detected_source_open_for_identity(
+        opener, opener_context, GDOX_USB_BOT_GP63, read_speed_kbps,
+        read_retries, ready_timeout_ms, source, selected_media, error
+    );
 }
 
 bool gdox_optical_open_gp63(
@@ -2045,6 +2098,56 @@ bool gdox_optical_open_sp80(
         ready_timeout_ms,
         source,
         error
+    );
+}
+
+static bool open_discovered_asus_mt1862(
+    void *context,
+    gdox_scsi_transport *transport,
+    gdox_error *error
+)
+{
+    (void)context;
+    return gdox_usb_bot_open(GDOX_SATA_ASUS_MT1862, transport, error);
+}
+
+bool gdox_optical_open_asus_mt1862_media(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_optical_media_info *info,
+    gdox_error *error
+)
+{
+    const gdox_mt1887_media_profile *selected = NULL;
+    if (info == NULL) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT,
+            "optical media information output is required");
+        return false;
+    }
+    memset(info, 0, sizeof(*info));
+    if (!gdox_mt1887_detected_source_open_for_identity(
+            open_discovered_asus_mt1862, NULL, GDOX_SATA_ASUS_MT1862,
+            0U, read_retries, ready_timeout_ms, source, &selected, error)) {
+        return false;
+    }
+    /* The hardware/media gate admits only the observed XGD2 Wave 2 profile. */
+    info->profile = GDOX_OPTICAL_MEDIA_XGD2;
+    info->game_partition_lba = selected->game_partition_lba;
+    info->sequential_read_blocks = UINT32_C(32);
+    return true;
+}
+
+bool gdox_optical_open_asus_mt1862(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_error *error
+)
+{
+    gdox_optical_media_info info;
+    return gdox_optical_open_asus_mt1862_media(
+        read_retries, ready_timeout_ms, source, &info, error
     );
 }
 

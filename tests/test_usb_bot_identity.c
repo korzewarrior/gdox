@@ -314,8 +314,25 @@ static void run(void)
     ));
 }
 
+static void test_native_sata(void)
+{
+    gdox_usb_bot_identity recovered;
+    const gdox_usb_bot_observed_identity native = {
+        0U, 0U, "ASUS", "DRW-24D5MT", "2.00"
+    };
+    GDOX_TEST_CHECK(gdox_optical_native_sata_identity_matches(
+        GDOX_SATA_ASUS_MT1862, "ASUS", "DRW-24D5MT", "2.00"));
+    GDOX_TEST_CHECK(!gdox_optical_native_sata_identity_matches(
+        GDOX_SATA_ASUS_MT1862, "ASUS", "DRW-24D5MT", "1.00"));
+    GDOX_TEST_CHECK(!gdox_optical_native_sata_identity_matches(
+        GDOX_SATA_ASUS_MT1862, "ASUS", "SDRW-08D1S-U", "2.00"));
+    GDOX_TEST_CHECK(!gdox_usb_bot_identity_matches(GDOX_SATA_ASUS_MT1862, &native));
+    GDOX_TEST_CHECK(!gdox_usb_bot_recovery_identity(0U, 0U, &recovered));
+}
+
 int main(void)
 {
+    test_native_sata();
     run();
     return gdox_test_failures == 0 ? 0 : 1;
 }
