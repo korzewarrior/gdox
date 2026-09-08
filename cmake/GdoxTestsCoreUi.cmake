@@ -59,7 +59,14 @@ add_dependencies(gdox_tests gdox_test_xemu_helper)
 add_executable(
     gdox_bundled_xemu_discovery_probe
     tests/bundled_xemu_discovery_probe.c
+    src/app/runtime_bundle.c
 )
+if(WIN32)
+    target_sources(gdox_bundled_xemu_discovery_probe PRIVATE src/platform/user_storage_windows.c)
+else()
+    target_sources(gdox_bundled_xemu_discovery_probe PRIVATE src/platform/user_storage_posix.c)
+endif()
+target_include_directories(gdox_bundled_xemu_discovery_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(gdox_bundled_xemu_discovery_probe PRIVATE gdox::services)
 gdox_enable_c_warnings(gdox_bundled_xemu_discovery_probe)
 gdox_enable_test_crt(gdox_bundled_xemu_discovery_probe)

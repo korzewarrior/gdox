@@ -139,6 +139,7 @@ jobs:
           & scripts/validate_windows_package.ps1 `
             -Archive $Archives[0].FullName `
             -TestExecutable dist/.build/x86_64-pc-windows-msvc/gdox_tests.exe `
+            -RuntimeProbe dist/.build/x86_64-pc-windows-msvc/gdox_bundled_xemu_discovery_probe.exe `
             -SmokeScript scripts/windows_smoke.ps1 `
             -WorkingRoot "$env:RUNNER_TEMP/gdox-package-smoke"
       - name: Audit release payload

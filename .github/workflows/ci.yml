@@ -162,6 +162,22 @@ jobs:
         run: >-
           python scripts/audit_release.py
           --artifact dist/.build/x86_64-pc-windows-msvc/gdox.exe
+      - name: Validate extracted Windows runtime and restart
+        shell: pwsh
+        run: |
+          python scripts/package_release.py `
+            --target x86_64-pc-windows-msvc `
+            --artifact dist/.build/x86_64-pc-windows-msvc/gdox.exe `
+            --output dist/release
+          if ($LASTEXITCODE -ne 0) { throw "Windows packaging failed." }
+          $Archives = @(Get-ChildItem -LiteralPath dist/release -Filter "gdox-*-windows-x64.zip")
+          if ($Archives.Count -ne 1) { throw "Expected one Windows package." }
+          & scripts/validate_windows_package.ps1 `
+            -Archive $Archives[0].FullName `
+            -TestExecutable dist/.build/x86_64-pc-windows-msvc/gdox_tests.exe `
+            -RuntimeProbe dist/.build/x86_64-pc-windows-msvc/gdox_bundled_xemu_discovery_probe.exe `
+            -SmokeScript scripts/windows_smoke.ps1 `
+            -WorkingRoot "$env:RUNNER_TEMP/gdox-package-smoke"
 
   windows-gnu:
     permissions:
