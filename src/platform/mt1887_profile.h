@@ -16,6 +16,13 @@ typedef struct gdox_mt1887_profile {
     bool auxiliary_present;
     uint16_t auxiliary_addresses[3];
     uint8_t auxiliary[3];
+    /* Optional read-only firmware/media guard; zero disables it. */
+    uint16_t fixed_address;
+    uint8_t fixed_values[4];
+    /* Activation order; restoration uses the opposite triplet order. */
+    bool geometry_first;
+    bool retain_read_speed;
+    bool manual_tray;
 } gdox_mt1887_profile;
 
 const gdox_mt1887_profile *gdox_mt1887_profile_find(

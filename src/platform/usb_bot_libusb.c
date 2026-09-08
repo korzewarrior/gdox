@@ -1530,7 +1530,8 @@ bool gdox_usb_bot_open(
 
     gdox_error_clear(error);
     if (transport == NULL || gdox_scsi_transport_is_valid(transport)
-        || selected == NULL) {
+        || selected == NULL
+        || gdox_optical_identity_requires_native_sata(identity)) {
         gdox_error_set(
             error,
             transport == NULL || gdox_scsi_transport_is_valid(transport)

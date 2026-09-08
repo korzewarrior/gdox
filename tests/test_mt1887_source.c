@@ -72,11 +72,14 @@ typedef struct fake_mt1887 {
     bool invalid_live_last_lba;
     bool gp63;
     bool sp80;
+    bool asus_mt1862;
+    uint8_t fixed_values[4];
     unsigned int open_count;
     unsigned int close_count;
     unsigned int prepare_close_count;
     unsigned int reset_count;
     unsigned int load_start_count;
+    unsigned int speed_request_count;
     fake_media_kind media;
     bool eject_requested;
     bool eject_after_reset;
@@ -195,6 +198,18 @@ static uint32_t read_be_u32(const uint8_t input[4])
 
 static uint8_t *fake_xdata(fake_mt1887 *fake, uint16_t address)
 {
+    if (fake->asus_mt1862) {
+        if (address >= 0x84c2U && address <= 0x84c4U) {
+            return &fake->capacity[address - 0x84c2U];
+        }
+        if (address >= 0x8b92U && address <= 0x8b94U) {
+            return &fake->geometry[address - 0x8b92U];
+        }
+        if (address >= 0x8b95U && address <= 0x8b98U) {
+            return &fake->fixed_values[address - 0x8b95U];
+        }
+        return NULL;
+    }
     if ((fake->gp63 || fake->sp80)
         && address >= 0x8538U && address <= 0x853aU) {
         return &fake->capacity[address - 0x8538U];
@@ -243,10 +258,10 @@ static bool fake_command_in(
     (void)cdb_bytes;
     memset(output, 0, output_bytes);
     if (cdb[0] == 0x12U && output_bytes >= 36U) {
-        memcpy(output + 8U, "HL-DT-ST", 8U);
+        memcpy(output + 8U, fake->asus_mt1862 ? "ASUS    " : "HL-DT-ST", 8U);
         memcpy(
             output + 16U,
-            fake->sp80
+            fake->asus_mt1862 ? "DRW-24D5MT      " : fake->sp80
                 ? "DVDRAM SP80NB80"
                 : fake->gp63
                     ? "DVDRAM GP63EX70"
@@ -404,6 +419,9 @@ static bool fake_command_none(
         if (cdb[0] == 0x1bU && cdb[4] == 0x03U) {
             ++fake->load_start_count;
         }
+        if (cdb[0] == 0xbbU) {
+            ++fake->speed_request_count;
+        }
         gdox_error_clear(error);
         return true;
     }
@@ -411,7 +429,7 @@ static bool fake_command_none(
         const uint16_t address =
             (uint16_t)((uint16_t)cdb[4] << 8U | cdb[5]);
         const uint16_t capacity_address =
-            fake->gp63 ? 0x8538U : 0x8a37U;
+            fake->asus_mt1862 ? 0x84c2U : fake->gp63 ? 0x8538U : 0x8a37U;
         const uint8_t *expected_stock = fake_stock_capacity(fake);
         uint8_t *value = fake_xdata(fake, address);
         if (value == NULL || fake->write_count >= 64U) {
@@ -2276,9 +2294,138 @@ static bool test_xgd3_read_recovery_reapplies_selected_profile(void)
         "XGD3 read-recovery source restores on close");
 }
 
+static fake_mt1887 fake_asus_mt1862_stock(void)
+{
+    fake_mt1887 fake = fake_xgd2_wave2_stock();
+    fake.gp63 = false;
+    fake.asus_mt1862 = true;
+    memcpy(fake.revision, "2.00", 5U);
+    memcpy(fake.fixed_values, (const uint8_t[]){0U, 0xfcU, 0xf9U, 0xc3U}, 4U);
+    fake.maximum_accepted_read_blocks = 32U;
+    return fake;
+}
+
+static bool open_asus_mt1862(fake_mt1887 *fake, gdox_sector_source *source,
+    gdox_error *error)
+{
+    const gdox_mt1887_media_profile *selected = NULL;
+    return gdox_mt1887_detected_source_open_for_identity(
+        fake_open, fake, GDOX_SATA_ASUS_MT1862, 0U, 0U, 0U,
+        source, &selected, error
+    );
+}
+
+static bool test_asus_mt1862_transaction(void)
+{
+    fake_mt1887 fake = fake_asus_mt1862_stock();
+    gdox_sector_source source = {0};
+    gdox_error error;
+    uint8_t output[65U * GDOX_LOGICAL_SECTOR_BYTES];
+    bool passed = check(open_asus_mt1862(&fake, &source, &error),
+        "ASUS MT1862 XGD2 source opens");
+    fake.read_count = 0U;
+    passed = passed && check(fake.write_count == 6U
+        && writes_begin_at(&fake, 0U, 0x8b92U)
+        && writes_begin_at(&fake, 3U, 0x84c2U),
+        "ASUS activates geometry before capacity at its own addresses")
+        && check(gdox_source_read(&source, 0x40000U, 65U, output,
+            sizeof(output), &error), "ASUS reads through the shared sector source")
+        && check(fake.read_count == 3U && fake.read_blocks[0] == 32U
+            && fake.read_blocks[1] == 32U && fake.read_blocks[2] == 1U,
+            "ASUS splits transfers at 32 sectors");
+    gdox_source_abort(&source);
+    passed = check(gdox_source_close(&source, &error),
+        "ASUS restores after source abort") && passed;
+    return passed && check(fake.write_count == 12U
+        && writes_begin_at(&fake, 6U, 0x84c2U)
+        && writes_begin_at(&fake, 9U, 0x8b92U)
+        && memcmp(fake.capacity, xgd2_wave2_stock_capacity, 3U) == 0
+        && memcmp(fake.geometry, xgd2_wave2_stock_geometry, 3U) == 0,
+        "ASUS restores capacity first and all six fields");
+}
+
+static bool test_asus_mt1862_manual_recovery(void)
+{
+    fake_mt1887 fake = fake_asus_mt1862_stock();
+    gdox_sector_source source = {0};
+    const gdox_mt1887_media_profile *selected = NULL;
+    gdox_error error;
+    uint8_t output[GDOX_LOGICAL_SECTOR_BYTES];
+    bool passed = check(gdox_mt1887_detected_source_open_for_identity(
+        fake_open, &fake, GDOX_SATA_ASUS_MT1862, UINT16_C(0xffff),
+        1U, 0U, &source, &selected, &error),
+        "ASUS recovery source opens without changing speed");
+
+    fake.fail_read_once = true;
+    fake.reset_to_stock = true;
+    passed = passed && check(gdox_source_read(&source, 0x40000U, 1U,
+        output, sizeof(output), &error), "ASUS retries a failed read")
+        && check(fake.reset_count >= 1U && fake.write_count == 12U
+            && fake_is_live(&fake), "ASUS recovery reapplies its six fields")
+        && check(fake.load_start_count == 0U && fake.speed_request_count == 0U,
+            "ASUS recovery retains manual tray and current speed");
+    passed = check(gdox_source_close(&source, &error),
+        "ASUS recovered source closes") && passed;
+    return passed && check(
+        memcmp(fake.capacity, xgd2_wave2_stock_capacity, 3U) == 0
+        && memcmp(fake.geometry, xgd2_wave2_stock_geometry, 3U) == 0,
+        "ASUS restores stock after read recovery");
+}
+
+static bool test_asus_mt1862_rejections(void)
+{
+    for (unsigned int scenario = 0U; scenario < 8U; ++scenario) {
+        fake_mt1887 fake = fake_asus_mt1862_stock();
+        gdox_sector_source source = {0};
+        gdox_error error;
+        if (scenario == 0U) memcpy(fake.revision, "1.00", 5U);
+        if (scenario == 1U) fake.fixed_values[2] ^= 1U;
+        if (scenario == 2U) fake.capacity[1] = 0xeeU;
+        if (scenario == 3U) fake.geometry[1] = 0xeeU;
+        if (scenario == 4U) fake.pfi_valid = false;
+        if (scenario >= 5U) {
+            fake.media = scenario == 5U ? FAKE_MEDIA_XGD1
+                : scenario == 6U ? FAKE_MEDIA_XGD2_WAVE1 : FAKE_MEDIA_XGD3;
+            memcpy(fake.capacity, fake_stock_capacity(&fake), 3U);
+            memcpy(fake.geometry, fake_stock_geometry(&fake), 3U);
+        }
+        bool passed = check(!open_asus_mt1862(&fake, &source, &error),
+            "ASUS rejects unvalidated firmware, guards, state, and media")
+            && check(fake.write_count == 0U, "ASUS rejection sends no writes");
+        gdox_source_destroy(&source);
+        if (!passed) return false;
+    }
+    return true;
+}
+
+static bool test_asus_mt1862_failures_restore(void)
+{
+    const uint16_t addresses[] = {0x8b92U, 0x8b93U, 0x8b94U,
+        0x84c2U, 0x84c3U, 0x84c4U};
+    for (size_t index = 0U; index < 7U; ++index) {
+        fake_mt1887 fake = fake_asus_mt1862_stock();
+        gdox_sector_source source = {0};
+        gdox_error error;
+        if (index < 6U) fake.fail_write_address_once = addresses[index];
+        else fake.descriptor_trailing_valid = false;
+        bool passed = check(!open_asus_mt1862(&fake, &source, &error),
+            "ASUS failed write or invalid descriptor rejects activation")
+            && check(memcmp(fake.capacity, xgd2_wave2_stock_capacity, 3U) == 0
+                && memcmp(fake.geometry, xgd2_wave2_stock_geometry, 3U) == 0,
+                "ASUS restores every partially activated state");
+        gdox_source_destroy(&source);
+        if (!passed) return false;
+    }
+    return true;
+}
+
 int main(void)
 {
-    if (!test_activation_and_restore()
+    if (!test_asus_mt1862_transaction()
+        || !test_asus_mt1862_manual_recovery()
+        || !test_asus_mt1862_rejections()
+        || !test_asus_mt1862_failures_restore()
+        || !test_activation_and_restore()
         || !test_sp80_xgd1_activation_and_restore()
         || !test_gp63_read_batching()
         || !test_read_batch_bisection()

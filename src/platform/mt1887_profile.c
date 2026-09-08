@@ -14,6 +14,7 @@ static const gdox_mt1887_profile gp63 = {
     false,
     {0U, 0U, 0U},
     {0U, 0U, 0U},
+    0U, {0U}, false, false, false,
 };
 
 static const gdox_mt1887_profile gp65 = {
@@ -26,6 +27,7 @@ static const gdox_mt1887_profile gp65 = {
     true,
     {0x8538U, 0x8539U, 0x853aU},
     {0x64U, 0x00U, 0x64U},
+    0U, {0U}, false, false, false,
 };
 
 static const gdox_mt1887_profile sp80 = {
@@ -38,6 +40,21 @@ static const gdox_mt1887_profile sp80 = {
     false,
     {0U, 0U, 0U},
     {0U, 0U, 0U},
+    0U, {0U}, false, false, false,
+};
+
+/* Exact native SATA drive, currently validated only with XGD2 Wave 2. */
+static const gdox_mt1887_profile asus_mt1862 = {
+    GDOX_SATA_ASUS_MT1862,
+    GDOX_ASUS_MT1862_SCSI_VENDOR,
+    GDOX_ASUS_MT1862_SCSI_MODEL,
+    GDOX_ASUS_MT1862_SCSI_REVISION,
+    {0x84c2U, 0x84c3U, 0x84c4U},
+    {0x8b92U, 0x8b93U, 0x8b94U},
+    false,
+    {0U, 0U, 0U},
+    {0U, 0U, 0U},
+    0x8b95U, {0x00U, 0xfcU, 0xf9U, 0xc3U}, true, true, true,
 };
 
 const gdox_mt1887_profile *gdox_mt1887_profile_find(
@@ -55,6 +72,8 @@ const gdox_mt1887_profile *gdox_mt1887_profile_find(
         profile = &gp65;
     } else if (identity == GDOX_USB_BOT_SP80) {
         profile = &sp80;
+    } else if (identity == GDOX_SATA_ASUS_MT1862) {
+        profile = &asus_mt1862;
     } else {
         return NULL;
     }
@@ -71,7 +90,8 @@ uint32_t gdox_mt1887_max_read_blocks(
     bool windows_transport
 )
 {
-    if (profile != NULL && profile->identity == GDOX_USB_BOT_SP80) {
+    if (profile != NULL && (profile->identity == GDOX_USB_BOT_SP80
+            || profile->identity == GDOX_SATA_ASUS_MT1862)) {
         return UINT32_C(32);
     }
     if (profile == NULL || !windows_transport) {

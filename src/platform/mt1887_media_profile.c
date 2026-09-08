@@ -176,6 +176,9 @@ bool gdox_mt1887_media_profile_supports_hardware(
     if (media == NULL || hardware == NULL) {
         return false;
     }
+    if (hardware->identity == GDOX_SATA_ASUS_MT1862) {
+        return media == &gp63_xgd2_wave2;
+    }
     if (media->kind == GDOX_MT1887_MEDIA_XGD1) {
         return hardware->identity == GDOX_USB_BOT_GP63
             || hardware->identity == GDOX_USB_BOT_GP65

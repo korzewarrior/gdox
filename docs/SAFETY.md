@@ -122,12 +122,19 @@ delivery fault.
 ## Hardware identity
 
 Do not assume two retail enclosures contain the same optical mechanism.
-Require the exact model, revision, and USB identity shown on Details before a
-drive adapter runs. GP63, GP65, and SP80 share USB `0e8d:1887`, so the complete
+Require the exact model, revision, and transport identity before a drive
+adapter runs. GP63, GP65, and SP80 share USB `0e8d:1887`, so the complete
 SCSI identity selects the profile. The GP08 profile additionally requires the exact
 Prolific PL-2507 USB bridge identity. The ASUS profile requires USB
 `13fd:1640`, SCSI vendor `ASUS`, product `SDRW-08D1S-U`, and revision `A202`.
 GDOX fails closed for unknown hardware or an unexpected stock memory state.
+
+The experimental `ASUS DRW-24D5MT 2.00` profile requires a Windows-reported
+native SATA/ATA/ATAPI bus and the exact SCSI identity. Missing USB IDs never
+act as a wildcard. It additionally verifies four unchanged guard bytes and
+the tested XGD2 Wave 2 geometry before any volatile activation writes, limits
+reads to 32 sectors, retains the current read speed, and uses manual tray
+handling. See `ASUS_MT1862.md` for the validation boundary.
 
 ## Private data
 

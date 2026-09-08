@@ -435,6 +435,14 @@ static bool device_identity_matches(
         )) {
         return false;
     }
+    if (gdox_optical_identity_requires_native_sata(requested)) {
+        return (descriptor->BusType == BusTypeSata
+                || descriptor->BusType == BusTypeAtapi
+                || descriptor->BusType == BusTypeAta)
+            && gdox_optical_native_sata_identity_matches(
+                requested, vendor, model, revision
+            );
+    }
     observed = (gdox_usb_bot_observed_identity){
         expected->vendor_id,
         expected->product_id,
@@ -458,6 +466,10 @@ static bool device_usb_identity_matches(
 
     if (identity == NULL) {
         return false;
+    }
+    if (gdox_optical_identity_requires_native_sata(requested)) {
+        /* Candidate only: device_identity_matches verifies the native bus. */
+        return true;
     }
     written = swprintf(
         prefix,

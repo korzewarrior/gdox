@@ -45,6 +45,14 @@ static const gdox_usb_bot_identity_spec identities[] = {
         GDOX_SP80_SCSI_MODEL,
         GDOX_SP80_SCSI_REVISION,
     },
+    {
+        GDOX_SATA_ASUS_MT1862,
+        0U,
+        0U,
+        GDOX_ASUS_MT1862_SCSI_VENDOR,
+        GDOX_ASUS_MT1862_SCSI_MODEL,
+        GDOX_ASUS_MT1862_SCSI_REVISION,
+    },
 };
 
 _Static_assert(
@@ -75,7 +83,8 @@ bool gdox_usb_bot_recovery_identity(
         return false;
     }
     for (index = 0U; index < GDOX_USB_BOT_IDENTITY_COUNT; ++index) {
-        if (identities[index].vendor_id == vendor_id
+        if (!gdox_optical_identity_requires_native_sata(identities[index].identity)
+            && identities[index].vendor_id == vendor_id
             && identities[index].product_id == product_id) {
             *identity = identities[index].identity;
             return true;
@@ -93,6 +102,7 @@ bool gdox_usb_bot_identity_matches(
         gdox_usb_bot_identity_get(requested);
 
     return expected != NULL && observed != NULL
+        && !gdox_optical_identity_requires_native_sata(requested)
         && observed->scsi_vendor != NULL
         && observed->scsi_model != NULL
         && observed->scsi_revision != NULL
@@ -101,6 +111,26 @@ bool gdox_usb_bot_identity_matches(
         && strcmp(observed->scsi_vendor, expected->scsi_vendor) == 0
         && strcmp(observed->scsi_model, expected->scsi_model) == 0
         && strcmp(observed->scsi_revision, expected->scsi_revision) == 0;
+}
+
+bool gdox_optical_identity_requires_native_sata(gdox_usb_bot_identity identity)
+{
+    return identity == GDOX_SATA_ASUS_MT1862;
+}
+
+bool gdox_optical_native_sata_identity_matches(
+    gdox_usb_bot_identity identity,
+    const char *vendor,
+    const char *model,
+    const char *revision
+)
+{
+    const gdox_usb_bot_identity_spec *expected = gdox_usb_bot_identity_get(identity);
+    return gdox_optical_identity_requires_native_sata(identity)
+        && expected != NULL && vendor != NULL && model != NULL && revision != NULL
+        && strcmp(vendor, expected->scsi_vendor) == 0
+        && strcmp(model, expected->scsi_model) == 0
+        && strcmp(revision, expected->scsi_revision) == 0;
 }
 
 bool gdox_usb_bot_location_matches(

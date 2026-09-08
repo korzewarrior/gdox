@@ -1,5 +1,12 @@
 # changes
 
+## 0.2.5
+
+- add an experimental Windows native SATA interface for exact
+  `ASUS DRW-24D5MT 2.00` drives with XGD2 Wave 2 discs
+- verify game-sector reads and restoration through the diagnostic connection;
+  native desktop detection and gameplay remain to be tested
+
 ## 0.2.4
 
 - let the ASUS SDRW-08D1S-U/A202 finish safe restoration after its disc is

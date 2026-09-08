@@ -35,8 +35,8 @@ runtime and managed-storage transition pass the equivalent save-boundary tests.
 
 ## drive profiles
 
-the physical adapters recognize five exact profiles; SP80 support remains
-experimental until its live validation is complete:
+the physical adapters recognize six exact profiles. SP80 and the native SATA
+ASUS DRW-24D5MT remain experimental:
 
 | identity | current validation |
 |---|---|
@@ -45,6 +45,7 @@ experimental until its live validation is complete:
 | `HL-DT-ST DVDRAM SP80NB80 RF02`, USB `0e8d:1887` | exact identity and GP63-layout XGD1 stock registers confirmed remotely on Ubuntu; live activation, play, and restoration remain to be physically validated; see `SP80_RF02.md` |
 | `HL-DT-ST DVDRAM GP08NU10 JE01`, Prolific PL-2507 USB `152e:2507` | find, volatile activation, and xbox-sector read confirmed externally |
 | `ASUS SDRW-08D1S-U A202`, Initio USB `13fd:1640` | original Xbox live play and restoration validated on windows 11 with the stock driver |
+| `ASUS DRW-24D5MT 2.00`, native SATA on Windows | XGD2 Wave 2 activation, game-sector reads, and restoration validated through the diagnostic transport; desktop detection and gameplay remain unvalidated; see `ASUS_MT1862.md` |
 
 similar retail names, firmware revisions, bridges, and internal mechanisms are
 not implied compatible. `GP65NB60 PB01` is not supported. other drives need
@@ -56,6 +57,7 @@ Xbox 360 physical validation is narrower:
 |---|---|---|
 | `HL-DT-ST DVDRAM GP63EX70 RF02`, USB `0e8d:1887` | XGD2 Wave 1, XGD2 Wave 2, and XGD3 | controllable gameplay validated on the host combinations in `XBOX360.md` |
 | `ASUS SDRW-08D1S-U A202`, Initio USB `13fd:1640` | XGD2 | reader, sustained stream, rendered startup, and restoration validated on Linux through Proton; stable tested-title execution not established |
+| `ASUS DRW-24D5MT 2.00`, native SATA on Windows | XGD2 Wave 2 only | experimental reader and restoration validated remotely; native desktop and gameplay validation pending |
 
 ## preservation
 

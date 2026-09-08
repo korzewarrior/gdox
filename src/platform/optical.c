@@ -108,6 +108,17 @@ static const gdox_optical_driver drivers[] = {
         NULL,
         GDOX_OPTICAL_EJECT_REQUEST_RELEASE_FOR_MANUAL_EJECT,
     },
+    {
+        GDOX_OPTICAL_DRIVE_ASUS_MT1862,
+        GDOX_SATA_ASUS_MT1862,
+        GDOX_ASUS_MT1862_SCSI_VENDOR " " GDOX_ASUS_MT1862_SCSI_MODEL " "
+            GDOX_ASUS_MT1862_SCSI_REVISION " (experimental)",
+        gdox_optical_open_asus_mt1862,
+        gdox_optical_open_asus_mt1862_media,
+        UINT32_C(32),
+        NULL,
+        GDOX_OPTICAL_EJECT_REQUEST_RELEASE_FOR_MANUAL_EJECT,
+    },
 };
 
 _Static_assert(

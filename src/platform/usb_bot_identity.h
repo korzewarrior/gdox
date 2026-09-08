@@ -36,6 +36,14 @@ typedef struct gdox_usb_bot_location {
 const gdox_usb_bot_identity_spec *gdox_usb_bot_identity_get(
     gdox_usb_bot_identity identity
 );
+bool gdox_optical_identity_requires_native_sata(gdox_usb_bot_identity identity);
+/* The platform must independently verify a native SATA/ATAPI bus. */
+bool gdox_optical_native_sata_identity_matches(
+    gdox_usb_bot_identity identity,
+    const char *vendor,
+    const char *model,
+    const char *revision
+);
 bool gdox_usb_bot_recovery_identity(
     uint16_t vendor_id,
     uint16_t product_id,
