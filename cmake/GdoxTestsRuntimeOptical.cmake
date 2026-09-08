@@ -229,6 +229,22 @@ if(GDOX_BUILD_OPTICAL)
         COMMAND gdox_usb_bot_identity_tests
     )
 
+    add_executable(
+        gdox_macos_device_selection_tests
+        tests/test_usb_bot_macos_selection.c
+        src/platform/usb_bot_macos.c
+        src/platform/scsi_transport.c
+        src/core/error.c
+    )
+    target_include_directories(gdox_macos_device_selection_tests PRIVATE include src)
+    if(NOT WIN32)
+        target_compile_definitions(gdox_macos_device_selection_tests PRIVATE _POSIX_C_SOURCE=200809L)
+    endif()
+    gdox_enable_c_warnings(gdox_macos_device_selection_tests)
+    gdox_enable_test_crt(gdox_macos_device_selection_tests)
+    add_test(NAME optical.macos_device_selection COMMAND gdox_macos_device_selection_tests)
+    gdox_label_tests(optical optical.macos_device_selection)
+
     if(NOT APPLE AND NOT WIN32 AND TARGET PkgConfig::LIBUSB)
         add_executable(
             gdox_usb_bot_libusb_handoff_tests
@@ -250,6 +266,41 @@ if(GDOX_BUILD_OPTICAL)
             COMMAND gdox_usb_bot_libusb_handoff_tests
         )
         gdox_label_tests(optical optical.usb_bot_libusb_handoff)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            add_executable(
+                gdox_linux_device_selection_tests
+                tests/test_usb_bot_linux_selection.c
+                src/platform/usb_bot_libusb.c
+                src/platform/usb_bot_libusb_handoff.c
+                src/platform/usb_bot_identity.c
+                src/platform/scsi_transport.c
+                src/core/error.c
+            )
+            target_include_directories(gdox_linux_device_selection_tests PRIVATE include src)
+            target_link_libraries(gdox_linux_device_selection_tests PRIVATE PkgConfig::LIBUSB Threads::Threads)
+            gdox_enable_c_warnings(gdox_linux_device_selection_tests)
+            add_test(NAME optical.linux_device_selection COMMAND gdox_linux_device_selection_tests)
+            gdox_label_tests(optical optical.linux_device_selection)
+            add_executable(
+                gdox_linux_optical_inventory_probe
+                tests/linux_optical_inventory_probe.c
+                src/platform/usb_bot_linux_devices.c
+                src/platform/usb_bot_identity.c
+                src/core/error.c
+            )
+            target_include_directories(gdox_linux_optical_inventory_probe PRIVATE include src)
+            target_compile_definitions(gdox_linux_optical_inventory_probe PRIVATE GDOX_LINUX_DEVICES_TESTING=1)
+            target_link_libraries(gdox_linux_optical_inventory_probe PRIVATE PkgConfig::LIBUSB)
+            gdox_enable_c_warnings(gdox_linux_optical_inventory_probe)
+            add_test(
+                NAME optical.linux_device_inventory
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_linux_optical_inventory.py
+                    --probe $<TARGET_FILE:gdox_linux_optical_inventory_probe>
+                    --scratch-root ${CMAKE_CURRENT_BINARY_DIR}
+            )
+            gdox_label_tests(optical optical.linux_device_inventory)
+        endif()
     endif()
 
     add_executable(gdox_gp08_tests tests/test_gp08_source.c)

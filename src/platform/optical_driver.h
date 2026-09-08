@@ -4,6 +4,10 @@
 #include "gdox/optical.h"
 #include "platform/usb_bot.h"
 
+gdox_usb_bot_identity gdox_optical_identity_for_drive(gdox_optical_drive drive);
+gdox_optical_drive gdox_optical_drive_for_identity(gdox_usb_bot_identity identity);
+uint32_t gdox_optical_sequential_read_blocks(gdox_optical_drive drive);
+
 bool gdox_optical_open_gp63(
     uint8_t read_retries,
     uint32_t ready_timeout_ms,

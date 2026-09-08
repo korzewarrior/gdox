@@ -16,6 +16,13 @@ typedef bool (*gdox_mt1887_transport_opener)(
     gdox_error *error
 );
 
+bool gdox_mt1887_source_eject(
+    gdox_mt1887_transport_opener opener,
+    void *opener_context,
+    gdox_usb_bot_identity expected_identity,
+    gdox_error *error
+);
+
 /*
  * Opens and validates one MT1887-backed GP63 source using a transport owned by
  * the caller's platform adapter. The resulting sector source owns the opened

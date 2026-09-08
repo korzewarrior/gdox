@@ -1400,7 +1400,11 @@ bool gdox_optical_open_gp08(
     );
 }
 
-bool gdox_optical_eject_gp08(gdox_error *error)
+bool gdox_gp08_source_eject(
+    gdox_gp08_transport_opener opener,
+    void *opener_context,
+    gdox_error *error
+)
 {
     gdox_scsi_transport transport = {0};
     gdox_mmc_identity identity;
@@ -1410,9 +1414,15 @@ bool gdox_optical_eject_gp08(gdox_error *error)
     gdox_error close_error;
     bool success;
 
+    gdox_error_clear(error);
+    if (opener == NULL) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT,
+            "a GP08 transport opener is required for ejection");
+        return false;
+    }
     if (!open_validated_transport(
-            open_discovered_gp08,
-            NULL,
+            opener,
+            opener_context,
             &transport,
             &identity,
             error
@@ -1440,4 +1450,9 @@ bool gdox_optical_eject_gp08(gdox_error *error)
         success = false;
     }
     return success;
+}
+
+bool gdox_optical_eject_gp08(gdox_error *error)
+{
+    return gdox_gp08_source_eject(open_discovered_gp08, NULL, error);
 }

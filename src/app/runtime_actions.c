@@ -138,7 +138,7 @@ static bool eject_physical_disc(
         ejected = gdox_runtime_session_close(runtime, snapshot, error);
     }
     if (ejected) {
-        ejected = gdox_optical_eject(runtime->optical_drive, error);
+        ejected = gdox_optical_eject_device(&runtime->optical_device, error);
     }
     if (!ejected) {
         gdox_runtime_attention(

@@ -2203,8 +2203,9 @@ bool gdox_optical_open_gp57(
     );
 }
 
-static bool eject_profile(
+bool gdox_mt1887_source_eject(
     gdox_mt1887_transport_opener opener,
+    void *opener_context,
     gdox_usb_bot_identity expected_identity,
     gdox_error *error
 )
@@ -2218,9 +2219,21 @@ static bool eject_profile(
     gdox_error close_error;
     bool success;
 
+    gdox_error_clear(error);
+    if (opener == NULL) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT,
+            "an MT1887 transport opener is required for ejection");
+        return false;
+    }
+    if (expected_identity != GDOX_USB_BOT_GP63
+        && expected_identity != GDOX_USB_BOT_GP65) {
+        gdox_error_set(error, GDOX_ERROR_UNSUPPORTED,
+            "operate the selected drive's tray manually");
+        return false;
+    }
     if (!open_validated_transport(
             opener,
-            NULL,
+            opener_context,
             expected_identity,
             &transport,
             &identity,
@@ -2254,8 +2267,9 @@ static bool eject_profile(
 
 bool gdox_optical_eject_gp63(gdox_error *error)
 {
-    return eject_profile(
+    return gdox_mt1887_source_eject(
         open_discovered_gp63,
+        NULL,
         GDOX_USB_BOT_GP63,
         error
     );
@@ -2263,8 +2277,9 @@ bool gdox_optical_eject_gp63(gdox_error *error)
 
 bool gdox_optical_eject_gp65(gdox_error *error)
 {
-    return eject_profile(
+    return gdox_mt1887_source_eject(
         open_discovered_gp65,
+        NULL,
         GDOX_USB_BOT_GP65,
         error
     );

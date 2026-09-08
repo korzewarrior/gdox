@@ -28,6 +28,7 @@ void choose_preservation_folder(
     const gdox_app_snapshot &snapshot
 );
 void choose_disc_image(gdox_app &app);
+void draw_drive_selector(gdox_app &app, const gdox_app_snapshot &snapshot);
 
 void draw_play(gdox_app &app, const gdox_app_snapshot &snapshot);
 void draw_preserve(gdox_app &app, const gdox_app_snapshot &snapshot);

@@ -4,6 +4,7 @@
 #include "gdox/emulator.h"
 #include "gdox/media.h"
 #include "gdox/nbd.h"
+#include "gdox/optical.h"
 #include "gdox/preserve.h"
 #include "gdox/xenia_policy.h"
 
@@ -11,6 +12,7 @@
 #include <stdint.h>
 
 #define GDOX_APP_TEXT_CAPACITY 160U
+#define GDOX_APP_DRIVE_LABEL_CAPACITY 272U
 
 typedef enum gdox_app_page {
     GDOX_APP_PAGE_PLAY = 0,
@@ -52,7 +54,15 @@ typedef struct gdox_app_settings {
     uint16_t window_height;
     char xemu_override[GDOX_EMULATOR_PATH_CAPACITY];
     char preservation_directory[GDOX_EMULATOR_PATH_CAPACITY];
+    char optical_device_id[GDOX_OPTICAL_DEVICE_ID_CAPACITY];
+    char optical_device_label[GDOX_APP_DRIVE_LABEL_CAPACITY];
 } gdox_app_settings;
+
+typedef struct gdox_app_optical_device {
+    gdox_optical_device device;
+    bool connected;
+    bool cleanup_pending;
+} gdox_app_optical_device;
 
 /*
  * The application and its worker exchange this one canonical value object.
@@ -64,6 +74,13 @@ typedef struct gdox_app_snapshot {
     gdox_app_page page;
     gdox_app_phase phase;
     gdox_app_settings settings;
+    size_t optical_device_count;
+    char optical_inventory_notice[GDOX_APP_TEXT_CAPACITY];
+    gdox_app_optical_device optical_devices[GDOX_OPTICAL_MAX_DEVICES];
+    gdox_optical_device active_optical_device;
+    bool can_select_drive;
+    size_t pending_cleanup_count;
+    char pending_cleanup_notice[384];
     bool xemu_ready;
     bool xenia_ready;
     bool can_start;

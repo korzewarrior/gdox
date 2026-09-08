@@ -155,6 +155,29 @@ const char *gdox_optical_drive_name(gdox_optical_drive drive)
     return driver != NULL ? driver->name : "Supported optical drive";
 }
 
+gdox_usb_bot_identity gdox_optical_identity_for_drive(gdox_optical_drive drive)
+{
+    const gdox_optical_driver *driver = find_driver(drive);
+    return driver != NULL ? driver->identity : GDOX_USB_BOT_IDENTITY_COUNT;
+}
+
+gdox_optical_drive gdox_optical_drive_for_identity(gdox_usb_bot_identity identity)
+{
+    size_t index;
+    for (index = 0U; index < sizeof(drivers) / sizeof(drivers[0]); ++index) {
+        if (drivers[index].identity == identity) {
+            return drivers[index].drive;
+        }
+    }
+    return GDOX_OPTICAL_DRIVE_NONE;
+}
+
+uint32_t gdox_optical_sequential_read_blocks(gdox_optical_drive drive)
+{
+    const gdox_optical_driver *driver = find_driver(drive);
+    return driver != NULL ? driver->sequential_read_blocks : 0U;
+}
+
 bool gdox_optical_drive_can_eject(gdox_optical_drive drive)
 {
     const gdox_optical_driver *driver = find_driver(drive);
@@ -189,14 +212,9 @@ bool gdox_optical_select_presence(
         if (!observation->drive_present) {
             continue;
         }
-        if (selected != NULL) {
-            memset(presence, 0, sizeof(*presence));
-            gdox_error_set(
-                error,
-                GDOX_ERROR_UNSUPPORTED,
-                "connect only one supported optical drive at a time"
-            );
-            return false;
+        if (selected != NULL
+            && (presence->media_present || !observation->media_present)) {
+            continue;
         }
         selected = driver;
         presence->drive_present = true;

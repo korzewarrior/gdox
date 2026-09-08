@@ -94,6 +94,8 @@ void gdox_test_preferences(void)
     GDOX_TEST_CHECK(loaded.window_height == 720U);
     GDOX_TEST_CHECK(loaded.xemu_override[0] == '\0');
     GDOX_TEST_CHECK(loaded.preservation_directory[0] == '\0');
+    GDOX_TEST_CHECK(loaded.optical_device_id[0] == '\0');
+    GDOX_TEST_CHECK(loaded.optical_device_label[0] == '\0');
 
     invalid = fopen(path, "wb");
     GDOX_TEST_CHECK(invalid != NULL);
@@ -113,6 +115,8 @@ void gdox_test_preferences(void)
     GDOX_TEST_CHECK(gdox_preferences_load(&loaded, &error));
     GDOX_TEST_CHECK(loaded.display_fit == GDOX_EMULATOR_FIT_SCALE);
 
+    GDOX_TEST_CHECK(loaded.optical_device_id[0] == '\0');
+
     saved = (gdox_preferences){
         false,
         4U,
@@ -123,6 +127,8 @@ void gdox_test_preferences(void)
         1080U,
         "/opt/xemu/bin/xemu",
         "/example/Xbox Preservation",
+        "usb:0e8d:1887:serial=GP57-device-2",
+        "HL-DT-ST DVDRAM GP57EB40 (USB port 2)",
     };
     GDOX_TEST_CHECK(gdox_preferences_save(&saved, &error));
     memset(&loaded, 0, sizeof(loaded));
@@ -139,6 +145,8 @@ void gdox_test_preferences(void)
     GDOX_TEST_CHECK(
         strcmp(loaded.xemu_override, saved.xemu_override) == 0
     );
+    GDOX_TEST_CHECK(strcmp(loaded.optical_device_id, saved.optical_device_id) == 0);
+    GDOX_TEST_CHECK(strcmp(loaded.optical_device_label, saved.optical_device_label) == 0);
     GDOX_TEST_CHECK(
         strcmp(
             loaded.preservation_directory,

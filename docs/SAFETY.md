@@ -7,6 +7,12 @@ drive adapters use narrow, validated volatile memory transactions; they do not
 flash drive firmware. Normal teardown restores the prior values, and a USB
 power cycle clears volatile state if the process is terminated unexpectedly.
 
+Desktop selection identifies individual devices, including separate units of
+the same model. Open, eject, connection checks, and restoration stay tied to
+that device. Switching after a failed restore retains the old source for
+cleanup instead of redirecting it to the new drive. An unsupported device in
+the selection list remains ineligible for activation.
+
 The GP65, SP80, GP08, and ASUS adapters verify the exact USB and SCSI identity and
 every expected stock value before activation. They run their complete restore
 sequences on teardown and every error path, and report when a transport

@@ -2,6 +2,7 @@
 #include "app/xemu_performance.h"
 #include "app/runtime_playback.h"
 #include "app/runtime_xenia.h"
+#include "app/runtime_drives.h"
 #include "platform/user_storage.h"
 
 #include <stdio.h>
@@ -13,7 +14,8 @@ static bool enqueue_request(
     const gdox_runtime_request_entry *request
 )
 {
-    if (gdox_runtime_request_enqueue(&runtime->requests, request)) {
+    if (!runtime->device_selection_requested
+        && gdox_runtime_request_enqueue(&runtime->requests, request)) {
         return true;
     }
     gdox_runtime_copy_text(
@@ -205,6 +207,10 @@ gdox_runtime_destroy_result gdox_runtime_destroy(
             }
             return GDOX_RUNTIME_DESTROY_RETRY;
         }
+    }
+    if (!gdox_runtime_drives_close_pending(runtime, &cleanup_error)) {
+        *error = cleanup_error;
+        return GDOX_RUNTIME_DESTROY_RETRY;
     }
     gdox_mutex_destroy(&runtime->mutex);
     free(runtime);
@@ -484,6 +490,40 @@ bool gdox_runtime_use_bundled_xemu(gdox_runtime *runtime)
     return gdox_runtime_set_xemu_override(
         runtime, GDOX_XEMU_INCLUDED_SELECTION
     );
+}
+
+bool gdox_runtime_select_drive(gdox_runtime *runtime, const char *id)
+{
+    bool accepted = false;
+
+    if (runtime == NULL || id == NULL
+        || strlen(id) >= GDOX_OPTICAL_DEVICE_ID_CAPACITY
+        || strchr(id, '\n') != NULL || strchr(id, '\r') != NULL
+        || !gdox_mutex_lock(&runtime->mutex)) {
+        return false;
+    }
+    if (runtime->snapshot.can_close
+        || runtime->snapshot.phase == GDOX_RUNTIME_PLAYING
+        || runtime->snapshot.phase == GDOX_RUNTIME_PRESERVING
+        || runtime->snapshot.phase == GDOX_RUNTIME_PREPARING
+        || runtime->requests.count != 0U) {
+        gdox_runtime_copy_text(runtime->snapshot.notice,
+            sizeof(runtime->snapshot.notice),
+            "Close playback or finish the current action before switching drives");
+    } else {
+        gdox_runtime_copy_text(runtime->requested_device_id,
+            sizeof(runtime->requested_device_id), id);
+        runtime->device_selection_requested = true;
+        runtime->snapshot.can_select_drive = false;
+        runtime->snapshot.can_start = false;
+        runtime->snapshot.can_restart = false;
+        runtime->snapshot.can_preserve = false;
+        gdox_runtime_copy_text(runtime->snapshot.notice,
+            sizeof(runtime->snapshot.notice), "Changing drive selection");
+        accepted = true;
+    }
+    gdox_mutex_unlock(&runtime->mutex);
+    return accepted;
 }
 
 bool gdox_runtime_set_preservation_directory(

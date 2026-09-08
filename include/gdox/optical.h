@@ -5,6 +5,7 @@
 #include "gdox/source.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -60,6 +61,30 @@ typedef enum gdox_optical_drive {
     GDOX_OPTICAL_DRIVE_GP57,
 } gdox_optical_drive;
 
+#define GDOX_OPTICAL_DEVICE_ID_CAPACITY 1024U
+#define GDOX_OPTICAL_DEVICE_NAME_CAPACITY 160U
+#define GDOX_OPTICAL_DEVICE_LOCATION_CAPACITY 96U
+#define GDOX_OPTICAL_MAX_DEVICES 32U
+
+typedef enum gdox_optical_connection {
+    GDOX_OPTICAL_CONNECTION_UNKNOWN = 0,
+    GDOX_OPTICAL_CONNECTION_USB,
+    GDOX_OPTICAL_CONNECTION_SATA,
+    GDOX_OPTICAL_CONNECTION_OTHER,
+} gdox_optical_connection;
+
+/* IDs identify physical devices, not a model or its current drive letter. */
+typedef struct gdox_optical_device {
+    char id[GDOX_OPTICAL_DEVICE_ID_CAPACITY];
+    char name[GDOX_OPTICAL_DEVICE_NAME_CAPACITY];
+    char location[GDOX_OPTICAL_DEVICE_LOCATION_CAPACITY];
+    gdox_optical_drive drive;
+    gdox_optical_connection connection;
+    bool media_status_known;
+    bool media_present;
+    bool accessible;
+} gdox_optical_device;
+
 typedef struct gdox_optical_presence {
     bool drive_present;
     bool media_status_known;
@@ -85,6 +110,41 @@ typedef enum gdox_optical_eject_completion {
     GDOX_OPTICAL_EJECT_COMPLETION_TRAY_EJECTED,
     GDOX_OPTICAL_EJECT_COMPLETION_RELEASED_FOR_MANUAL_EJECT,
 } gdox_optical_eject_completion;
+
+/*
+ * Inventory never takes ownership or changes a drive's state. query_media=false
+ * also avoids SCSI commands. count is the number of populated entries, never
+ * more than capacity; an insufficient buffer is reported as an error.
+ */
+bool gdox_optical_list_devices(
+    gdox_optical_device *devices,
+    size_t capacity,
+    size_t *count,
+    bool query_media,
+    gdox_error *error
+);
+bool gdox_optical_device_connected(
+    const gdox_optical_device *device,
+    bool *connected,
+    gdox_error *error
+);
+bool gdox_optical_open_device_media(
+    const gdox_optical_device *device,
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_optical_media_info *info,
+    gdox_error *error
+);
+bool gdox_optical_eject_device(
+    const gdox_optical_device *device,
+    gdox_error *error
+);
+bool gdox_optical_complete_device_eject_request(
+    const gdox_optical_device *device,
+    gdox_optical_eject_completion *completion,
+    gdox_error *error
+);
 
 const char *gdox_optical_drive_name(gdox_optical_drive drive);
 bool gdox_optical_drive_can_eject(gdox_optical_drive drive);

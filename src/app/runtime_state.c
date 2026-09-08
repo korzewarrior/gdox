@@ -135,6 +135,15 @@ void gdox_runtime_publish(
 
         runtime->snapshot = *snapshot;
         runtime->snapshot.settings = settings;
+        runtime->snapshot.can_select_drive = !runtime->device_selection_requested
+            && !runtime->snapshot.can_close
+            && runtime->snapshot.phase != GDOX_RUNTIME_PLAYING
+            && runtime->snapshot.phase != GDOX_RUNTIME_PRESERVING
+            && runtime->snapshot.phase != GDOX_RUNTIME_PREPARING;
+        if (runtime->device_selection_requested) {
+            runtime->snapshot.can_start = false;
+            runtime->snapshot.can_preserve = false;
+        }
         gdox_runtime_copy_bundle_status(&runtime->snapshot, &runtime->bundle);
         gdox_mutex_unlock(&runtime->mutex);
     }

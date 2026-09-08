@@ -6,6 +6,7 @@ add_library(
         src/platform/asus_nr09_source.c
         src/platform/gp08_source.c
         src/platform/optical.c
+        src/platform/optical_devices.c
         ${GDOX_MT1887_OPTICAL_SOURCES}
 )
 add_library(gdox::optical ALIAS gdox_optical)
@@ -48,6 +49,7 @@ if(NOT APPLE AND NOT WIN32 AND TARGET PkgConfig::LIBUSB)
         PRIVATE
             src/platform/usb_bot_libusb.c
             src/platform/usb_bot_libusb_handoff.c
+            src/platform/usb_bot_linux_devices.c
     )
     target_link_libraries(gdox_optical PRIVATE PkgConfig::LIBUSB)
     target_compile_definitions(gdox_optical PUBLIC GDOX_HAS_LIBUSB=1)

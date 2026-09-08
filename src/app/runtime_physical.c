@@ -30,8 +30,8 @@ static void observe_connection(
         return;
     }
     gdox_error_clear(error);
-    status_known = gdox_optical_connected(
-        runtime->optical_drive, &connected, error
+    status_known = gdox_optical_device_connected(
+        &runtime->optical_device, &connected, error
     );
     (void)gdox_physical_media_monitor_connection(
         &state->monitor, status_known, connected
@@ -113,8 +113,8 @@ static void complete_eject_request(
     gdox_optical_eject_completion completion;
     bool completed;
 
-    completed = gdox_optical_complete_eject_request(
-        state->eject_drive, &completion, error
+    completed = gdox_optical_complete_device_eject_request(
+        &state->eject_device, &completion, error
     );
     if (completed
         && completion != GDOX_OPTICAL_EJECT_COMPLETION_TRAY_EJECTED
@@ -272,6 +272,7 @@ bool gdox_runtime_physical_poll(
         && state->eject_drive == GDOX_OPTICAL_DRIVE_NONE) {
         state->eject_generation = observation.generation;
         state->eject_drive = runtime->optical_drive;
+        state->eject_device = runtime->optical_device;
     }
     finish_watch(
         runtime,

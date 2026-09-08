@@ -26,6 +26,12 @@ typedef enum gdox_runtime_playback_owner {
     GDOX_RUNTIME_PLAYBACK_XENIA,
 } gdox_runtime_playback_owner;
 
+typedef struct gdox_runtime_pending_cleanup {
+    gdox_optical_device device;
+    gdox_runtime_media_session media;
+    gdox_error error;
+} gdox_runtime_pending_cleanup;
+
 struct gdox_runtime {
     gdox_thread thread;
     gdox_mutex mutex;
@@ -48,6 +54,11 @@ struct gdox_runtime {
     gdox_xemu_legacy_migration_outcome xemu_save_migration;
     gdox_host_profile host_profile;
     gdox_optical_drive optical_drive;
+    gdox_optical_device optical_device;
+    gdox_runtime_pending_cleanup pending_cleanup[GDOX_OPTICAL_MAX_DEVICES];
+    char requested_device_id[GDOX_OPTICAL_DEVICE_ID_CAPACITY];
+    bool device_selection_requested;
+    uint64_t preservation_inventory_refresh_ms;
     gdox_runtime_bundle_status bundle;
 };
 

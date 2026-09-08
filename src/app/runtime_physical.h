@@ -19,6 +19,7 @@ typedef struct gdox_runtime_physical_state {
     uint32_t media_delay;
     uint64_t eject_generation;
     gdox_optical_drive eject_drive;
+    gdox_optical_device eject_device;
     gdox_runtime_physical_cleanup cleanup;
 } gdox_runtime_physical_state;
 

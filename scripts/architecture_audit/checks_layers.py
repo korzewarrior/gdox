@@ -119,6 +119,6 @@ def check_layers(repository: Repository) -> list[str]:
         failures.append("macOS transport omits the ASUS A202 identity")
 
     windows = repository.source("src/platform/usb_bot_windows.c").text
-    if "gdox_usb_bot_identity_matches(requested, &observed)" not in windows:
+    if "gdox_usb_bot_identity_matches(requested, &usb_identity)" not in windows:
         failures.append("Windows shared-USB-ID selection bypasses the exact matcher")
     return failures

@@ -9,7 +9,8 @@ namespace {
 bool draw_disc(const gdox_app_snapshot &snapshot)
 {
     const float content_width = ImGui::GetContentRegionAvail().x;
-    const float diameter = content_width >= 1000.0F ? 238.0F : 194.0F;
+    const float diameter = ImGui::GetContentRegionAvail().y < 450.0F
+        ? 150.0F : content_width >= 1000.0F ? 238.0F : 194.0F;
     const float radius = diameter * 0.5F - 10.0F;
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const ImVec2 button_origin(
@@ -158,6 +159,7 @@ void draw_play(gdox_app &app, const gdox_app_snapshot &snapshot)
         ImVec2(0.0F, -footer_height),
         ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened
     );
+    draw_drive_selector(app, snapshot);
     const float top_space = std::clamp(
         (ImGui::GetContentRegionAvail().y - 410.0F) * 0.24F,
         4.0F,

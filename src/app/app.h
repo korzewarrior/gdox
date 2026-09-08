@@ -44,6 +44,7 @@ void gdox_app_set_display(
 );
 bool gdox_app_set_xemu_override(gdox_app *app, const char *path);
 bool gdox_app_use_bundled_xemu(gdox_app *app);
+bool gdox_app_select_drive(gdox_app *app, const char *id);
 bool gdox_app_set_preservation_directory(gdox_app *app, const char *path);
 bool gdox_app_open_disc_image(gdox_app *app, const char *path);
 void gdox_app_use_physical_disc(gdox_app *app);
