@@ -470,7 +470,11 @@ static bool device_usb_ids(DEVINST device, uint16_t *vendor, uint16_t *product)
         unsigned int parsed_product;
         if (CM_Get_Device_IDW(device, instance, MAX_DEVICE_ID_LEN, 0U) == CR_SUCCESS
             && _wcsnicmp(instance, L"USB\\VID_", 8U) == 0
+#if defined(_MSC_VER)
+            && swscanf_s(instance + 8U, L"%4x&PID_%4x", &parsed_vendor, &parsed_product) == 2
+#else
             && swscanf(instance + 8U, L"%4x&PID_%4x", &parsed_vendor, &parsed_product) == 2
+#endif
             && parsed_vendor <= UINT16_MAX && parsed_product <= UINT16_MAX) {
             *vendor = (uint16_t)parsed_vendor;
             *product = (uint16_t)parsed_product;
