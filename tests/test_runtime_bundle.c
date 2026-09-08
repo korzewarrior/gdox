@@ -384,6 +384,111 @@ static void test_exact_file_removal(const char *root)
     GDOX_TEST_CHECK(result == GDOX_STORAGE_REMOVE_NOT_FOUND);
 }
 
+static void test_import_without_prepared_runtime(
+    const char *executable,
+    const char *bios,
+    const char *invalid_mcpx,
+    const char *data_directory
+)
+{
+    gdox_runtime_bundle_status status;
+    gdox_firmware_kind kind;
+    gdox_error error;
+    gdox_hashes source_hashes;
+    gdox_hashes imported_hashes;
+    char managed_bios[GDOX_EMULATOR_PATH_CAPACITY];
+    uint64_t source_bytes;
+    uint64_t imported_bytes;
+
+    /* A standalone xemu may run games but lacks GDOX save export. */
+    clear_environment("GDOX_TEST_XEMU_CAPABILITY_MODE");
+    GDOX_TEST_CHECK(gdox_runtime_bundle_import_firmware(
+        GDOX_FIRMWARE_FLASH, bios, executable, &status, &error
+    ));
+    GDOX_TEST_CHECK(error.code == GDOX_ERROR_NONE);
+    GDOX_TEST_CHECK(status.flash_ready);
+    GDOX_TEST_CHECK(!status.xemu_available);
+    GDOX_TEST_CHECK(!status.configuration_ready);
+    GDOX_TEST_CHECK(status.setup_error.code == GDOX_ERROR_UNSUPPORTED);
+    GDOX_TEST_CHECK(status.flash[0] != '\0');
+    (void)snprintf(managed_bios, sizeof(managed_bios), "%s", status.flash);
+    GDOX_TEST_CHECK(gdox_hash_file(
+        bios, &source_hashes, &source_bytes, &error
+    ));
+    GDOX_TEST_CHECK(gdox_hash_file(
+        managed_bios, &imported_hashes, &imported_bytes, &error
+    ));
+    GDOX_TEST_CHECK(source_bytes == imported_bytes);
+    GDOX_TEST_CHECK(memcmp(
+        source_hashes.sha256, imported_hashes.sha256, GDOX_SHA256_BYTES
+    ) == 0);
+
+    /* Restart with the stale override must still show the imported BIOS. */
+    GDOX_TEST_CHECK(!gdox_runtime_bundle_prepare(
+        executable, &status, &error
+    ));
+    GDOX_TEST_CHECK(status.flash_ready);
+    GDOX_TEST_CHECK(strcmp(status.flash, managed_bios) == 0);
+    GDOX_TEST_CHECK(!status.xemu_available);
+    GDOX_TEST_CHECK(!gdox_runtime_bundle_prepare(
+        "missing-xemu-after-upgrade", &status, &error
+    ));
+    GDOX_TEST_CHECK(status.flash_ready);
+    GDOX_TEST_CHECK(strcmp(status.flash, managed_bios) == 0);
+    GDOX_TEST_CHECK(status.setup_error.code == GDOX_ERROR_INVALID_SOURCE);
+
+    /* Re-selecting the managed file also works while xemu is missing. */
+    GDOX_TEST_CHECK(gdox_runtime_bundle_import_firmware_auto(
+        managed_bios, "missing-xemu-after-upgrade", &kind, &status, &error
+    ));
+    GDOX_TEST_CHECK(kind == GDOX_FIRMWARE_FLASH);
+    GDOX_TEST_CHECK(error.code == GDOX_ERROR_NONE);
+    GDOX_TEST_CHECK(status.flash_ready);
+    GDOX_TEST_CHECK(status.setup_error.code == GDOX_ERROR_INVALID_SOURCE);
+
+    /* Valid firmware remains imported when an incomplete ZIP lacks a HDD. */
+    GDOX_TEST_CHECK(set_environment(
+        "GDOX_TEST_XEMU_CAPABILITY_MODE", "save-export"
+    ));
+    GDOX_TEST_CHECK(gdox_runtime_bundle_import_firmware(
+        GDOX_FIRMWARE_FLASH, bios, executable, &status, &error
+    ));
+    GDOX_TEST_CHECK(error.code == GDOX_ERROR_NONE);
+    GDOX_TEST_CHECK(status.flash_ready);
+    GDOX_TEST_CHECK(status.xemu_available);
+    GDOX_TEST_CHECK(!status.hdd_ready);
+    GDOX_TEST_CHECK(status.setup_error.code == GDOX_ERROR_INVALID_SOURCE);
+
+    /* Invalid ROMs and inaccessible destinations remain import failures. */
+    GDOX_TEST_CHECK(!gdox_runtime_bundle_import_firmware(
+        GDOX_FIRMWARE_FLASH, invalid_mcpx, executable, &status, &error
+    ));
+    GDOX_TEST_CHECK(error.code == GDOX_ERROR_INVALID_SOURCE);
+    GDOX_TEST_CHECK(!gdox_runtime_bundle_import_firmware(
+        GDOX_FIRMWARE_MCPX, invalid_mcpx, executable, &status, &error
+    ));
+    GDOX_TEST_CHECK(error.code == GDOX_ERROR_INVALID_SOURCE);
+    GDOX_TEST_CHECK(!gdox_runtime_bundle_import_firmware(
+        GDOX_FIRMWARE_FLASH, "missing-bios", executable, &status, &error
+    ));
+    GDOX_TEST_CHECK(error.code == GDOX_ERROR_NOT_FOUND);
+    GDOX_TEST_CHECK(set_environment("GDOX_DATA_HOME", bios));
+    GDOX_TEST_CHECK(!gdox_runtime_bundle_import_firmware(
+        GDOX_FIRMWARE_FLASH, bios, executable, &status, &error
+    ));
+    GDOX_TEST_CHECK(error.code == GDOX_ERROR_IO);
+    GDOX_TEST_CHECK(set_environment("GDOX_DATA_HOME", data_directory));
+    GDOX_TEST_CHECK(gdox_hash_file(
+        managed_bios, &imported_hashes, &imported_bytes, &error
+    ));
+    GDOX_TEST_CHECK(source_bytes == imported_bytes);
+    GDOX_TEST_CHECK(memcmp(
+        source_hashes.sha256, imported_hashes.sha256, GDOX_SHA256_BYTES
+    ) == 0);
+    GDOX_TEST_CHECK(gdox_test_remove(managed_bios) == 0);
+    clear_environment("GDOX_TEST_XEMU_CAPABILITY_MODE");
+}
+
 void gdox_test_runtime_bundle(void)
 {
     static const char hdd_text[] = "bounded qcow fixture";
@@ -550,6 +655,10 @@ void gdox_test_runtime_bundle(void)
     GDOX_TEST_CHECK(set_environment("GDOX_XEMU", executable));
     GDOX_TEST_CHECK(set_environment("GDOX_XEMU_CONFIG", configuration));
     GDOX_TEST_CHECK(set_environment("GDOX_DATA_HOME", data));
+
+    test_import_without_prepared_runtime(
+        executable, external_bios, external_mcpx, data
+    );
 
     GDOX_TEST_CHECK(set_environment(
         "GDOX_TEST_XEMU_CAPABILITY_MODE", "malformed"

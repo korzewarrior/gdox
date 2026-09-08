@@ -772,6 +772,54 @@ static void test_untagged_process_is_retained(void)
     destroy_runtime(&runtime);
 }
 
+static void test_bundle_status_survives_worker_publication(void)
+{
+    gdox_runtime runtime;
+    gdox_runtime_snapshot worker_snapshot;
+
+    initialize_runtime(&runtime, &worker_snapshot, GDOX_MEDIA_BACKEND_XEMU);
+    runtime.bundle.xemu_available = false;
+    runtime.bundle.configuration_ready = false;
+    gdox_error_set(
+        &runtime.bundle.setup_error,
+        GDOX_ERROR_UNSUPPORTED,
+        "xemu does not provide persistent logical save export"
+    );
+    (void)snprintf(
+        runtime.bundle.flash, sizeof(runtime.bundle.flash),
+        "managed/firmware/bios.bin"
+    );
+    (void)snprintf(
+        worker_snapshot.xemu_setup, sizeof(worker_snapshot.xemu_setup),
+        "obsolete setup description"
+    );
+    gdox_runtime_publish(&runtime, &worker_snapshot);
+    check(runtime.snapshot.flash_ready, "publish independently imported BIOS");
+    check(
+        strcmp(runtime.snapshot.flash_path, runtime.bundle.flash) == 0,
+        "keep imported firmware visible after worker publication"
+    );
+    check(
+        strstr(runtime.snapshot.xemu_setup, "persistent logical save") != NULL,
+        "preserve actual setup error over stale worker text"
+    );
+    check(!runtime.snapshot.xemu_ready, "retain runtime capability gate");
+
+    runtime.bundle.xemu_available = true;
+    runtime.bundle.configuration_ready = true;
+    runtime.bundle.full_hdd_isolation = true;
+    runtime.bundle.persistent_save_export = true;
+    gdox_error_clear(&runtime.bundle.setup_error);
+    gdox_runtime_publish(&runtime, &worker_snapshot);
+    check(runtime.snapshot.xemu_ready, "publish repaired runtime readiness");
+    check(
+        strcmp(runtime.snapshot.xemu_setup,
+               "xemu is ready with persistent save export") == 0,
+        "clear obsolete setup error after runtime recovery"
+    );
+    destroy_runtime(&runtime);
+}
+
 int main(void)
 {
     check(
@@ -791,5 +839,6 @@ int main(void)
     test_failed_start_retains_process_authority();
     test_xenia_state_reset();
     test_untagged_process_is_retained();
+    test_bundle_status_survives_worker_publication();
     return failures == 0 ? 0 : 1;
 }

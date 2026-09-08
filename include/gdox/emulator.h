@@ -45,6 +45,11 @@ bool gdox_emulator_discover_executable(
     char output[GDOX_EMULATOR_PATH_CAPACITY],
     gdox_error *error
 );
+/* Resolve only the runtime packaged beside the current GDOX executable. */
+bool gdox_emulator_discover_bundled_executable(
+    char output[GDOX_EMULATOR_PATH_CAPACITY],
+    gdox_error *error
+);
 /* Finds an external configuration without copying or editing it. */
 bool gdox_emulator_discover_configuration(
     const char *executable,

@@ -136,6 +136,10 @@ static bool auxiliary_is_transition(
         return true;
     }
     for (index = 0U; index < 3U; ++index) {
+        if (hardware->auxiliary_read_only
+            && observed[index] != hardware->auxiliary[index]) {
+            return false;
+        }
         if (observed[index] != hardware->auxiliary[index]
             && observed[index] != media->stock_capacity[index]
             && observed[index] != media->live_capacity[index]) {
@@ -176,7 +180,8 @@ bool gdox_mt1887_media_profile_supports_hardware(
     if (media == NULL || hardware == NULL) {
         return false;
     }
-    if (hardware->identity == GDOX_SATA_ASUS_MT1862) {
+    if (hardware->identity == GDOX_SATA_ASUS_MT1862
+        || hardware->identity == GDOX_USB_BOT_GP57) {
         return media == &gp63_xgd2_wave2;
     }
     if (media->kind == GDOX_MT1887_MEDIA_XGD1) {

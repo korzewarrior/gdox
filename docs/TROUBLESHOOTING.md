@@ -11,7 +11,10 @@ profile:
 - `HL-DT-ST DVDRAM GP65NB60 PB00` and USB `0e8d:1887`;
 - `HL-DT-ST DVDRAM SP80NB80 RF02` and USB `0e8d:1887`;
 - `HL-DT-ST DVDRAM GP08NU10 JE01` and Prolific PL-2507 USB `152e:2507`;
-- `ASUS SDRW-08D1S-U A202` and Initio USB `13fd:1640`.
+- `ASUS SDRW-08D1S-U A202` and Initio USB `13fd:1640`;
+- `ASUS DRW-24D5MT 2.00` on Windows native SATA (experimental, XGD2 Wave 2);
+- `HL-DT-ST DVDRAM GP57EB40 PB00` and USB `0e8d:1887` on Windows
+  (experimental, XGD2 Wave 2).
 
 A similar retail name, firmware revision, or internal mechanism is not enough.
 `GP65NB60 PB01` is not supported. The GP65, SP80, GP08, and ASUS adapters also
@@ -60,10 +63,17 @@ instead of competing for the optical drive.
 
 ## xemu is not ready
 
-Open Sources. xemu, MCPX, Xbox BIOS, and Xbox HDD must all show usable paths.
-Re-select any missing firmware. If using a custom xemu, clear that selection to
-return to the packaged version. GDOX always uses the verified included clean
-HDD as the volatile backing image.
+Open Sources and read the xemu setup message. Select **Use included xemu**
+to use the runtime beside the current GDOX executable, then import any missing
+MCPX and Xbox BIOS files. Keep the complete release folder together. GDOX
+always uses the verified included clean HDD as the volatile backing image.
+
+A standalone xemu can boot your firmware while lacking the save-management
+capabilities GDOX needs. Older GDOX builds could report a valid firmware import
+as an invalid BIOS or boot ROM when this later emulator setup failed. Firmware
+import and emulator readiness are now reported separately; imported firmware
+remains visible even if xemu cannot be prepared. Selecting the included runtime
+does not depend on the location of an older GDOX folder.
 
 ## xemu asks for a disc
 

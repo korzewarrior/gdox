@@ -16,9 +16,13 @@ Deck. macOS and Android do not have a compatible Xenia integration.
 GDOX also includes an experimental Windows native SATA
 interface for `ASUS DRW-24D5MT 2.00`, limited to XGD2 Wave 2. Activation,
 game-sector reads through the compiled GDOX source, and restoration were
-verified over the diagnostic connection. Native desktop detection and Xenia
-gameplay remain unvalidated. See [the drive findings](ASUS_MT1862.md).
-This candidate does not extend the validated physical playback column below.
+verified over the diagnostic connection. Hexode also reports Assassin's Creed
+playback on Windows; native recovery and restoration after gameplay remain
+to be validated. See [the drive findings](ASUS_MT1862.md).
+The experimental Windows USB [GP57EB40/PB00 profile](GP57EB40_PB00.md) also
+accepts XGD2 Wave 2 only; game-sector reads and restoration are verified
+through diagnostics, with desktop gameplay pending. These profiles do not
+extend the validated physical playback column below.
 
 | Host | Owned image | Validated physical playback | ASUS A202 XGD2 | Runtime |
 | --- | --- | --- | --- | --- |

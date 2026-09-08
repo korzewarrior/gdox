@@ -23,9 +23,9 @@ and a 65-sector read matched an independently captured sample. Source abort
 followed by close restored the drive; independent reads verified all six
 changed bytes, four guard bytes, stock capacity, and readiness.
 
-Windows storage enumeration, desktop launch, Xenia gameplay, and native
-disconnect/reconnect behavior have not yet been physically validated. The
-profile is experimental and does not extend the validated gameplay matrix.
+Hexode subsequently reported in-game Assassin's Creed playback on Windows
+with this profile. Native disconnect/reconnect recovery and restoration after
+gameplay still need physical validation. The profile remains experimental.
 The reporter supplied no USB identity, but did not attest the Windows bus
 type. GDOX therefore independently requires Windows to report SATA, ATA, or
 ATAPI and rejects unknown, RAID, and USB bus types.
@@ -54,4 +54,5 @@ RAM value.
 Transfers are capped at 32 sectors. GDOX retains the current read speed and
 uses manual tray handling, including during read recovery. No firmware,
 EEPROM, or disc writes are part of this interface. Raw research captures and
-remote-session details remain in the private workspace.
+remote-session details remain in the private workspace. Credit to Hexode for
+the drive access and playback testing that enabled this interface.

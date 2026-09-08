@@ -66,6 +66,7 @@ bool gdox_runtime_set_xemu_override(
     gdox_runtime *runtime,
     const char *path
 );
+bool gdox_runtime_use_bundled_xemu(gdox_runtime *runtime);
 bool gdox_runtime_set_preservation_directory(
     gdox_runtime *runtime,
     const char *path

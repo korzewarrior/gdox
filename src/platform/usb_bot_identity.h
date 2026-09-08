@@ -37,6 +37,7 @@ const gdox_usb_bot_identity_spec *gdox_usb_bot_identity_get(
     gdox_usb_bot_identity identity
 );
 bool gdox_optical_identity_requires_native_sata(gdox_usb_bot_identity identity);
+bool gdox_optical_identity_requires_windows(gdox_usb_bot_identity identity);
 /* The platform must independently verify a native SATA/ATAPI bus. */
 bool gdox_optical_native_sata_identity_matches(
     gdox_usb_bot_identity identity,

@@ -56,6 +56,21 @@ add_executable(
     src/platform/scsi_transport.c
 )
 add_dependencies(gdox_tests gdox_test_xemu_helper)
+add_executable(
+    gdox_bundled_xemu_discovery_probe
+    tests/bundled_xemu_discovery_probe.c
+)
+target_link_libraries(gdox_bundled_xemu_discovery_probe PRIVATE gdox::services)
+gdox_enable_c_warnings(gdox_bundled_xemu_discovery_probe)
+gdox_enable_test_crt(gdox_bundled_xemu_discovery_probe)
+add_test(
+    NAME core.bundled_xemu_discovery
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bundled_xemu_discovery.py
+        --probe $<TARGET_FILE:gdox_bundled_xemu_discovery_probe>
+        --scratch-root ${CMAKE_CURRENT_BINARY_DIR}
+)
+gdox_label_tests(core core.bundled_xemu_discovery)
 target_link_libraries(gdox_tests PRIVATE gdox::services)
 target_sources(
     gdox_tests

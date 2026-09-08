@@ -1188,7 +1188,8 @@ static bool block_device_supported_identity(
                  ++identity_index) {
                 const gdox_usb_bot_identity candidate =
                     (gdox_usb_bot_identity)identity_index;
-                if (gdox_usb_bot_identity_matches(candidate, &observed)) {
+                if (!gdox_optical_identity_requires_windows(candidate)
+                    && gdox_usb_bot_identity_matches(candidate, &observed)) {
                     *identity = candidate;
                     return true;
                 }
@@ -1531,7 +1532,7 @@ bool gdox_usb_bot_open(
     gdox_error_clear(error);
     if (transport == NULL || gdox_scsi_transport_is_valid(transport)
         || selected == NULL
-        || gdox_optical_identity_requires_native_sata(identity)) {
+        || gdox_optical_identity_requires_windows(identity)) {
         gdox_error_set(
             error,
             transport == NULL || gdox_scsi_transport_is_valid(transport)

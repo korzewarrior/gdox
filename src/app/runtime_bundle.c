@@ -508,11 +508,18 @@ static bool select_executable(
 )
 {
     const char *environment_override = getenv("GDOX_XEMU");
+    const bool included = override != NULL
+        && strcmp(override, GDOX_XEMU_INCLUDED_SELECTION) == 0;
 
-    status->custom_executable = (override != NULL && override[0] != '\0')
-        || (environment_override != NULL
-            && environment_override[0] != '\0');
-    if (status->custom_executable) {
+    status->custom_executable = !included
+        && ((override != NULL && override[0] != '\0')
+            || (environment_override != NULL
+                && environment_override[0] != '\0'));
+    if (included) {
+        status->xemu_available = gdox_emulator_discover_bundled_executable(
+            status->executable, error
+        );
+    } else if (status->custom_executable) {
         const char *selected = override != NULL && override[0] != '\0'
             ? override : environment_override;
 
@@ -545,7 +552,8 @@ static bool select_executable(
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
-            "xemu does not provide persistent logical save export"
+            "xemu does not provide persistent logical save export; "
+            "choose Use included xemu"
         );
         return false;
     }
@@ -823,14 +831,20 @@ static bool begin_bundle_preparation(
         return false;
     }
     memset(status, 0, sizeof(*status));
+    /* Imported firmware survives an unavailable or incompatible emulator. */
+    if (!resolve_managed_paths(paths, error)
+        || !adopt_firmware_from_configuration(NULL, paths, status, error)
+        || (status->mcpx_ready
+            && !copy_path(status->mcpx, paths->mcpx, error))
+        || (status->flash_ready
+            && !copy_path(status->flash, paths->flash, error))) {
+        return false;
+    }
     if (!select_executable(executable_override, status, error)) {
         return false;
     }
     *available = status->xemu_available;
-    if (!*available) {
-        return true;
-    }
-    return resolve_managed_paths(paths, error);
+    return true;
 }
 
 static bool finish_bundle_preparation(
@@ -888,7 +902,11 @@ bool gdox_runtime_bundle_prepare(
     gdox_error *error
 )
 {
-    return prepare_bundle(executable_override, status, error);
+    const bool prepared = prepare_bundle(executable_override, status, error);
+    if (!prepared && status != NULL && error != NULL) {
+        status->setup_error = *error;
+    }
+    return prepared;
 }
 
 #ifdef GDOX_RUNTIME_BUNDLE_TESTING
@@ -942,6 +960,10 @@ bool gdox_runtime_bundle_import_firmware(
 {
     char destination[GDOX_EMULATOR_PATH_CAPACITY];
     const char *relative;
+    uint8_t *data = NULL;
+    size_t bytes = 0U;
+    bool stored;
+    gdox_error setup_error;
 
     gdox_error_clear(error);
     if (source == NULL || source[0] == '\0' || status == NULL
@@ -950,21 +972,25 @@ bool gdox_runtime_bundle_import_firmware(
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "firmware kind, source, and runtime status are required");
         return false;
     }
-    if (!validate_firmware_file(kind, source, error)) {
+    if (!read_validated_firmware(kind, source, &data, &bytes, error)) {
         return false;
     }
     relative = kind == GDOX_FIRMWARE_MCPX
         ? "xemu/firmware/mcpx_1.0.bin"
         : "xemu/firmware/bios.bin";
-    if (!managed_path(relative, destination, error)
-        || !gdox_storage_copy_private(source, destination, true, error)) {
+    stored = managed_path(relative, destination, error)
+        && gdox_storage_write_private(destination, data, bytes, true, error);
+    free(data);
+    if (!stored) {
         return false;
     }
-    return gdox_runtime_bundle_prepare(
+    /* Runtime setup errors must not turn a successful import into a failure. */
+    (void)gdox_runtime_bundle_prepare(
         executable_override,
         status,
-        error
+        &setup_error
     );
+    return true;
 }
 
 bool gdox_runtime_bundle_import_firmware_auto(

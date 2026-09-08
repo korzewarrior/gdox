@@ -14,7 +14,7 @@ static const gdox_mt1887_profile gp63 = {
     false,
     {0U, 0U, 0U},
     {0U, 0U, 0U},
-    0U, {0U}, false, false, false,
+    0U, {0U}, false, false, false, false,
 };
 
 static const gdox_mt1887_profile gp65 = {
@@ -27,7 +27,7 @@ static const gdox_mt1887_profile gp65 = {
     true,
     {0x8538U, 0x8539U, 0x853aU},
     {0x64U, 0x00U, 0x64U},
-    0U, {0U}, false, false, false,
+    0U, {0U}, false, false, false, false,
 };
 
 static const gdox_mt1887_profile sp80 = {
@@ -40,7 +40,7 @@ static const gdox_mt1887_profile sp80 = {
     false,
     {0U, 0U, 0U},
     {0U, 0U, 0U},
-    0U, {0U}, false, false, false,
+    0U, {0U}, false, false, false, false,
 };
 
 /* Exact native SATA drive, currently validated only with XGD2 Wave 2. */
@@ -54,7 +54,21 @@ static const gdox_mt1887_profile asus_mt1862 = {
     false,
     {0U, 0U, 0U},
     {0U, 0U, 0U},
-    0x8b95U, {0x00U, 0xfcU, 0xf9U, 0xc3U}, true, true, true,
+    0x8b95U, {0x00U, 0xfcU, 0xf9U, 0xc3U}, true, true, true, false,
+};
+
+/* Exact Windows USB drive, currently validated only with XGD2 Wave 2. */
+static const gdox_mt1887_profile gp57 = {
+    GDOX_USB_BOT_GP57,
+    GDOX_GP57_SCSI_VENDOR,
+    GDOX_GP57_SCSI_MODEL,
+    GDOX_GP57_SCSI_REVISION,
+    {0x8a37U, 0x8a38U, 0x8a39U},
+    {0x8be2U, 0x8be3U, 0x8be4U},
+    true,
+    {0x8538U, 0x8539U, 0x853aU},
+    {0x64U, 0x00U, 0x64U},
+    0x8be5U, {0x00U, 0xfcU, 0xf9U, 0xc3U}, false, true, true, true,
 };
 
 const gdox_mt1887_profile *gdox_mt1887_profile_find(
@@ -74,6 +88,8 @@ const gdox_mt1887_profile *gdox_mt1887_profile_find(
         profile = &sp80;
     } else if (identity == GDOX_SATA_ASUS_MT1862) {
         profile = &asus_mt1862;
+    } else if (identity == GDOX_USB_BOT_GP57) {
+        profile = &gp57;
     } else {
         return NULL;
     }
@@ -91,7 +107,8 @@ uint32_t gdox_mt1887_max_read_blocks(
 )
 {
     if (profile != NULL && (profile->identity == GDOX_USB_BOT_SP80
-            || profile->identity == GDOX_SATA_ASUS_MT1862)) {
+            || profile->identity == GDOX_SATA_ASUS_MT1862
+            || profile->identity == GDOX_USB_BOT_GP57)) {
         return UINT32_C(32);
     }
     if (profile == NULL || !windows_transport) {

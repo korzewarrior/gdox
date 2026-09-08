@@ -430,7 +430,7 @@ static bool restore_stock(
         first_error = current;
         failed = true;
     }
-    if (profile->auxiliary_present
+    if (profile->auxiliary_present && !profile->auxiliary_read_only
         && !write_triplet(
             transport,
             profile->auxiliary_addresses,
@@ -1790,8 +1790,10 @@ static bool mt1887_source_open_for_media(
         || (expected_identity != GDOX_USB_BOT_GP63
             && expected_identity != GDOX_USB_BOT_GP65
             && expected_identity != GDOX_USB_BOT_SP80
+            && expected_identity != GDOX_USB_BOT_GP57
             && expected_identity != GDOX_SATA_ASUS_MT1862)
         || (detect_media && expected_identity != GDOX_USB_BOT_GP63
+            && expected_identity != GDOX_USB_BOT_GP57
             && expected_identity != GDOX_SATA_ASUS_MT1862)
         || (!detect_media
             && (media->kind == GDOX_MT1887_MEDIA_GP63_XGD2
@@ -2147,6 +2149,56 @@ bool gdox_optical_open_asus_mt1862(
 {
     gdox_optical_media_info info;
     return gdox_optical_open_asus_mt1862_media(
+        read_retries, ready_timeout_ms, source, &info, error
+    );
+}
+
+static bool open_discovered_gp57(
+    void *context,
+    gdox_scsi_transport *transport,
+    gdox_error *error
+)
+{
+    (void)context;
+    return gdox_usb_bot_open(GDOX_USB_BOT_GP57, transport, error);
+}
+
+bool gdox_optical_open_gp57_media(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_optical_media_info *info,
+    gdox_error *error
+)
+{
+    const gdox_mt1887_media_profile *selected = NULL;
+    if (info == NULL) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT,
+            "optical media information output is required");
+        return false;
+    }
+    memset(info, 0, sizeof(*info));
+    if (!gdox_mt1887_detected_source_open_for_identity(
+            open_discovered_gp57, NULL, GDOX_USB_BOT_GP57,
+            0U, read_retries, ready_timeout_ms, source, &selected, error)) {
+        return false;
+    }
+    /* The hardware/media gate admits only the observed XGD2 Wave 2 profile. */
+    info->profile = GDOX_OPTICAL_MEDIA_XGD2;
+    info->game_partition_lba = selected->game_partition_lba;
+    info->sequential_read_blocks = UINT32_C(32);
+    return true;
+}
+
+bool gdox_optical_open_gp57(
+    uint8_t read_retries,
+    uint32_t ready_timeout_ms,
+    gdox_sector_source *source,
+    gdox_error *error
+)
+{
+    gdox_optical_media_info info;
+    return gdox_optical_open_gp57_media(
         read_retries, ready_timeout_ms, source, &info, error
     );
 }

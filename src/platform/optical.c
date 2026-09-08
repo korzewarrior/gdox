@@ -119,6 +119,17 @@ static const gdox_optical_driver drivers[] = {
         NULL,
         GDOX_OPTICAL_EJECT_REQUEST_RELEASE_FOR_MANUAL_EJECT,
     },
+    {
+        GDOX_OPTICAL_DRIVE_GP57,
+        GDOX_USB_BOT_GP57,
+        GDOX_GP57_SCSI_VENDOR " " GDOX_GP57_SCSI_MODEL " "
+            GDOX_GP57_SCSI_REVISION " (experimental)",
+        gdox_optical_open_gp57,
+        gdox_optical_open_gp57_media,
+        UINT32_C(32),
+        NULL,
+        GDOX_OPTICAL_EJECT_REQUEST_RELEASE_FOR_MANUAL_EJECT,
+    },
 };
 
 _Static_assert(

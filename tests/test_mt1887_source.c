@@ -73,6 +73,7 @@ typedef struct fake_mt1887 {
     bool gp63;
     bool sp80;
     bool asus_mt1862;
+    bool gp57;
     uint8_t fixed_values[4];
     unsigned int open_count;
     unsigned int close_count;
@@ -210,6 +211,9 @@ static uint8_t *fake_xdata(fake_mt1887 *fake, uint16_t address)
         }
         return NULL;
     }
+    if (fake->gp57 && address >= 0x8be5U && address <= 0x8be8U) {
+        return &fake->fixed_values[address - 0x8be5U];
+    }
     if ((fake->gp63 || fake->sp80)
         && address >= 0x8538U && address <= 0x853aU) {
         return &fake->capacity[address - 0x8538U];
@@ -261,7 +265,8 @@ static bool fake_command_in(
         memcpy(output + 8U, fake->asus_mt1862 ? "ASUS    " : "HL-DT-ST", 8U);
         memcpy(
             output + 16U,
-            fake->asus_mt1862 ? "DRW-24D5MT      " : fake->sp80
+            fake->asus_mt1862 ? "DRW-24D5MT      " : fake->gp57
+                ? "DVDRAM GP57EB40" : fake->sp80
                 ? "DVDRAM SP80NB80"
                 : fake->gp63
                     ? "DVDRAM GP63EX70"
@@ -2419,9 +2424,141 @@ static bool test_asus_mt1862_failures_restore(void)
     return true;
 }
 
+static fake_mt1887 fake_gp57_stock(void)
+{
+    fake_mt1887 fake = fake_xgd2_wave2_stock();
+    fake.gp63 = false;
+    fake.gp57 = true;
+    memcpy(fake.auxiliary, (const uint8_t[]){0x64U, 0U, 0x64U}, 3U);
+    memcpy(fake.revision, "PB00", 5U);
+    memcpy(fake.fixed_values, (const uint8_t[]){0U, 0xfcU, 0xf9U, 0xc3U}, 4U);
+    fake.maximum_accepted_read_blocks = 32U;
+    return fake;
+}
+
+static bool open_gp57(fake_mt1887 *fake, gdox_sector_source *source,
+    gdox_error *error)
+{
+    const gdox_mt1887_media_profile *selected = NULL;
+    return gdox_mt1887_detected_source_open_for_identity(
+        fake_open, fake, GDOX_USB_BOT_GP57, 0U, 0U, 0U,
+        source, &selected, error
+    );
+}
+
+static bool test_gp57_transaction(void)
+{
+    fake_mt1887 fake = fake_gp57_stock();
+    gdox_sector_source source = {0};
+    gdox_error error;
+    uint8_t output[65U * GDOX_LOGICAL_SECTOR_BYTES];
+    bool passed = check(open_gp57(&fake, &source, &error),
+        "GP57 XGD2 source opens");
+    fake.read_count = 0U;
+    passed = passed && check(fake.write_count == 6U
+        && writes_begin_at(&fake, 0U, 0x8a37U)
+        && writes_begin_at(&fake, 3U, 0x8be2U),
+        "GP57 activates capacity before geometry at its own addresses")
+        && check(gdox_source_read(&source, 0x40000U, 65U, output,
+            sizeof(output), &error), "GP57 reads through the shared sector source")
+        && check(fake.read_count == 3U && fake.read_blocks[0] == 32U
+            && fake.read_blocks[1] == 32U && fake.read_blocks[2] == 1U,
+            "GP57 splits transfers at 32 sectors");
+    gdox_source_abort(&source);
+    passed = check(gdox_source_close(&source, &error),
+        "GP57 restores after source abort") && passed;
+    return passed && check(fake.write_count == 12U
+        && writes_begin_at(&fake, 6U, 0x8be2U)
+        && writes_begin_at(&fake, 9U, 0x8a37U)
+        && memcmp(fake.capacity, xgd2_wave2_stock_capacity, 3U) == 0
+        && memcmp(fake.geometry, xgd2_wave2_stock_geometry, 3U) == 0,
+        "GP57 restores geometry first and all six fields");
+}
+
+static bool test_gp57_manual_recovery(void)
+{
+    fake_mt1887 fake = fake_gp57_stock();
+    gdox_sector_source source = {0};
+    const gdox_mt1887_media_profile *selected = NULL;
+    gdox_error error;
+    uint8_t output[GDOX_LOGICAL_SECTOR_BYTES];
+    bool passed = check(gdox_mt1887_detected_source_open_for_identity(
+        fake_open, &fake, GDOX_USB_BOT_GP57, UINT16_C(0xffff),
+        1U, 0U, &source, &selected, &error),
+        "GP57 recovery source opens without changing speed");
+
+    fake.fail_read_once = true;
+    fake.reset_to_stock = true;
+    passed = passed && check(gdox_source_read(&source, 0x40000U, 1U,
+        output, sizeof(output), &error), "GP57 retries a failed read")
+        && check(fake.reset_count >= 1U && fake.write_count == 12U
+            && fake_is_live(&fake), "GP57 recovery reapplies its six fields")
+        && check(fake.load_start_count == 0U && fake.speed_request_count == 0U,
+            "GP57 recovery retains manual tray and current speed");
+    passed = check(gdox_source_close(&source, &error),
+        "GP57 recovered source closes") && passed;
+    return passed && check(
+        memcmp(fake.capacity, xgd2_wave2_stock_capacity, 3U) == 0
+        && memcmp(fake.geometry, xgd2_wave2_stock_geometry, 3U) == 0,
+        "GP57 restores stock after read recovery");
+}
+
+static bool test_gp57_rejections(void)
+{
+    for (unsigned int scenario = 0U; scenario < 10U; ++scenario) {
+        fake_mt1887 fake = fake_gp57_stock();
+        gdox_sector_source source = {0};
+        gdox_error error;
+        if (scenario == 0U) memcpy(fake.revision, "PB01", 5U);
+        if (scenario == 1U) fake.fixed_values[2] ^= 1U;
+        if (scenario == 2U) fake.capacity[1] = 0xeeU;
+        if (scenario == 3U) fake.geometry[1] = 0xeeU;
+        if (scenario == 4U) fake.pfi_valid = false;
+        if (scenario == 8U) fake.auxiliary[0] = 0x03U;
+        if (scenario == 9U) fake.auxiliary[2] = 0xeeU;
+        if (scenario >= 5U && scenario < 8U) {
+            fake.media = scenario == 5U ? FAKE_MEDIA_XGD1
+                : scenario == 6U ? FAKE_MEDIA_XGD2_WAVE1 : FAKE_MEDIA_XGD3;
+            memcpy(fake.capacity, fake_stock_capacity(&fake), 3U);
+            memcpy(fake.geometry, fake_stock_geometry(&fake), 3U);
+        }
+        bool passed = check(!open_gp57(&fake, &source, &error),
+            "GP57 rejects unvalidated firmware, guards, state, and media")
+            && check(fake.write_count == 0U, "GP57 rejection sends no writes");
+        gdox_source_destroy(&source);
+        if (!passed) return false;
+    }
+    return true;
+}
+
+static bool test_gp57_failures_restore(void)
+{
+    const uint16_t addresses[] = {0x8a37U, 0x8a38U, 0x8a39U,
+        0x8be2U, 0x8be3U, 0x8be4U};
+    for (size_t index = 0U; index < 7U; ++index) {
+        fake_mt1887 fake = fake_gp57_stock();
+        gdox_sector_source source = {0};
+        gdox_error error;
+        if (index < 6U) fake.fail_write_address_once = addresses[index];
+        else fake.descriptor_trailing_valid = false;
+        bool passed = check(!open_gp57(&fake, &source, &error),
+            "GP57 failed write or invalid descriptor rejects activation")
+            && check(memcmp(fake.capacity, xgd2_wave2_stock_capacity, 3U) == 0
+                && memcmp(fake.geometry, xgd2_wave2_stock_geometry, 3U) == 0,
+                "GP57 restores every partially activated state");
+        gdox_source_destroy(&source);
+        if (!passed) return false;
+    }
+    return true;
+}
+
 int main(void)
 {
-    if (!test_asus_mt1862_transaction()
+    if (!test_gp57_transaction()
+        || !test_gp57_manual_recovery()
+        || !test_gp57_rejections()
+        || !test_gp57_failures_restore()
+        || !test_asus_mt1862_transaction()
         || !test_asus_mt1862_manual_recovery()
         || !test_asus_mt1862_rejections()
         || !test_asus_mt1862_failures_restore()

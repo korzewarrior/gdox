@@ -1,3 +1,5 @@
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
 function(gdox_label_tests labels)
     set_tests_properties(${ARGN} PROPERTIES LABELS "${labels}")
 endfunction()

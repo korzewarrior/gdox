@@ -9,6 +9,12 @@
 namespace gdox::ui::detail {
 namespace {
 
+void show_runtime_notice(gdox_app &app)
+{
+    gdox_app_tick(&app);
+    set_notice(gdox_app_snapshot_get(&app)->notice);
+}
+
 std::string normalize_xemu_selection(const char *path)
 {
     std::string selected = path != nullptr ? path : "";
@@ -32,11 +38,8 @@ void choose_xemu(gdox_app &app)
     const nfdresult_t result = NFD_OpenDialogU8_With(&path, &arguments);
     if (result == NFD_OKAY) {
         const std::string selected = normalize_xemu_selection(path);
-        if (!gdox_app_set_xemu_override(&app, selected.c_str())) {
-            set_notice("That xemu executable could not be used");
-        } else {
-            set_notice("");
-        }
+        (void)gdox_app_set_xemu_override(&app, selected.c_str());
+        show_runtime_notice(app);
         NFD_FreePathU8(path);
     } else if (result == NFD_ERROR) {
         set_dialog_error("xemu picker");
@@ -95,18 +98,10 @@ void choose_firmware(gdox_app &app, bool mcpx)
     nfdopendialogu8args_t arguments{};
     const nfdresult_t result = NFD_OpenDialogU8_With(&path, &arguments);
     if (result == NFD_OKAY) {
-        const bool imported = mcpx
+        (void)(mcpx
             ? gdox_app_import_mcpx(&app, path)
-            : gdox_app_import_bios(&app, path);
-        if (!imported) {
-            set_notice(
-                mcpx
-                    ? "That file is not a valid MCPX boot ROM"
-                    : "That file is not a valid Xbox BIOS"
-            );
-        } else {
-            set_notice("");
-        }
+            : gdox_app_import_bios(&app, path));
+        show_runtime_notice(app);
         NFD_FreePathU8(path);
     } else if (result == NFD_ERROR) {
         set_dialog_error("Firmware picker");
@@ -307,16 +302,12 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
     if (ImGui::Button("Choose xemu...", ImVec2(142.0F, 34.0F))) {
         choose_xemu(app);
     }
-    if (snapshot.settings.xemu_override[0] != '\0') {
-        ImGui::SameLine();
-        if (ImGui::Button("Use included", ImVec2(122.0F, 34.0F))) {
-            if (!gdox_app_set_xemu_override(&app, "")) {
-                set_notice("The included xemu could not be prepared");
-            } else {
-                set_notice("");
-            }
-        }
+    ImGui::SameLine();
+    if (ImGui::Button("Use included xemu", ImVec2(166.0F, 34.0F))) {
+        (void)gdox_app_use_bundled_xemu(&app);
+        show_runtime_notice(app);
     }
+    ImGui::TextWrapped("%s", snapshot.xemu_setup);
     source_actions_spacing();
     path_row(
         "config",
@@ -326,12 +317,18 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
     );
     ImGui::TextColored(muted, "Managed by GDOX");
     source_actions_spacing();
-    path_row("mcpx", "MCPX boot ROM", snapshot.mcpx_path, "Not imported");
+    path_row(
+        "mcpx", "MCPX boot ROM",
+        snapshot.mcpx_ready ? snapshot.mcpx_path : "", "Not imported"
+    );
     if (ImGui::Button("Choose MCPX...", ImVec2(142.0F, 34.0F))) {
         choose_firmware(app, true);
     }
     source_actions_spacing();
-    path_row("bios", "Xbox BIOS", snapshot.flash_path, "Not imported");
+    path_row(
+        "bios", "Xbox BIOS",
+        snapshot.flash_ready ? snapshot.flash_path : "", "Not imported"
+    );
     if (ImGui::Button("Choose BIOS...", ImVec2(142.0F, 34.0F))) {
         choose_firmware(app, false);
     }

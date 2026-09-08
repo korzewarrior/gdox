@@ -330,8 +330,28 @@ static void test_native_sata(void)
     GDOX_TEST_CHECK(!gdox_usb_bot_recovery_identity(0U, 0U, &recovered));
 }
 
+static void test_gp57(void)
+{
+    gdox_usb_bot_observed_identity observed = {
+        0x0e8dU, 0x1887U, "HL-DT-ST", "DVDRAM GP57EB40", "PB00"
+    };
+    GDOX_TEST_CHECK(gdox_usb_bot_identity_matches(GDOX_USB_BOT_GP57, &observed));
+    GDOX_TEST_CHECK(!gdox_usb_bot_identity_matches(GDOX_USB_BOT_GP65, &observed));
+    GDOX_TEST_CHECK(gdox_optical_identity_requires_windows(GDOX_USB_BOT_GP57));
+    GDOX_TEST_CHECK(!gdox_optical_identity_requires_native_sata(GDOX_USB_BOT_GP57));
+    observed.scsi_revision = "PB01";
+    GDOX_TEST_CHECK(!gdox_usb_bot_identity_matches(GDOX_USB_BOT_GP57, &observed));
+    observed.scsi_revision = "PB00";
+    observed.scsi_model = "DVDRAM GP65NB60";
+    GDOX_TEST_CHECK(!gdox_usb_bot_identity_matches(GDOX_USB_BOT_GP57, &observed));
+    observed.scsi_model = "DVDRAM GP57EB40";
+    observed.vendor_id = 0x1234U;
+    GDOX_TEST_CHECK(!gdox_usb_bot_identity_matches(GDOX_USB_BOT_GP57, &observed));
+}
+
 int main(void)
 {
+    test_gp57();
     test_native_sata();
     run();
     return gdox_test_failures == 0 ? 0 : 1;
