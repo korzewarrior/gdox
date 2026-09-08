@@ -264,6 +264,7 @@ void gdox_runtime_copy_bundle_status(
     gdox_runtime_copy_text(
         snapshot->hdd_path, sizeof(snapshot->hdd_path), bundle->hdd
     );
+    gdox_runtime_describe_bundle(snapshot, bundle);
 }
 
 void gdox_runtime_refresh_bundle_snapshot(
@@ -287,6 +288,13 @@ void gdox_runtime_describe_bundle(
             snapshot->xemu_setup,
             sizeof(snapshot->xemu_setup),
             "xemu is ready with persistent save export"
+        );
+    } else if (gdox_error_is_set(&bundle->setup_error)) {
+        (void)snprintf(
+            snapshot->xemu_setup,
+            sizeof(snapshot->xemu_setup),
+            "xemu setup: %.145s",
+            bundle->setup_error.message
         );
     } else if (!bundle->xemu_available) {
         gdox_runtime_copy_text(

@@ -203,6 +203,12 @@ bool gdox_app_set_xemu_override(gdox_app *app, const char *path)
         && gdox_runtime_set_xemu_override(app->runtime, path);
 }
 
+bool gdox_app_use_bundled_xemu(gdox_app *app)
+{
+    return app != NULL && app->runtime != NULL
+        && gdox_runtime_use_bundled_xemu(app->runtime);
+}
+
 bool gdox_app_set_preservation_directory(gdox_app *app, const char *path)
 {
     return app != NULL && app->runtime != NULL

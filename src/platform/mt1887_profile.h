@@ -23,6 +23,8 @@ typedef struct gdox_mt1887_profile {
     bool geometry_first;
     bool retain_read_speed;
     bool manual_tray;
+    /* A guard only: never repair or write this triplet when true. */
+    bool auxiliary_read_only;
 } gdox_mt1887_profile;
 
 const gdox_mt1887_profile *gdox_mt1887_profile_find(

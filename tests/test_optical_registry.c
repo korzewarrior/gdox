@@ -138,6 +138,14 @@ static void run(void)
     GDOX_TEST_CHECK(gdox_optical_complete_eject_request(
         GDOX_OPTICAL_DRIVE_ASUS_MT1862, &eject_completion, &error));
     GDOX_TEST_CHECK(eject_completion == GDOX_OPTICAL_EJECT_COMPLETION_RELEASED_FOR_MANUAL_EJECT);
+    memset(observations, 0, sizeof(observations));
+    observations[GDOX_USB_BOT_GP57] = (gdox_usb_bot_observation){true, true, true};
+    GDOX_TEST_CHECK(gdox_optical_select_presence(observations, &presence, &error));
+    GDOX_TEST_CHECK(presence.drive == GDOX_OPTICAL_DRIVE_GP57);
+    GDOX_TEST_CHECK(!gdox_optical_drive_can_eject(GDOX_OPTICAL_DRIVE_GP57));
+    GDOX_TEST_CHECK(gdox_optical_complete_eject_request(
+        GDOX_OPTICAL_DRIVE_GP57, &eject_completion, &error));
+    GDOX_TEST_CHECK(eject_completion == GDOX_OPTICAL_EJECT_COMPLETION_RELEASED_FOR_MANUAL_EJECT);
     GDOX_TEST_CHECK(!gdox_optical_drive_can_eject(
         GDOX_OPTICAL_DRIVE_NONE
     ));

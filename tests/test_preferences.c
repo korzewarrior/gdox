@@ -5,6 +5,7 @@
 #include "test.h"
 
 #include "app/preferences.h"
+#include "app/runtime_bundle.h"
 #include "platform/user_storage.h"
 
 #include <stdio.h>
@@ -144,6 +145,23 @@ void gdox_test_preferences(void)
             saved.preservation_directory
         ) == 0
     );
+
+    /* Included selection survives upgrades without retaining an old ZIP path. */
+    (void)snprintf(
+        saved.xemu_override,
+        sizeof(saved.xemu_override),
+        "%s",
+        GDOX_XEMU_INCLUDED_SELECTION
+    );
+    GDOX_TEST_CHECK(gdox_preferences_save(&saved, &error));
+    memset(&loaded, 0, sizeof(loaded));
+    GDOX_TEST_CHECK(gdox_preferences_load(&loaded, &error));
+    GDOX_TEST_CHECK(strcmp(
+        loaded.xemu_override, GDOX_XEMU_INCLUDED_SELECTION
+    ) == 0);
+    GDOX_TEST_CHECK(strcmp(
+        loaded.preservation_directory, saved.preservation_directory
+    ) == 0);
 
     invalid = fopen(path, "wb");
     GDOX_TEST_CHECK(invalid != NULL);

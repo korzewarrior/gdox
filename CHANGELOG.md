@@ -1,5 +1,16 @@
 # changes
 
+## 0.2.6
+
+- import valid BIOS and boot ROM files independently of xemu setup, keep
+  imported firmware visible, and show the actual setup error
+- make **Use included xemu** select the packaged runtime and keep that choice
+  when GDOX is moved or updated
+- add experimental Windows USB support for exact `GP57EB40 PB00` drives with
+  XGD2 Wave 2 discs; game-sector reads and restoration are verified
+- credit Hexode for the GP57 and ASUS drive testing and record reported
+  Assassin's Creed playback with `ASUS DRW-24D5MT 2.00`
+
 ## 0.2.5
 
 - add an experimental Windows native SATA interface for exact

@@ -468,13 +468,22 @@ bool gdox_runtime_set_xemu_override(gdox_runtime *runtime, const char *path)
     gdox_runtime_copy_text(
         runtime->snapshot.notice,
         sizeof(runtime->snapshot.notice),
-        selected[0] == '\0' ? "Using the xemu included with GDOX"
-                            : "Using your selected xemu"
+        strcmp(selected, GDOX_XEMU_INCLUDED_SELECTION) == 0
+            ? "Using the xemu included with GDOX"
+            : selected[0] == '\0' ? "Using automatically discovered xemu"
+                                   : "Using your selected xemu"
     );
     (void)enqueue_simple_request(runtime, GDOX_RUNTIME_REQUEST_APPLY_DISPLAY);
     gdox_runtime_preferences_from_snapshot(&runtime->snapshot, &preferences);
     gdox_mutex_unlock(&runtime->mutex);
     return persist_preferences(runtime, &preferences);
+}
+
+bool gdox_runtime_use_bundled_xemu(gdox_runtime *runtime)
+{
+    return gdox_runtime_set_xemu_override(
+        runtime, GDOX_XEMU_INCLUDED_SELECTION
+    );
 }
 
 bool gdox_runtime_set_preservation_directory(

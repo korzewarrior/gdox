@@ -176,18 +176,13 @@ static bool runtime_candidate(
 #endif
 }
 
-static bool bundled_xemu(
-    const char *home,
+static bool adjacent_bundled_xemu(
     char output[GDOX_EMULATOR_PATH_CAPACITY]
 )
 {
-    const char *explicit_runtime = getenv("GDOX_RUNTIME_DIR");
     char executable[GDOX_EMULATOR_PATH_CAPACITY];
     char runtime[GDOX_EMULATOR_PATH_CAPACITY];
 
-    if (runtime_candidate(explicit_runtime, output)) {
-        return true;
-    }
     if (executable_directory(executable)) {
 #if defined(__APPLE__)
         if (join_path(executable, "../Resources/runtime", runtime)
@@ -203,6 +198,21 @@ static bool bundled_xemu(
             && runtime_candidate(runtime, output)) {
             return true;
         }
+    }
+    return false;
+}
+
+static bool bundled_xemu(
+    const char *home,
+    char output[GDOX_EMULATOR_PATH_CAPACITY]
+)
+{
+    const char *explicit_runtime = getenv("GDOX_RUNTIME_DIR");
+    char runtime[GDOX_EMULATOR_PATH_CAPACITY];
+
+    if (runtime_candidate(explicit_runtime, output)
+        || adjacent_bundled_xemu(output)) {
+        return true;
     }
     if (home == NULL || home[0] == '\0') {
         return false;
@@ -302,6 +312,28 @@ bool gdox_emulator_discover_executable(
         return true;
     }
     gdox_error_set(error, GDOX_ERROR_NOT_FOUND, "xemu executable was not found");
+    return false;
+}
+
+bool gdox_emulator_discover_bundled_executable(
+    char output[GDOX_EMULATOR_PATH_CAPACITY],
+    gdox_error *error
+)
+{
+    gdox_error_clear(error);
+    if (output == NULL) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "emulator path output is required");
+        return false;
+    }
+    if (adjacent_bundled_xemu(output)) {
+        return true;
+    }
+    output[0] = '\0';
+    gdox_error_set(
+        error,
+        GDOX_ERROR_NOT_FOUND,
+        "included xemu was not found; extract the complete GDOX download"
+    );
     return false;
 }
 

@@ -53,6 +53,14 @@ static const gdox_usb_bot_identity_spec identities[] = {
         GDOX_ASUS_MT1862_SCSI_MODEL,
         GDOX_ASUS_MT1862_SCSI_REVISION,
     },
+    {
+        GDOX_USB_BOT_GP57,
+        GDOX_GP57_USB_VENDOR_ID,
+        GDOX_GP57_USB_PRODUCT_ID,
+        GDOX_GP57_SCSI_VENDOR,
+        GDOX_GP57_SCSI_MODEL,
+        GDOX_GP57_SCSI_REVISION,
+    },
 };
 
 _Static_assert(
@@ -116,6 +124,12 @@ bool gdox_usb_bot_identity_matches(
 bool gdox_optical_identity_requires_native_sata(gdox_usb_bot_identity identity)
 {
     return identity == GDOX_SATA_ASUS_MT1862;
+}
+
+bool gdox_optical_identity_requires_windows(gdox_usb_bot_identity identity)
+{
+    return gdox_optical_identity_requires_native_sata(identity)
+        || identity == GDOX_USB_BOT_GP57;
 }
 
 bool gdox_optical_native_sata_identity_matches(

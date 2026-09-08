@@ -6,6 +6,9 @@
 
 #include <stdbool.h>
 
+/* Persist this reserved choice; rediscover beside GDOX after moves/upgrades. */
+#define GDOX_XEMU_INCLUDED_SELECTION "@included"
+
 typedef enum gdox_firmware_kind {
     GDOX_FIRMWARE_MCPX = 0,
     GDOX_FIRMWARE_FLASH,
@@ -21,6 +24,7 @@ typedef struct gdox_runtime_bundle_status {
     bool custom_executable;
     bool full_hdd_isolation;
     bool persistent_save_export;
+    gdox_error setup_error;
     char executable[GDOX_EMULATOR_PATH_CAPACITY];
     char configuration[GDOX_EMULATOR_PATH_CAPACITY];
     char mcpx[GDOX_EMULATOR_PATH_CAPACITY];
@@ -34,6 +38,7 @@ bool gdox_runtime_bundle_prepare(
     gdox_runtime_bundle_status *status,
     gdox_error *error
 );
+/* Success means firmware was validated and stored; setup_error is separate. */
 bool gdox_runtime_bundle_import_firmware(
     gdox_firmware_kind kind,
     const char *source,

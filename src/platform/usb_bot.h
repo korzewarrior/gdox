@@ -14,6 +14,8 @@ typedef enum gdox_usb_bot_identity {
     GDOX_USB_BOT_SP80,
     /* Native Windows SATA/SPTI profile; never a USB VID/PID wildcard. */
     GDOX_SATA_ASUS_MT1862,
+    /* Exact experimental Windows USB/SPTI profile. */
+    GDOX_USB_BOT_GP57,
     GDOX_USB_BOT_IDENTITY_COUNT,
 } gdox_usb_bot_identity;
 

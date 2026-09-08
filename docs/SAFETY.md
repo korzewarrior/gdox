@@ -123,7 +123,7 @@ delivery fault.
 
 Do not assume two retail enclosures contain the same optical mechanism.
 Require the exact model, revision, and transport identity before a drive
-adapter runs. GP63, GP65, and SP80 share USB `0e8d:1887`, so the complete
+adapter runs. GP63, GP65, SP80, and GP57 share USB `0e8d:1887`, so the complete
 SCSI identity selects the profile. The GP08 profile additionally requires the exact
 Prolific PL-2507 USB bridge identity. The ASUS profile requires USB
 `13fd:1640`, SCSI vendor `ASUS`, product `SDRW-08D1S-U`, and revision `A202`.
@@ -135,6 +135,11 @@ act as a wildcard. It additionally verifies four unchanged guard bytes and
 the tested XGD2 Wave 2 geometry before any volatile activation writes, limits
 reads to 32 sectors, retains the current read speed, and uses manual tray
 handling. See `ASUS_MT1862.md` for the validation boundary.
+
+The experimental GP57EB40/PB00 interface requires exact USB `0e8d:1887`
+and SCSI identity on Windows. It is restricted to XGD2 Wave 2, verifies
+auxiliary and fixed guard fields, retains current speed, and uses manual
+tray handling. See `GP57EB40_PB00.md`.
 
 ## Private data
 

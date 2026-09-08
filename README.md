@@ -25,9 +25,10 @@ host, media, and validation matrix is in [Xbox 360 support](docs/XBOX360.md).
 similar drive names, firmware revisions, and USB bridges are not
 interchangeable.
 
-GDOX includes an experimental Windows native SATA reader for
-[ASUS DRW-24D5MT 2.00](docs/ASUS_MT1862.md), limited to XGD2 Wave 2.
-Game-sector reads and restoration are verified; desktop gameplay is pending.
+Experimental Windows readers for [ASUS DRW-24D5MT 2.00](docs/ASUS_MT1862.md)
+(native SATA) and [GP57EB40 PB00](docs/GP57EB40_PB00.md) (USB) accept XGD2
+Wave 2 only. Reads and restoration are verified through diagnostics; Hexode
+also reports Windows playback with the ASUS drive.
 
 gdox reads game data from the disc or image while the emulator runs. saves and
 profiles persist; game contents, shader caches, and session files do not.

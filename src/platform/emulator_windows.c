@@ -305,6 +305,31 @@ bool gdox_emulator_discover_executable(
     return true;
 }
 
+bool gdox_emulator_discover_bundled_executable(
+    char output[GDOX_EMULATOR_PATH_CAPACITY],
+    gdox_error *error
+)
+{
+    wchar_t base[GDOX_WINDOWS_PATH_CAPACITY];
+
+    gdox_error_clear(error);
+    if (output == NULL) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "emulator path output is required");
+        return false;
+    }
+    if (module_directory(base)
+        && candidate(base, L"runtime\\xemu\\xemu.exe", output)) {
+        return true;
+    }
+    output[0] = '\0';
+    gdox_error_set(
+        error,
+        GDOX_ERROR_NOT_FOUND,
+        "included xemu was not found; extract the complete GDOX download"
+    );
+    return false;
+}
+
 bool gdox_emulator_validate_executable(
     const char *path,
     gdox_error *error
