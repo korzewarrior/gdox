@@ -19,6 +19,7 @@
 enum {
     GDOX_XEMU_HELPER_POLL_MS = 10U,
     GDOX_XEMU_HELPER_MAXIMUM_ARGUMENTS = 10U,
+    GDOX_XEMU_HELPER_READS_PER_POLL = 16U,
 };
 
 static bool wide_regular_file(const wchar_t *path)
@@ -38,7 +39,10 @@ static bool capture_pipe_output(
     gdox_error *error
 )
 {
-    while (*open) {
+    /* A continuously writing child must yield to the other pipe and the
+     * process/deadline checks, including after the capture buffer fills. */
+    for (unsigned int reads = 0U;
+         *open && reads < GDOX_XEMU_HELPER_READS_PER_POLL; ++reads) {
         char chunk[256];
         DWORD available = 0U;
         DWORD read_bytes = 0U;
@@ -114,7 +118,7 @@ bool gdox_xemu_helper_run(
     bool started = false;
     bool assigned = false;
     bool finished = false;
-    uint32_t elapsed = 0U;
+    ULONGLONG started_ms = 0U;
     DWORD exit_code = 1U;
     gdox_session_storage temporary = {0};
     gdox_xemu_environment child_environment = {0};
@@ -258,6 +262,7 @@ bool gdox_xemu_helper_run(
         goto cleanup;
     }
     assigned = true;
+    started_ms = GetTickCount64();
     if (ResumeThread(process.hThread) == (DWORD)-1) {
         gdox_windows_io_error(
             error, "could not resume xemu helper", GetLastError()
@@ -270,7 +275,7 @@ bool gdox_xemu_helper_run(
     output_write = NULL;
     (void)CloseHandle(error_write);
     error_write = NULL;
-    while (elapsed <= timeout_ms) {
+    for (;;) {
         if (!capture_pipe_output(
                 output_read, output->output, &output->output_bytes,
                 &output_open, &output->overflow, error
@@ -288,14 +293,12 @@ bool gdox_xemu_helper_run(
         if (finished && !output_open && !diagnostic_open) {
             break;
         }
+        if (GetTickCount64() - started_ms >= (ULONGLONG)timeout_ms) {
+            output->timed_out = true;
+            success = true;
+            goto cleanup;
+        }
         Sleep(GDOX_XEMU_HELPER_POLL_MS);
-        elapsed = timeout_ms - elapsed < GDOX_XEMU_HELPER_POLL_MS
-            ? timeout_ms + 1U : elapsed + GDOX_XEMU_HELPER_POLL_MS;
-    }
-    if (!finished || output_open || diagnostic_open) {
-        output->timed_out = true;
-        success = true;
-        goto cleanup;
     }
     if (!GetExitCodeProcess(process.hProcess, &exit_code)) {
         gdox_windows_io_error(

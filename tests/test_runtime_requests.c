@@ -3,6 +3,8 @@
 #endif
 
 #include "app/runtime_internal.h"
+#include "app/runtime_xemu.h"
+#include "app/runtime_setup.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -177,6 +179,7 @@ static int check_handheld_display_policy(gdox_runtime *runtime)
     memset(&runtime->requests, 0, sizeof(runtime->requests));
     gdox_preferences_defaults(&runtime->snapshot.settings);
     runtime->host_profile = GDOX_HOST_PROFILE_HANDHELD;
+    runtime->setup_request_pending = true;
 
     gdox_runtime_set_display(
         runtime,
@@ -191,11 +194,36 @@ static int check_handheld_display_policy(gdox_runtime *runtime)
     CHECK(runtime->snapshot.settings.internal_resolution_scale == 1U);
     CHECK(gdox_runtime_request_dequeue(&runtime->requests, &queued));
     CHECK(queued.kind == GDOX_RUNTIME_REQUEST_APPLY_DISPLAY);
+    CHECK(runtime->preferences_dirty && runtime->preferences_save_requested);
+    CHECK(gdox_runtime_setup_flush_preferences(runtime, false, &error));
+    runtime->setup_request_pending = false;
     CHECK(gdox_preferences_load(&loaded, &error));
     CHECK(loaded.internal_resolution_scale == 1U);
+    atomic_store(&runtime->stopping, true);
+    gdox_runtime_set_auto_start(runtime, !runtime->snapshot.settings.auto_start);
+    CHECK(runtime->snapshot.settings.auto_start == loaded.auto_start);
+    CHECK(!runtime->preferences_dirty);
+    atomic_store(&runtime->stopping, false);
     clear_config_home();
     CHECK(gdox_test_remove(settings_path) == 0);
     CHECK(gdox_test_rmdir(directory) == 0);
+    return 0;
+}
+
+static int check_setup_error_launch(gdox_runtime *runtime)
+{
+    gdox_error error;
+    runtime->bundle.mcpx_ready = true;
+    runtime->bundle.flash_ready = true;
+    gdox_error_set(&runtime->bundle.setup_error, GDOX_ERROR_UNSUPPORTED,
+        "selected xemu does not provide GDOX support");
+    CHECK(!gdox_runtime_xemu_prepare_launch(runtime, &error));
+    CHECK(error.code == GDOX_ERROR_UNSUPPORTED);
+    CHECK(strcmp(error.message, runtime->bundle.setup_error.message) == 0);
+    runtime->setup_request_pending = true;
+    CHECK(!gdox_runtime_xemu_prepare_launch(runtime, &error));
+    CHECK(strstr(error.message, "still being prepared") != NULL);
+    runtime->setup_request_pending = false;
     return 0;
 }
 
@@ -215,6 +243,9 @@ int main(void)
     }
     if (result == 0) {
         result = check_handheld_display_policy(&runtime);
+    }
+    if (result == 0) {
+        result = check_setup_error_launch(&runtime);
     }
     gdox_mutex_destroy(&runtime.mutex);
     if (result == 0) {

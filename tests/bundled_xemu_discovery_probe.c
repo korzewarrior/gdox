@@ -30,6 +30,9 @@ int main(int argc, char **argv)
 
     if (!found) {
         (void)fprintf(stderr, "%s\n", error.message);
+        if (path[0] != '\0') {
+            (void)fprintf(stderr, "expected=%s\n", path);
+        }
         return 1;
     }
     (void)printf("%s\n", path);

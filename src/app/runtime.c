@@ -4,6 +4,7 @@
 #include "app/runtime_playback.h"
 #include "app/runtime_physical.h"
 #include "app/runtime_session.h"
+#include "app/runtime_setup.h"
 #include "app/runtime_drives.h"
 #include "app/runtime_drive_loop.h"
 #include "app/optical_monitor.h"
@@ -333,13 +334,36 @@ static void run_runtime_cycle(gdox_runtime *runtime, gdox_runtime_loop *loop)
 {
     gdox_runtime_request_entry request = {0};
 
-    if (gdox_runtime_drive_loop_poll(runtime, loop)) {
+    if (atomic_load_explicit(&runtime->stopping, memory_order_acquire)) {
+        return;
+    }
+    /* Sources setup is independent of a failed drive restoration. Other
+     * actions stay queued until the normal ownership checks below finish. */
+    if (gdox_runtime_setup_take_request(runtime, &request)
+        && gdox_runtime_setup_execute(runtime, &loop->snapshot, &request)) {
+        return;
+    }
+    if (!gdox_runtime_setup_flush_preferences(runtime, false, &loop->error)) {
+        gdox_runtime_attention(runtime, &loop->snapshot,
+            "Could not save settings", &loop->error,
+            runtime->media.open, gdox_runtime_playback_running(runtime));
+        return;
+    }
+    if (atomic_load_explicit(&runtime->stopping, memory_order_acquire)
+        || gdox_runtime_drive_loop_poll(runtime, loop)
+        || atomic_load_explicit(&runtime->stopping, memory_order_acquire)) {
         return;
     }
     if (run_cleanup_cycle(runtime, loop)) {
         return;
     }
+    if (atomic_load_explicit(&runtime->stopping, memory_order_acquire)) {
+        return;
+    }
     (void)take_request(runtime, &request);
+    if (gdox_runtime_setup_execute(runtime, &loop->snapshot, &request)) {
+        return;
+    }
     if (gdox_runtime_actions_execute(
             runtime,
             &loop->snapshot,
@@ -363,9 +387,6 @@ static void runtime_thread(void *raw_runtime)
 {
     gdox_runtime *runtime = raw_runtime;
     gdox_runtime_loop loop = {0};
-    gdox_error shutdown_error;
-    gdox_runtime_playback_owner shutdown_owner;
-
     gdox_optical_monitor_initialize(&loop.optical_monitor);
     gdox_runtime_physical_initialize(&loop.physical);
     gdox_runtime_copy_snapshot(runtime, &loop.snapshot);
@@ -373,35 +394,31 @@ static void runtime_thread(void *raw_runtime)
         run_runtime_cycle(runtime, &loop);
         gdox_sleep_ms(100U);
     }
-    shutdown_owner = runtime->playback_owner;
-    if (!gdox_runtime_playback_shutdown(runtime, &shutdown_error)
-        && !gdox_runtime_playback_running(runtime)
-        && (shutdown_owner == GDOX_RUNTIME_PLAYBACK_XEMU
-            || (shutdown_owner == GDOX_RUNTIME_PLAYBACK_XENIA
-                && !runtime->xenia_storage.session.active))) {
-        runtime->terminal_shutdown_failed = true;
-        runtime->terminal_shutdown_error = shutdown_error;
-        if (gdox_mutex_lock(&runtime->mutex)) {
-            runtime->snapshot.phase = GDOX_RUNTIME_ATTENTION;
-            gdox_runtime_copy_text(
-                runtime->snapshot.status,
-                sizeof(runtime->snapshot.status),
-                "GDOX closed with an emulator error"
-            );
-            gdox_runtime_copy_text(
-                runtime->snapshot.notice,
-                sizeof(runtime->snapshot.notice),
-                shutdown_error.message
-            );
-            gdox_mutex_unlock(&runtime->mutex);
+    gdox_runtime_copy_snapshot(runtime, &loop.snapshot);
+    loop.snapshot.phase = GDOX_RUNTIME_ATTENTION;
+    loop.snapshot.can_select_drive = false;
+    loop.snapshot.can_start = false;
+    loop.snapshot.can_restart = false;
+    loop.snapshot.can_preserve = false;
+    loop.snapshot.can_close = false;
+    loop.snapshot.can_eject = false;
+    gdox_runtime_copy_text(loop.snapshot.status, sizeof(loop.snapshot.status),
+        "Closing GDOX");
+    gdox_runtime_copy_text(loop.snapshot.notice, sizeof(loop.snapshot.notice),
+        "Finishing the current operation and restoring the drive");
+    gdox_runtime_drives_describe(runtime, &loop.snapshot);
+    gdox_runtime_publish(runtime, &loop.snapshot);
+    for (;;) {
+        if (gdox_runtime_cleanup(runtime, &loop.error)) {
+            break;
         }
+        gdox_runtime_drives_describe(runtime, &loop.snapshot);
+        gdox_runtime_copy_text(loop.snapshot.notice, sizeof(loop.snapshot.notice),
+            loop.error.message);
+        gdox_runtime_publish(runtime, &loop.snapshot);
+        gdox_sleep_ms(1000U);
     }
-    if (!gdox_runtime_playback_running(runtime)
-        && gdox_runtime_media_is_owned(&runtime->media)) {
-        (void)gdox_runtime_session_close(
-            runtime, &loop.snapshot, &loop.error
-        );
-    }
+    atomic_store_explicit(&runtime->worker_finished, true, memory_order_release);
 }
 
 static void apply_default_preservation_directory(gdox_preferences *preferences)
@@ -502,6 +519,7 @@ gdox_runtime *gdox_runtime_create(gdox_host_profile host_profile)
                 : "Native runtime is initializing"
     );
     atomic_init(&runtime->stopping, false);
+    atomic_init(&runtime->worker_finished, false);
     atomic_init(&runtime->preservation_cancelled, false);
     if (!gdox_thread_start(&runtime->thread, runtime_thread, runtime)) {
         gdox_mutex_destroy(&runtime->mutex);

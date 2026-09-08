@@ -44,6 +44,7 @@ add_executable(
     tests/test_xdvdfs.c
     tests/test_xdvdfs_directory_cache.c
     tests/test_xemu_capabilities.c
+    tests/test_xemu_helper_drain.c
     tests/test_xemu_performance.c
     tests/test_xemu_save_storage.c
     tests/test_xenia_patches.c

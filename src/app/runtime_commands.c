@@ -9,7 +9,7 @@ bool gdox_runtime_request_enqueue(
 
     if (queue == NULL || request == NULL
         || request->kind <= GDOX_RUNTIME_REQUEST_NONE
-        || request->kind > GDOX_RUNTIME_REQUEST_USE_PHYSICAL) {
+        || request->kind > GDOX_RUNTIME_REQUEST_IMPORT_BIOS) {
         return false;
     }
     insertion = (queue->head + queue->count)
@@ -18,7 +18,9 @@ bool gdox_runtime_request_enqueue(
         const size_t tail = insertion == 0U
             ? GDOX_RUNTIME_REQUEST_CAPACITY - 1U
             : insertion - 1U;
-        if (queue->entries[tail].kind == request->kind) {
+        if (queue->entries[tail].kind == request->kind
+            && (request->kind < GDOX_RUNTIME_REQUEST_IMPORT_FIRMWARE
+                || request->kind > GDOX_RUNTIME_REQUEST_IMPORT_BIOS)) {
             queue->entries[tail] = *request;
             return true;
         }
@@ -95,6 +97,10 @@ gdox_runtime_action gdox_runtime_plan_request(
         case GDOX_RUNTIME_REQUEST_USE_PHYSICAL:
             return GDOX_RUNTIME_ACTION_USE_PHYSICAL;
         case GDOX_RUNTIME_REQUEST_NONE:
+        case GDOX_RUNTIME_REQUEST_SET_XEMU:
+        case GDOX_RUNTIME_REQUEST_IMPORT_FIRMWARE:
+        case GDOX_RUNTIME_REQUEST_IMPORT_MCPX:
+        case GDOX_RUNTIME_REQUEST_IMPORT_BIOS:
             break;
     }
     return GDOX_RUNTIME_ACTION_NONE;

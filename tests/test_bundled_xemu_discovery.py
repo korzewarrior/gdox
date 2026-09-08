@@ -79,7 +79,9 @@ def main() -> None:
         assert matches(result, external), (result, external)
         # Explicit included mode must not fall back to any external candidate.
         result = run(probe)
-        assert result.returncode != 0 and "complete GDOX download" in result.stderr, result
+        assert result.returncode != 0 and "included xemu was not found" in result.stderr, result
+        if windows:
+            assert "expected=" in result.stderr and "runtime\\xemu\\xemu.exe" in result.stderr, result
         runtime = module_directory / "runtime"
         if sys.platform == "darwin" and not windows:
             runtime = module_directory.parent / "Resources/runtime"
@@ -95,7 +97,9 @@ def main() -> None:
         assert matches(result, included), (result, included)
         included.unlink()
         result = run(probe)
-        assert result.returncode != 0 and "complete GDOX download" in result.stderr, result
+        assert result.returncode != 0 and "included xemu was not found" in result.stderr, result
+        if windows:
+            assert "expected=" in result.stderr and "relocated" in result.stderr, result
     print("Bundled xemu discovery survives relocation and refuses external fallback")
 
 

@@ -14,6 +14,7 @@ add_library(
         src/app/runtime_physical.c
         src/app/runtime_preservation.c
         src/app/runtime_session.c
+        src/app/runtime_setup.c
         src/app/runtime_state.c
         src/app/runtime_xemu.c
         src/app/xemu_process_stop.c

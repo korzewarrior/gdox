@@ -47,8 +47,11 @@ void choose_xemu(gdox_app &app)
     const nfdresult_t result = NFD_OpenDialogU8_With(&path, &arguments);
     if (result == NFD_OKAY) {
         const std::string selected = normalize_xemu_selection(path);
-        (void)gdox_app_set_xemu_override(&app, selected.c_str());
-        show_runtime_notice(app);
+        if (gdox_app_set_xemu_override(&app, selected.c_str())) {
+            set_notice("");
+        } else {
+            show_runtime_notice(app);
+        }
         NFD_FreePathU8(path);
     } else if (result == NFD_ERROR) {
         set_dialog_error("xemu picker");
@@ -107,10 +110,14 @@ void choose_firmware(gdox_app &app, bool mcpx)
     nfdopendialogu8args_t arguments{};
     const nfdresult_t result = NFD_OpenDialogU8_With(&path, &arguments);
     if (result == NFD_OKAY) {
-        (void)(mcpx
+        const bool accepted = mcpx
             ? gdox_app_import_mcpx(&app, path)
-            : gdox_app_import_bios(&app, path));
-        show_runtime_notice(app);
+            : gdox_app_import_bios(&app, path);
+        if (accepted) {
+            set_notice("");
+        } else {
+            show_runtime_notice(app);
+        }
         NFD_FreePathU8(path);
     } else if (result == NFD_ERROR) {
         set_dialog_error("Firmware picker");
@@ -146,8 +153,8 @@ void draw_drive_selector(gdox_app &app, const gdox_app_snapshot &snapshot)
     ImGui::BeginDisabled(!snapshot.can_select_drive);
     if (ImGui::BeginCombo("##drive-selection", preview.c_str())) {
         if (ImGui::Selectable("Automatic", selected[0] == '\0')) {
-            (void)gdox_app_select_drive(&app, "");
-            show_runtime_notice(app);
+            if (gdox_app_select_drive(&app, "")) set_notice("");
+            else show_runtime_notice(app);
         }
         if (selected[0] != '\0' && !found) {
             (void)ImGui::Selectable(preview.c_str(), true);
@@ -169,8 +176,8 @@ void draw_drive_selector(gdox_app &app, const gdox_app_snapshot &snapshot)
             }
             ImGui::PushID(entry.device.id);
             if (ImGui::Selectable(label.c_str(), std::strcmp(entry.device.id, selected) == 0)) {
-                (void)gdox_app_select_drive(&app, entry.device.id);
-                show_runtime_notice(app);
+                if (gdox_app_select_drive(&app, entry.device.id)) set_notice("");
+                else show_runtime_notice(app);
             }
             ImGui::PopID();
         }
@@ -381,8 +388,11 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
     }
     ImGui::SameLine();
     if (ImGui::Button("Use included xemu", ImVec2(166.0F, 34.0F))) {
-        (void)gdox_app_use_bundled_xemu(&app);
-        show_runtime_notice(app);
+        if (gdox_app_use_bundled_xemu(&app)) {
+            set_notice("");
+        } else {
+            show_runtime_notice(app);
+        }
     }
     ImGui::TextWrapped("%s", snapshot.xemu_setup);
     source_actions_spacing();

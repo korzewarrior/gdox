@@ -3,6 +3,8 @@
 #include "core/xemu_capabilities.h"
 #include "platform/xemu_helper_process.h"
 
+#include <stdio.h>
+
 enum {
     GDOX_XEMU_CAPABILITY_TIMEOUT_MS = 2000U,
 };
@@ -50,10 +52,14 @@ bool gdox_emulator_query_storage_capabilities(
         return false;
     }
     if (result.exit_code != 0) {
+        char message[GDOX_ERROR_MESSAGE_CAPACITY];
+        (void)snprintf(message, sizeof(message),
+            "xemu could not report required GDOX support (exit %d)",
+            result.exit_code);
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
-            "xemu capability query did not exit successfully"
+            message
         );
         return false;
     }

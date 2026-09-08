@@ -55,8 +55,14 @@ static void refresh_drive_inventory(gdox_runtime *runtime, gdox_runtime_loop *lo
 
 bool gdox_runtime_drive_loop_poll(gdox_runtime *runtime, gdox_runtime_loop *loop)
 {
+    /* User selection must not wait behind another complete drive scan. */
+    if (atomic_load_explicit(&runtime->stopping, memory_order_acquire)
+        || apply_drive_selection(runtime, loop)) {
+        return true;
+    }
     refresh_drive_inventory(runtime, loop);
-    if (apply_drive_selection(runtime, loop)) {
+    if (atomic_load_explicit(&runtime->stopping, memory_order_acquire)
+        || apply_drive_selection(runtime, loop)) {
         return true;
     }
     if (loop->pending_cleanup_delay == 0U) {

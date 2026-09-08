@@ -28,6 +28,7 @@
 enum {
     GDOX_XEMU_HELPER_POLL_MS = 10U,
     GDOX_XEMU_HELPER_MAXIMUM_ARGUMENTS = 10U,
+    GDOX_XEMU_HELPER_READS_PER_POLL = 16U,
 };
 
 static bool executable_file(const char *path)
@@ -65,7 +66,10 @@ static bool capture_output(
 {
     char chunk[256];
 
-    while (*open) {
+    /* A continuously writing child must yield to the other pipe and the
+     * process/deadline checks, including after the capture buffer fills. */
+    for (unsigned int reads = 0U;
+         *open && reads < GDOX_XEMU_HELPER_READS_PER_POLL; ++reads) {
         const ssize_t count = read(descriptor, chunk, sizeof(chunk));
 
         if (count > 0) {
