@@ -48,6 +48,11 @@ static bool set_active_client(
     if (!gdox_mutex_lock(&exported->state_mutex)) {
         return false;
     }
+    if (gdox_nbd_socket_is_valid(client)
+        && atomic_load_explicit(&exported->stopping, memory_order_acquire)) {
+        gdox_mutex_unlock(&exported->state_mutex);
+        return false;
+    }
     exported->active = client;
     gdox_mutex_unlock(&exported->state_mutex);
     return true;

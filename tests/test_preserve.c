@@ -377,6 +377,92 @@ static void test_normalization_and_cancellation(const char *directory)
     remove_bundle(output);
 }
 
+static void create_competing_partial(
+    void *context,
+    const gdox_preservation_progress *progress
+)
+{
+    if (progress->phase == GDOX_PRESERVATION_PREPARING) {
+        FILE *file = fopen(context, "wb");
+        GDOX_TEST_CHECK(file != NULL);
+        GDOX_TEST_CHECK(fputs("previous preservation", file) >= 0);
+        GDOX_TEST_CHECK(fclose(file) == 0);
+    }
+}
+
+static void create_competing_output(
+    void *context,
+    const gdox_preservation_progress *progress
+)
+{
+    if (progress->phase == GDOX_PRESERVATION_FINALIZING) {
+        FILE *file = fopen(context, "wb");
+        GDOX_TEST_CHECK(file != NULL);
+        GDOX_TEST_CHECK(fputs("previous preservation", file) >= 0);
+        GDOX_TEST_CHECK(fclose(file) == 0);
+    }
+}
+
+static void test_partial_ownership(const char *directory)
+{
+    char output[512];
+    char part[520];
+    gdox_sector_source source = {0};
+    gdox_error error;
+    gdox_preservation_result result;
+    cancellation_context cancellation = {true};
+    FILE *file;
+
+    (void)snprintf(output, sizeof(output), "%s/ownership.iso", directory);
+    (void)snprintf(part, sizeof(part), "%s.part", output);
+    GDOX_TEST_CHECK(make_pattern_source(8U, false, 0U, &source));
+    const gdox_preservation_request request = {
+        GDOX_PRESERVATION_XISO_COMPACT, output, false, false, NULL,
+    };
+    const gdox_preservation_input input = {.source = &source};
+
+    for (unsigned int attempt = 0U; attempt < 2U; ++attempt) {
+        if (attempt == 0U) {
+            create_competing_partial(part, &(gdox_preservation_progress){
+                .phase = GDOX_PRESERVATION_PREPARING,
+            });
+        }
+        GDOX_TEST_CHECK(!gdox_preservation_run(
+            &request, &input, NULL,
+            attempt == 0U ? NULL : create_competing_partial,
+            part, &result, &error
+        ));
+        GDOX_TEST_CHECK(file_contains(part, "previous preservation"));
+        GDOX_TEST_CHECK(gdox_test_unlink(part) == 0);
+        gdox_preservation_result_destroy(&result);
+    }
+    GDOX_TEST_CHECK(!gdox_preservation_run(
+        &request, &input, cancelled, NULL, &cancellation, &result, &error
+    ));
+    GDOX_TEST_CHECK(error.code == GDOX_ERROR_CANCELLED);
+    file = fopen(part, "rb");
+    GDOX_TEST_CHECK(file == NULL && errno == ENOENT);
+    gdox_preservation_result_destroy(&result);
+
+    GDOX_TEST_CHECK(!gdox_preservation_run(
+        &request, &input, NULL, create_competing_output, output, &result, &error
+    ));
+    GDOX_TEST_CHECK(file_contains(output, "previous preservation"));
+    gdox_sector_source preserved = {0};
+    GDOX_TEST_CHECK(gdox_source_open_file(part, &preserved, &error));
+    uint8_t bytes[8U * GDOX_LOGICAL_SECTOR_BYTES];
+    uint8_t expected[sizeof(bytes)];
+    GDOX_TEST_CHECK(gdox_source_sector_count(&preserved) == 8U);
+    GDOX_TEST_CHECK(gdox_source_read(&preserved, 0U, 8U, bytes, sizeof(bytes), &error));
+    GDOX_TEST_CHECK(gdox_source_read(&source, 0U, 8U, expected, sizeof(expected), &error));
+    GDOX_TEST_CHECK(memcmp(bytes, expected, sizeof(bytes)) == 0);
+    gdox_source_destroy(&preserved);
+    GDOX_TEST_CHECK(gdox_test_unlink(part) == 0);
+    GDOX_TEST_CHECK(gdox_test_unlink(output) == 0);
+    gdox_preservation_result_destroy(&result);
+    gdox_source_destroy(&source);
+}
+
 void gdox_test_preserve(void)
 {
     char directory[256];
@@ -386,5 +472,6 @@ void gdox_test_preserve(void)
         return;
     }
     test_normalization_and_cancellation(directory);
+    test_partial_ownership(directory);
     (void)gdox_test_rmdir(directory);
 }

@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "test.h"
 
 #include "gdox/disc.h"
@@ -24,6 +26,24 @@ typedef int test_socket_count;
 typedef int test_socket;
 typedef ssize_t test_socket_count;
 #define GDOX_TEST_INVALID_SOCKET (-1)
+#endif
+
+#if defined(__linux__)
+#include "platform/nbd_internal.h"
+static _Atomic(gdox_nbd_export *) stop_on_accept;
+gdox_nbd_socket __real_gdox_nbd_socket_accept(gdox_nbd_socket listener);
+gdox_nbd_socket __wrap_gdox_nbd_socket_accept(gdox_nbd_socket listener);
+
+gdox_nbd_socket __wrap_gdox_nbd_socket_accept(gdox_nbd_socket listener)
+{
+    const gdox_nbd_socket client = __real_gdox_nbd_socket_accept(listener);
+    gdox_nbd_export *exported = atomic_exchange(&stop_on_accept, NULL);
+    if (exported != NULL) {
+        /* Close can set stopping after accept but before client registration. */
+        atomic_store(&exported->stopping, true);
+    }
+    return client;
+}
 #endif
 
 typedef struct nbd_memory_source {
@@ -644,9 +664,45 @@ static void test_close_retry(void)
     GDOX_TEST_CHECK(audit.close_calls == 1U);
 }
 
+#if defined(__linux__)
+static void test_accept_during_shutdown(void)
+{
+    nbd_memory_source *memory = calloc(1U, sizeof(*memory));
+    gdox_sector_source source = {memory, &nbd_source_ops};
+    gdox_random_disc disc = {0};
+    gdox_nbd_export *exported = NULL;
+    gdox_error error;
+    struct sockaddr_in address = {0};
+    uint8_t byte;
+
+    GDOX_TEST_CHECK(memory != NULL);
+    memory->sectors = 8U;
+    GDOX_TEST_CHECK(gdox_disc_from_source(&source, &disc, &error));
+    GDOX_TEST_CHECK(gdox_nbd_start(
+        &disc, GDOX_NBD_CLIENT_READ_ONLY, &exported, &error
+    ));
+    const int client = socket(AF_INET, SOCK_STREAM, 0);
+    GDOX_TEST_CHECK(client >= 0);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(UINT32_C(0x7f000001));
+    address.sin_port = htons(uri_port(gdox_nbd_uri(exported)));
+    atomic_store(&stop_on_accept, exported);
+    GDOX_TEST_CHECK(connect(client, (const struct sockaddr *)&address, sizeof(address)) == 0);
+    (void)alarm(3U);
+    const ssize_t received = recv(client, &byte, 1U, 0);
+    (void)alarm(0U);
+    GDOX_TEST_CHECK(close(client) == 0);
+    GDOX_TEST_CHECK(gdox_nbd_close(exported, &error));
+    GDOX_TEST_CHECK(received == 0);
+}
+#endif
+
 void gdox_test_nbd(void)
 {
     test_read_only_export();
     test_write_open_compatibility();
     test_close_retry();
+#if defined(__linux__)
+    test_accept_during_shutdown();
+#endif
 }

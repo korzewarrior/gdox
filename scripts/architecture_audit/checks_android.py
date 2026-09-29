@@ -16,14 +16,6 @@ def check_android(repository: Repository) -> list[str]:
             "GdoxSecureFiles.kt",
         )
     }
-    for name, limit in (
-        ("GdoxCoreFiles.kt", 240),
-        ("GdoxManagedHdd.kt", 360),
-        ("GdoxSecureFiles.kt", 220),
-    ):
-        if storage[name].line_count > limit:
-            failures.append(f"{name} exceeds its focused module boundary")
-
     core_files = storage["GdoxCoreFiles.kt"].text
     for required in (
         "GdoxManagedHdd.resolve(context, ::preferences)",

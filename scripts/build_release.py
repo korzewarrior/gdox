@@ -284,12 +284,26 @@ def main() -> None:
         arguments.build_dir
         if arguments.build_dir is not None
         else output_root() / "build" / arguments.target
-    ).resolve()
-    if build.exists() and (not build.is_dir() or build.is_symlink()):
+    )
+    if build.is_symlink() or (build.exists() and not build.is_dir()):
         raise SystemExit(f"build path is not an ordinary directory: {build}")
+    build = build.resolve()
+    source = SOURCE.resolve()
+    if (source.is_relative_to(build)
+        or (build.is_relative_to(source)
+            and not build.is_relative_to(source / "dist" / ".build"))
+        or Path.home().resolve().is_relative_to(build)
+        or (build / ".git").exists()):
+        raise SystemExit(f"refusing unsafe build path: {build}")
     configure, artifact = configure_arguments(arguments.target, build)
     reuse = cmake_tree_reusable(build)
     if arguments.clean or not reuse:
+        if (not arguments.clean and build.exists() and any(build.iterdir())
+            and not (build / "CMakeCache.txt").is_file()):
+            raise SystemExit(
+                f"refusing to discard a directory without CMakeCache.txt: {build}; "
+                "review its contents before using --clean"
+            )
         if not arguments.clean and build.exists():
             print(
                 f"discarding incompatible CMake build tree: {build}",

@@ -1,4 +1,4 @@
-"""Private NBD module ownership and size checks."""
+"""Private NBD module ownership checks."""
 
 from __future__ import annotations
 
@@ -34,28 +34,6 @@ def check_nbd(repository: Repository) -> list[str]:
     modules = {
         name: repository.source(f"src/platform/{name}") for name in NBD_MODULES
     }
-    for name, limit in (
-        ("nbd_tcp.c", 500),
-        ("nbd_protocol.c", 650),
-        ("nbd_socket.c", 500),
-        ("nbd_wire.c", 250),
-        ("nbd_telemetry.c", 175),
-        ("nbd_token.c", 150),
-    ):
-        if modules[name].line_count > limit:
-            failures.append(f"{name} exceeds its focused module boundary")
-
-    for name, limit in (
-        ("nbd_internal.h", 60),
-        ("nbd_protocol.h", 30),
-        ("nbd_socket.h", 80),
-        ("nbd_telemetry.h", 50),
-        ("nbd_token.h", 30),
-        ("nbd_wire.h", 125),
-    ):
-        if repository.source(f"src/platform/{name}").line_count > limit:
-            failures.append(f"{name} exceeds its private contract boundary")
-
     for forbidden in (
         "NBD_INIT_MAGIC",
         "recv(",

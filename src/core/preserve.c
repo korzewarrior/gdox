@@ -20,6 +20,7 @@ typedef struct writer_state {
     gdox_preservation_result *result;
     gdox_hash_stream *hashes;
     gdox_preservation_file *file;
+    bool discard_partial;
     uint64_t completed_sectors;
     double started;
     double last_progress;
@@ -559,8 +560,11 @@ static bool write_and_verify_preservation(
 {
     gdox_hashes verified;
 
-    if (!gdox_preservation_file_create(part_path, &state->file, error)
-        || !gdox_hash_stream_create(&state->hashes, error)
+    if (!gdox_preservation_file_create(part_path, &state->file, error)) {
+        return false;
+    }
+    state->discard_partial = true;
+    if (!gdox_hash_stream_create(&state->hashes, error)
         || !write_image(state, error)) {
         return false;
     }
@@ -644,7 +648,7 @@ static void cleanup_preservation(
     if (success) {
         return;
     }
-    if (!request->keep_partial) {
+    if (state->discard_partial && !request->keep_partial) {
         (void)gdox_preservation_path_remove(part_path);
     }
     free(result->unreadable_ranges);
@@ -733,6 +737,8 @@ bool gdox_preservation_run(
     )) {
         goto cleanup;
     }
+    /* Keep a completed image recoverable if finalization fails. */
+    state.discard_partial = false;
     classify_preservation(request, &evidence, map, result);
     report_progress(
         &state,

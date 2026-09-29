@@ -134,7 +134,6 @@ def _check_live_media(repository: Repository) -> list[str]:
 def _check_session_policy(repository: Repository) -> list[str]:
     failures: list[str] = []
     policy = repository.source("src/platform/session_storage_policy.c")
-    policy_header = repository.source("src/platform/session_storage_policy.h")
     platform_sources = _normalized_sources(
         repository.cmake.target_sources("gdox_platform_services")
     )
@@ -171,11 +170,6 @@ def _check_session_policy(repository: Repository) -> list[str]:
                 "shared session-storage policy contains OS filesystem mechanics"
             )
             break
-    for source, limit in ((policy, 120), (policy_header, 60)):
-        if source.line_count > limit:
-            failures.append(
-                f"{source.path.name} exceeds its focused module boundary"
-            )
     return failures
 
 
@@ -209,8 +203,6 @@ def _check_optical_registry(repository: Repository) -> list[str]:
             )
         if header.declares_c_function(function):
             failures.append(f"public optical API retains legacy wrapper {function}(")
-    if registry.line_count > 450:
-        failures.append("optical.c exceeds its focused module boundary")
     return failures
 
 

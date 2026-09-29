@@ -32,7 +32,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--probe", required=True, type=Path)
     parser.add_argument("--scratch-root", required=True, type=Path)
-    parser.add_argument("--runner", default="")
+    parser.add_argument("--runner", nargs="+", default=[])
     args = parser.parse_args()
     windows = args.probe.suffix.lower() == ".exe"
     with tempfile.TemporaryDirectory(
@@ -56,7 +56,7 @@ def main() -> None:
         env["PATH"] = str(external.parent) + os.pathsep + env.get("PATH", "")
 
         def run(executable: Path, automatic: bool = False) -> subprocess.CompletedProcess[str]:
-            command = ([args.runner] if args.runner else []) + [str(executable)]
+            command = [*args.runner, str(executable)]
             if automatic:
                 command.append("--automatic")
             return subprocess.run(

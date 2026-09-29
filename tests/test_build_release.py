@@ -17,6 +17,48 @@ from build_release import cmake_tree_reusable, configure_arguments, test_command
 
 
 class BuildReleaseTests(unittest.TestCase):
+    def test_build_accepts_the_ci_output_directory(self) -> None:
+        with (
+            mock.patch.object(sys, "argv", ["build_release.py", "--target",
+                "x86_64-unknown-linux-gnu", "--build-dir", str(ROOT / "dist/.build/ci"), "--clean"]),
+            mock.patch.object(build_release, "require_tool"),
+            mock.patch.object(build_release, "configure_arguments", side_effect=RuntimeError("configuration reached")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "configuration reached"):
+                build_release.main()
+
+    def test_build_refuses_to_delete_source_or_unrecognized_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source"
+            source.mkdir()
+            unrelated = root / "unrelated"
+            unrelated.mkdir()
+            sentinel = unrelated / "keep"
+            sentinel.write_text("existing work", encoding="utf-8")
+            targets = [
+                (source, []), (source, ["--clean"]), (root, ["--clean"]),
+                (source / "src", []), (unrelated, []),
+            ]
+            if sys.platform != "win32":
+                alias = root / "alias"
+                alias.symlink_to(unrelated, target_is_directory=True)
+                targets.append((alias, ["--clean"]))
+            for target, flags in targets:
+                with (
+                    self.subTest(target=target, flags=flags),
+                    mock.patch.object(build_release, "SOURCE", source),
+                    mock.patch.object(sys, "argv", ["build_release.py", "--target",
+                        "x86_64-unknown-linux-gnu", "--build-dir", str(target), *flags]),
+                    mock.patch.object(build_release, "require_tool"),
+                    mock.patch.object(build_release, "configure_arguments", return_value=([], target / "gdox")),
+                    mock.patch.object(build_release.shutil, "rmtree") as remove,
+                ):
+                    with self.assertRaisesRegex(SystemExit, "refusing|not an ordinary"):
+                        build_release.main()
+                    remove.assert_not_called()
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "existing work")
+
     def write_cache(
         self,
         build: Path,

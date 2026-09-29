@@ -71,15 +71,23 @@ target_include_directories(gdox_bundled_xemu_discovery_probe PRIVATE ${CMAKE_CUR
 target_link_libraries(gdox_bundled_xemu_discovery_probe PRIVATE gdox::services)
 gdox_enable_c_warnings(gdox_bundled_xemu_discovery_probe)
 gdox_enable_test_crt(gdox_bundled_xemu_discovery_probe)
+set(gdox_discovery_runner_arguments)
+if(CMAKE_CROSSCOMPILING_EMULATOR)
+    list(APPEND gdox_discovery_runner_arguments --runner ${CMAKE_CROSSCOMPILING_EMULATOR})
+endif()
 add_test(
     NAME core.bundled_xemu_discovery
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bundled_xemu_discovery.py
         --probe $<TARGET_FILE:gdox_bundled_xemu_discovery_probe>
         --scratch-root ${CMAKE_CURRENT_BINARY_DIR}
+        ${gdox_discovery_runner_arguments}
 )
 gdox_label_tests(core core.bundled_xemu_discovery)
 target_link_libraries(gdox_tests PRIVATE gdox::services)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(gdox_tests PRIVATE -Wl,--wrap=gdox_nbd_socket_accept)
+endif()
 target_sources(
     gdox_tests
     PRIVATE $<TARGET_OBJECTS:gdox_application_support>

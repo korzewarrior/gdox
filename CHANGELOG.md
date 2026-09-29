@@ -1,5 +1,13 @@
 # changes
 
+## 0.2.9
+
+- preserve existing partial images and retain completed images when finalization fails
+- close files after failed settings or emulator configuration writes
+- reject named pipes as image or settings files without blocking
+- close connections accepted while the disc server is shutting down
+- protect source and unrelated directories from release-build cleanup
+
 ## 0.2.8
 
 - keep the interface responsive while preparing xemu, importing firmware,

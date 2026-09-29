@@ -91,7 +91,7 @@ bool gdox_preservation_file_open_read(
         return false;
     }
     *output = NULL;
-    descriptor = open(path, O_RDONLY | O_CLOEXEC);
+    descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
     if (descriptor < 0 || fstat(descriptor, &status) != 0) {
         const int code = errno;
         if (descriptor >= 0) {
@@ -100,9 +100,9 @@ bool gdox_preservation_file_open_read(
         set_errno_error(error, "could not open preservation output", code);
         return false;
     }
-    if (status.st_size < 0) {
+    if (!S_ISREG(status.st_mode) || status.st_size < 0) {
         (void)close(descriptor);
-        gdox_error_set(error, GDOX_ERROR_INVALID_SOURCE, "preservation output has an invalid length");
+        gdox_error_set(error, GDOX_ERROR_INVALID_SOURCE, "preservation output is not a regular file with a valid length");
         return false;
     }
     *length = (uint64_t)status.st_size;

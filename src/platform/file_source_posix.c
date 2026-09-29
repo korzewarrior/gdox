@@ -131,7 +131,7 @@ bool gdox_source_open_file(
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "file path and output are required");
         return false;
     }
-    descriptor = open(path, O_RDONLY
+    descriptor = open(path, O_RDONLY | O_NONBLOCK
 #ifdef O_CLOEXEC
         | O_CLOEXEC
 #endif
