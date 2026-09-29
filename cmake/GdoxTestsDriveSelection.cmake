@@ -23,7 +23,7 @@ if(GDOX_BUILD_OPTICAL)
     gdox_enable_c_warnings(gdox_runtime_drive_loop_tests)
     gdox_enable_test_crt(gdox_runtime_drive_loop_tests)
     add_test(NAME runtime.drive_loop COMMAND gdox_runtime_drive_loop_tests
-        "${CMAKE_CURRENT_BINARY_DIR}/drive-loop-config")
+        drive-loop-config)
     set_tests_properties(runtime.drive_loop PROPERTIES TIMEOUT 15)
     gdox_label_tests(runtime runtime.drive_loop)
 endif()

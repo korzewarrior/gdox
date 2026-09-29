@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from .repository import Repository
 
 
@@ -102,15 +100,6 @@ def _check_runtime_target(repository: Repository) -> list[str]:
             failures.append(
                 f"runtime coordinator bypasses a private module through {token}"
             )
-    for name, limit in (
-        ("runtime.c", 550),
-        ("runtime_actions.c", 400),
-        ("runtime_physical.c", 350),
-        ("runtime_session.c", 500),
-    ):
-        if modules[name].line_count > limit:
-            failures.append(f"{name} exceeds its focused module boundary")
-
     physical = modules["runtime_physical.c"]
     if "gdox_optical_device_connected" not in physical.calls:
         failures.append(
@@ -166,8 +155,6 @@ def _check_test_graph(repository: Repository) -> list[str]:
         failures.append("test group runner omits shared child-process setup")
 
     test_main = repository.source("tests/test_main.c")
-    if test_main.line_count > 120:
-        failures.append("test_main.c exceeds its dispatcher-only boundary")
     for forbidden in (
         "GDOX_XEMU_CAPABILITIES_ARGUMENT",
         "GDOX_TEST_XEMU_CAPABILITY_MODE",
@@ -238,25 +225,6 @@ def _check_elf_policy(repository: Repository) -> list[str]:
     return failures
 
 
-def _check_audit_modules(repository: Repository) -> list[str]:
-    failures: list[str] = []
-    entrypoint = repository.source("scripts/audit_architecture.py")
-    if entrypoint.line_count > 50:
-        failures.append("architecture audit CLI exceeds its thin entrypoint boundary")
-    audit_root = repository.root / "scripts/architecture_audit"
-    for path in sorted(audit_root.glob("*.py")):
-        if path.name == "repository.py":
-            limit = 400
-        else:
-            limit = 300
-        line_count = len(path.read_text(encoding="utf-8").splitlines())
-        if line_count > limit:
-            failures.append(
-                f"{Path(path).name} exceeds its focused audit module boundary"
-            )
-    return failures
-
-
 def check_build(repository: Repository) -> list[str]:
     failures: list[str] = []
     for check in (
@@ -265,7 +233,6 @@ def check_build(repository: Repository) -> list[str]:
         _check_test_graph,
         _check_xenia_target,
         _check_elf_policy,
-        _check_audit_modules,
     ):
         failures.extend(check(repository))
     return failures

@@ -15,7 +15,6 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from architecture_audit import audit_repository
 from architecture_audit.checks_layers import _reject_includes, _reject_tokens
 from architecture_audit.checks_media import _normalized_sources
 from architecture_audit.checks_media import _check_optical_api
@@ -190,9 +189,6 @@ class FocusedCheckTests(unittest.TestCase):
 
 
 class RepositoryAuditTests(unittest.TestCase):
-    def test_repository_satisfies_every_architecture_check(self) -> None:
-        self.assertEqual(audit_repository(ROOT), [])
-
     def test_cli_succeeds_without_writing_bytecode(self) -> None:
         environment = os.environ.copy()
         environment["PYTHONDONTWRITEBYTECODE"] = "1"

@@ -541,7 +541,7 @@ bool gdox_storage_read(
     *data = NULL;
     *bytes = 0U;
     *found = false;
-    file = open(path, O_RDONLY | O_CLOEXEC
+    file = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK
 #if defined(O_NOFOLLOW)
         | O_NOFOLLOW
 #endif
@@ -665,8 +665,10 @@ bool gdox_storage_write_private(
             return false;
         }
     }
-    if (fsync(file) != 0 || close(file) != 0) {
-        const int code = errno;
+    const int sync_error = fsync(file) == 0 ? 0 : errno;
+    const int close_error = close(file) == 0 ? 0 : errno;
+    if (sync_error != 0 || close_error != 0) {
+        const int code = sync_error != 0 ? sync_error : close_error;
         (void)unlink(temporary);
         set_errno_error(error, "could not synchronize private file", code);
         return false;
@@ -757,7 +759,7 @@ bool gdox_storage_remove_exact_file(
     *result = GDOX_STORAGE_REMOVE_NOT_FOUND;
     file = open(
         path,
-        O_RDONLY | O_CLOEXEC
+        O_RDONLY | O_CLOEXEC | O_NONBLOCK
 #if defined(O_NOFOLLOW)
             | O_NOFOLLOW
 #endif

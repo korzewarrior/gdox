@@ -491,7 +491,9 @@ static bool write_private_atomic(
             return false;
         }
     }
-    if (fsync(file) != 0 || close(file) != 0 || rename(temporary, path) != 0) {
+    const int sync_result = fsync(file);
+    const int close_result = close(file);
+    if (sync_result != 0 || close_result != 0 || rename(temporary, path) != 0) {
         (void)unlink(temporary);
         gdox_error_set(error, GDOX_ERROR_IO, "could not commit xemu configuration");
         return false;

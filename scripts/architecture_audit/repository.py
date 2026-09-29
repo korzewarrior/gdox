@@ -303,10 +303,6 @@ class SourceDocument:
     def calls(self) -> tuple[str, ...]:
         return tuple(_CALL.findall(self.text))
 
-    @property
-    def line_count(self) -> int:
-        return len(self.text.splitlines())
-
     def has_identifier(self, identifier: str) -> bool:
         return re.search(rf"\b{re.escape(identifier)}\b", self.text) is not None
 

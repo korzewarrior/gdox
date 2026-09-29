@@ -20,6 +20,20 @@ if(UNIX)
     gdox_label_tests(platform platform.termination_signal)
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(gdox_posix_file_failures_tests
+        tests/test_posix_file_failures.c
+        src/platform/user_storage_posix.c)
+    target_include_directories(gdox_posix_file_failures_tests PRIVATE tests src)
+    target_link_libraries(gdox_posix_file_failures_tests PRIVATE gdox::services)
+    target_link_options(gdox_posix_file_failures_tests PRIVATE -Wl,--wrap=fsync)
+    gdox_enable_c_warnings(gdox_posix_file_failures_tests)
+    add_dependencies(gdox_posix_file_failures_tests gdox_test_xemu_helper)
+    add_test(NAME platform.posix_file_failures
+        COMMAND gdox_posix_file_failures_tests $<TARGET_FILE:gdox_test_xemu_helper>)
+    gdox_label_tests(platform platform.posix_file_failures)
+endif()
+
 add_executable(
     gdox_session_storage_policy_tests
     tests/test_session_storage_policy.c
