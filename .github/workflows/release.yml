@@ -59,7 +59,7 @@ jobs:
         run: python scripts/build_linux_packages.py --version "${GITHUB_REF_NAME}"
       - name: Audit release payload
         run: python scripts/audit_release.py --path dist/release
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gdox-linux
           path: dist/release/*.tar.gz
@@ -98,7 +98,7 @@ jobs:
           --output dist/release
       - name: Audit release payload
         run: python scripts/audit_release.py --path dist/release
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gdox-${{ matrix.target }}
           path: dist/release/*.tar.gz
@@ -144,7 +144,7 @@ jobs:
             -WorkingRoot "$env:RUNNER_TEMP/gdox-package-smoke"
       - name: Audit release payload
         run: python scripts/audit_release.py --path dist/release
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gdox-x86_64-pc-windows-msvc
           path: dist/release/*.zip
@@ -168,7 +168,7 @@ jobs:
           --output dist
       - name: Audit source payload
         run: python scripts/audit_release.py --path dist
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sources
           path: dist/*-corresponding-source.tar.gz
