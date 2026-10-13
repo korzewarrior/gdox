@@ -5,7 +5,7 @@
 #include "core/xenia_launch.h"
 #include "platform/portable_sync.h"
 #if defined(__linux__)
-#include "platform/xenia_bridge_linux.h"
+#include "platform/disc_bridge_linux.h"
 
 #include <dirent.h>
 #endif
@@ -300,7 +300,7 @@ struct gdox_xenia_process {
     bool reaped;
     int exit_code;
 #if defined(__linux__)
-    gdox_xenia_bridge *bridge;
+    gdox_disc_bridge *bridge;
 #endif
 };
 
@@ -328,7 +328,7 @@ static bool release_bridge(
 )
 {
 #if defined(__linux__)
-    if (!gdox_xenia_bridge_close(process->bridge, error)) {
+    if (!gdox_disc_bridge_close(process->bridge, error)) {
         return false;
     }
     process->bridge = NULL;
@@ -884,16 +884,20 @@ bool gdox_xenia_launch(
     disc_path = target->location;
     if (target->kind == GDOX_XENIA_TARGET_PRIVATE_NBD) {
 #if defined(__linux__)
-        if (!gdox_xenia_bridge_start(
-                options,
-                target,
+        if (!gdox_disc_bridge_start(
+                options->storage_root, options->console_output,
+                target->location, target->length,
                 &process->bridge,
                 error
             )) {
-            free(process);
+            if (process->bridge != NULL) {
+                *output = process;
+            } else {
+                free(process);
+            }
             return false;
         }
-        disc_path = gdox_xenia_bridge_path(process->bridge);
+        disc_path = gdox_disc_bridge_path(process->bridge);
 #else
         free(process);
         gdox_error_set(
@@ -996,7 +1000,7 @@ bool gdox_xenia_poll(
         if (process->bridge != NULL) {
             bool closed = false;
 
-            if (!gdox_xenia_bridge_try_close(
+            if (!gdox_disc_bridge_try_close(
                     process->bridge, &closed, error
                 )) {
                 return false;
@@ -1018,7 +1022,7 @@ bool gdox_xenia_poll(
         gdox_error stop_error;
         int stopped_exit = -1;
 
-        if (gdox_xenia_bridge_alive(
+        if (gdox_disc_bridge_alive(
                 process->bridge, &alive, &bridge_error
             ) && alive) {
             return true;

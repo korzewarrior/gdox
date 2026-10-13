@@ -60,10 +60,10 @@ static void publish_empty_drive(
         runtime->optical_device.name
     );
     gdox_runtime_copy_text(
-        snapshot->disc, sizeof(snapshot->disc), "No Xbox disc"
+        snapshot->disc, sizeof(snapshot->disc), "No game disc"
     );
     gdox_runtime_copy_text(
-        snapshot->status, sizeof(snapshot->status), "Waiting for an Xbox disc"
+        snapshot->status, sizeof(snapshot->status), "Waiting for a game disc"
     );
     gdox_runtime_copy_text(
         snapshot->notice, sizeof(snapshot->notice), "Drive is ready"
@@ -502,7 +502,7 @@ gdox_runtime *gdox_runtime_create(gdox_host_profile host_profile)
         "Checking optical drive"
     );
     gdox_runtime_copy_text(
-        runtime->snapshot.disc, sizeof(runtime->snapshot.disc), "No Xbox disc"
+        runtime->snapshot.disc, sizeof(runtime->snapshot.disc), "No game disc"
     );
     gdox_runtime_copy_text(
         runtime->snapshot.status,

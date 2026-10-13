@@ -3,7 +3,7 @@
 #include "gdox/xenia.h"
 
 #include "platform/portable_sync.h"
-#include "platform/xenia_bridge_linux.h"
+#include "platform/disc_bridge_linux.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -436,7 +436,7 @@ bool gdox_xenia_target_preflight(
         return false;
     }
     if (kind == GDOX_XENIA_TARGET_PRIVATE_NBD) {
-        return gdox_xenia_bridge_preflight(error);
+        return gdox_disc_bridge_preflight(error);
     }
     return true;
 }

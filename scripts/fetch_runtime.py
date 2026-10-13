@@ -14,6 +14,10 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 
 sys.dont_write_bytecode = True
+from dolphin_distribution import (
+    validate_runtime_manifest as validate_dolphin_manifest,
+    require_publishable as require_dolphin_publishable,
+)
 from linux_bridge_distribution import (
     validate_runtime_manifest as validate_linux_bridge_manifest,
 )
@@ -126,6 +130,7 @@ def require_embedded_file(file: object, label: str) -> dict:
 def validate_manifest(manifest: dict) -> None:
     if not isinstance(manifest, dict) or set(manifest) != {
         "hdd",
+        "dolphin",
         "linux_bridge",
         "schema",
         "xemu",
@@ -245,6 +250,7 @@ def validate_manifest(manifest: dict) -> None:
         raise SystemExit("hdd.license has missing or unknown fields")
     validate_xenia_runtime_manifest(manifest)
     validate_linux_bridge_manifest(manifest)
+    validate_dolphin_manifest(manifest)
 
 
 def load_manifest() -> dict:
@@ -304,6 +310,7 @@ def bundle(
     manifest = load_manifest()
     require_xemu_publishable(target=target)
     require_xenia_publishable(target, manifest)
+    require_dolphin_publishable(target, manifest)
 
     def bundle_published_xenia(
         runtime_target: str,
@@ -337,6 +344,8 @@ def source(output: Path, cache: Path) -> None:
         asset,
         manifest["linux_bridge"]["source"],
         manifest["linux_bridge"]["recipe"],
+        manifest["dolphin"]["source"],
+        manifest["dolphin"]["dependencies"],
     ):
         archive = output / definition["name"]
         shutil.copy2(fetch(definition, cache), archive)
@@ -396,6 +405,9 @@ def publication_runtime_assets(manifest: dict) -> dict[str, dict]:
                 and asset["release_state"] == "published"
             ):
                 add(asset, asset["archive_name"])
+    for asset in (manifest["dolphin"]["source"], manifest["dolphin"]["dependencies"],
+                  *manifest["dolphin"]["targets"].values()):
+        add(asset, asset["name"])
     if not assets:
         raise SystemExit("runtime manifest defines no downstream release assets")
     return dict(sorted(assets.items()))
@@ -486,6 +498,7 @@ def main() -> None:
         manifest = load_manifest()
         require_xemu_publishable(target=args.target)
         require_xenia_publishable(args.target, manifest)
+        require_dolphin_publishable(args.target, manifest)
         print(f"Runtime assets are publishable for {args.target}.")
     elif args.command == "audit-runtime-release":
         audit_runtime_release(args.path)

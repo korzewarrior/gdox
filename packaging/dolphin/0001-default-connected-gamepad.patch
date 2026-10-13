@@ -1,0 +1,54 @@
+diff --git a/Source/Core/Core/HW/GCPadEmu.cpp b/Source/Core/Core/HW/GCPadEmu.cpp
+index dff7965..3d71068 100644
+--- a/Source/Core/Core/HW/GCPadEmu.cpp
++++ b/Source/Core/Core/HW/GCPadEmu.cpp
+@@ -16,6 +16,7 @@
+ #include "InputCommon/ControllerEmu/ControlGroup/MixedTriggers.h"
+ #include "InputCommon/ControllerEmu/StickGate.h"
+ #include "InputCommon/GCPadStatus.h"
++#include "InputCommon/ControllerInterface/ControllerInterface.h"
+ 
+ static const u16 button_bitmasks[] = {
+     PAD_BUTTON_A,
+@@ -191,6 +192,41 @@ void GCPad::LoadDefaults(const ControllerInterface& ciface)
+ {
+   EmulatedController::LoadDefaults(ciface);
+ 
++#ifdef __linux__
++  // GDOX: choose a connected, SDL-mapped gamepad for a new controller profile.
++  // Existing profiles are loaded separately and are never overwritten here.
++  unsigned int pad_index = 0;
++  for (const auto& device : ciface.GetAllDevices())
++  {
++    if (device->GetSource() != "SDL" || !device->FindInput("Button S"))
++      continue;
++    if (pad_index++ != m_index)
++      continue;
++    ciface::Core::DeviceQualifier qualifier;
++    qualifier.FromDevice(device.get());
++    SetDefaultDevice(qualifier);
++    const std::array<const char*, 6> buttons = {
++        "`Button S`", "`Button E`", "`Button W`", "`Button N`", "`Shoulder R`", "`Start`"};
++    for (size_t i = 0; i < buttons.size(); ++i)
++      m_buttons->SetControlExpression(i, buttons[i]);
++    const std::array<const char*, 4> dpad = {"`Pad N`", "`Pad S`", "`Pad W`", "`Pad E`"};
++    const std::array<const char*, 4> main = {"`Left Y+`", "`Left Y-`", "`Left X-`", "`Left X+`"};
++    const std::array<const char*, 4> cstick = {"`Right Y+`", "`Right Y-`", "`Right X-`", "`Right X+`"};
++    for (size_t i = 0; i < dpad.size(); ++i)
++    {
++      m_dpad->SetControlExpression(i, dpad[i]);
++      m_main_stick->SetControlExpression(i, main[i]);
++      m_c_stick->SetControlExpression(i, cstick[i]);
++    }
++    m_triggers->SetControlExpression(0, "`Trigger L` | `Shoulder L`");
++    m_triggers->SetControlExpression(1, "`Trigger R`");
++    m_triggers->SetControlExpression(2, "`Trigger L`");
++    m_triggers->SetControlExpression(3, "`Trigger R`");
++    m_rumble->SetControlExpression(0, "`Motor`");
++    return;
++  }
++#endif
++
+ #ifdef ANDROID
+   // Rumble
+   m_rumble->SetControlExpression(0, "`Android/0/Device Sensors:Motor 0`");

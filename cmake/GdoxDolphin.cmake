@@ -1,0 +1,12 @@
+add_library(gdox_dolphin_runtime STATIC)
+add_library(gdox::dolphin ALIAS gdox_dolphin_runtime)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(gdox_dolphin_runtime PRIVATE
+        src/platform/dolphin_runtime_linux.c src/platform/dolphin_process_linux.c)
+    target_link_libraries(gdox_dolphin_runtime PRIVATE gdox::disc_bridge)
+else()
+    target_sources(gdox_dolphin_runtime PRIVATE src/platform/dolphin_unsupported.c)
+endif()
+target_include_directories(gdox_dolphin_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(gdox_dolphin_runtime PUBLIC gdox::platform)
+gdox_enable_c_warnings(gdox_dolphin_runtime)

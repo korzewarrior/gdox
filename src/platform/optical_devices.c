@@ -4,6 +4,9 @@
 #include "platform/asus_nr09_source.h"
 #include "platform/gp08_source.h"
 #include "platform/mt1887_source.h"
+#if defined(GDOX_HAS_LINUX_SG) && GDOX_HAS_LINUX_SG
+#include "platform/gp63_gamecube_device.h"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -167,6 +170,18 @@ static bool open_selected_media(
         gdox_optical_identity_for_drive(device->drive);
     const gdox_mt1887_media_profile *mt_media = NULL;
     gdox_asus_nr09_media_kind asus_media = GDOX_ASUS_NR09_MEDIA_UNKNOWN;
+
+#if defined(GDOX_HAS_LINUX_SG) && GDOX_HAS_LINUX_SG
+    if (device->drive == GDOX_OPTICAL_DRIVE_GP63) {
+        bool candidate = false;
+        if (!gdox_gp63_gamecube_open_selected(device, source, &candidate, error)) return false;
+        if (candidate) {
+            info->profile = GDOX_OPTICAL_MEDIA_GAMECUBE;
+            info->game_partition_lba = 0U;
+            return true;
+        }
+    }
+#endif
 
     if (device->drive == GDOX_OPTICAL_DRIVE_GP08) {
         return gdox_gp08_source_open(open_selected_transport, device,

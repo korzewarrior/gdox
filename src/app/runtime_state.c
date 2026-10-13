@@ -63,7 +63,9 @@ bool gdox_runtime_apply_media_open_result(
         (info->platform == GDOX_MEDIA_PLATFORM_XBOX
             && info->backend == GDOX_MEDIA_BACKEND_XEMU)
         || (info->platform == GDOX_MEDIA_PLATFORM_XBOX_360
-            && info->backend == GDOX_MEDIA_BACKEND_XENIA);
+            && info->backend == GDOX_MEDIA_BACKEND_XENIA)
+        || (info->platform == GDOX_MEDIA_PLATFORM_GAMECUBE
+            && info->backend == GDOX_MEDIA_BACKEND_DOLPHIN);
     if (!valid_identity) {
         return false;
     }
@@ -91,7 +93,9 @@ void gdox_runtime_mark_drive_unavailable(
         && ((snapshot->media_platform == GDOX_MEDIA_PLATFORM_XBOX
                 && snapshot->media_backend == GDOX_MEDIA_BACKEND_XEMU)
             || (snapshot->media_platform == GDOX_MEDIA_PLATFORM_XBOX_360
-                && snapshot->media_backend == GDOX_MEDIA_BACKEND_XENIA));
+                && snapshot->media_backend == GDOX_MEDIA_BACKEND_XENIA)
+            || (snapshot->media_platform == GDOX_MEDIA_PLATFORM_GAMECUBE
+                && snapshot->media_backend == GDOX_MEDIA_BACKEND_DOLPHIN));
 
     if (snapshot == NULL) {
         return;
@@ -116,7 +120,7 @@ void gdox_runtime_mark_drive_unavailable(
         return;
     }
     gdox_runtime_copy_text(
-        snapshot->disc, sizeof(snapshot->disc), "No Xbox disc"
+        snapshot->disc, sizeof(snapshot->disc), "No game disc"
     );
     gdox_runtime_copy_text(
         snapshot->status,
@@ -133,6 +137,11 @@ void gdox_runtime_publish(
 {
     if (gdox_mutex_lock(&runtime->mutex)) {
         const gdox_app_settings settings = runtime->snapshot.settings;
+        if (strcmp(runtime->snapshot.status, snapshot->status) != 0
+            || strcmp(runtime->snapshot.notice, snapshot->notice) != 0) {
+            (void)fprintf(stderr, "GDOX: %s: %s\n", snapshot->status, snapshot->notice);
+            (void)fflush(stderr);
+        }
 
         runtime->snapshot = *snapshot;
         runtime->snapshot.settings = settings;
@@ -181,7 +190,9 @@ void gdox_runtime_set_controls(
     const bool backend_ready =
         snapshot->media_backend == GDOX_MEDIA_BACKEND_XENIA
         ? snapshot->xenia_ready
-        : snapshot->media_backend == GDOX_MEDIA_BACKEND_XEMU
+        : snapshot->media_backend == GDOX_MEDIA_BACKEND_DOLPHIN
+            ? snapshot->dolphin_ready
+            : snapshot->media_backend == GDOX_MEDIA_BACKEND_XEMU
             && snapshot->xemu_ready;
 
     snapshot->can_start =

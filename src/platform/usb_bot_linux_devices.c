@@ -232,6 +232,18 @@ static bool describe_block(const gdox_linux_device_roots *roots,
     return true;
 }
 
+bool gdox_usb_bot_linux_block_device_id(const char *name,
+    char output[GDOX_OPTICAL_DEVICE_ID_CAPACITY])
+{
+    const gdox_optical_media_query query = {0};
+    gdox_usb_bot_device device;
+    if (name == NULL || output == NULL || strncmp(name, "sr", 2U) != 0
+        || name[2] == '\0' || strspn(name + 2U, "0123456789") != strlen(name + 2U)
+        || !describe_block(&system_roots, name, &query, &device)) return false;
+    memcpy(output, device.id, strlen(device.id) + 1U);
+    return true;
+}
+
 static bool append_unbound(const gdox_linux_device_roots *roots,
                            gdox_usb_bot_device *devices, size_t capacity,
                            size_t *count, gdox_error *error)

@@ -1,0 +1,17 @@
+FROM docker.io/library/ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        build-essential ca-certificates cmake git ninja-build pkg-config python3 \
+        qt6-base-dev qt6-base-private-dev qt6-svg-dev qt6-wayland-dev \
+        libasound2-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+        libcurl4-openssl-dev libevdev-dev libgl1-mesa-dev libhidapi-dev \
+        libpulse-dev libudev-dev libusb-1.0-0-dev libx11-dev libxi-dev \
+        libxrandr-dev libxext-dev libxkbcommon-dev libxkbcommon-x11-dev \
+        libxrender-dev liblzma-dev libbz2-dev libnbd-bin patchelf zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+# Update libraries inherited from the base image as well as build dependencies.
+RUN apt-get update && apt-get upgrade --yes \
+    && rm -rf /var/lib/apt/lists/*

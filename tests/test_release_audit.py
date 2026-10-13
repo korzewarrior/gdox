@@ -1246,6 +1246,21 @@ class ReleaseAuditTest(unittest.TestCase):
                 msg=findings,
             )
 
+    def test_dolphin_provenance_requires_exact_bytes(self) -> None:
+        data = b"\x7fELF\0reviewed upstream fixture"
+        member = "bin/dolphin-emu"
+        pin = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        with patch.object(release_audit_provenance, "DOLPHIN_FILES", {member: pin}):
+            verifier = release_audit_provenance.verified_dolphin_member
+            self.assertEqual(verifier("stage/runtime/dolphin/" + member, data), member)
+            self.assertEqual(verifier("bundle.tar.gz!dolphin/" + member, data), member)
+            self.assertIsNone(verifier("stage/runtime/dolphin/" + member, data + b"changed"))
+            self.assertIsNone(verifier("stage/runtime/imposter/" + member, data))
+            findings = []
+            inspect_bytes("stage/runtime/dolphin/" + member,
+                          data + b"\0private.person" + b"@corp.test", findings)
+            self.assertTrue(any("personal email" in item for item in findings), findings)
+
     def test_xenia_runtime_exemption_requires_exact_identity(self) -> None:
         data = b"MZ\0project-list" + b"@example.org"
         digest = hashlib.sha256(data).hexdigest()

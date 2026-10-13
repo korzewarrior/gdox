@@ -18,6 +18,9 @@ set_tests_properties(
     PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 )
 gdox_label_python_tests("policy;host-neutral" policy.xenia.generated)
+add_test(NAME policy.dolphin.generated COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_dolphin_policy.py --check)
+gdox_label_python_tests("policy;host-neutral" policy.dolphin.generated)
 
 add_test(
     NAME policy.architecture
@@ -39,6 +42,7 @@ set(
     packaging.release_notes
     packaging.source
     packaging.xenia_distribution
+    packaging.dolphin_distribution
     packaging.xemu_integration
     packaging.xemu_macos_runtime
     packaging.platform_artwork
@@ -55,6 +59,7 @@ set(
     test_release_notes.py
     test_source_packaging.py
     test_xenia_distribution.py
+    test_dolphin_distribution.py
     test_xemu_integration.py
     test_xemu_macos_runtime.py
     test_steamdeck_artwork.py

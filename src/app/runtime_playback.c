@@ -2,6 +2,7 @@
 
 #include "app/runtime_xemu.h"
 #include "app/runtime_xenia.h"
+#include "app/runtime_dolphin.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -16,6 +17,8 @@ static bool owner_has_process(const gdox_runtime *runtime)
             return runtime->xemu != NULL;
         case GDOX_RUNTIME_PLAYBACK_XENIA:
             return runtime->xenia != NULL;
+        case GDOX_RUNTIME_PLAYBACK_DOLPHIN:
+            return runtime->dolphin != NULL;
         case GDOX_RUNTIME_PLAYBACK_NONE:
             return false;
     }
@@ -33,6 +36,8 @@ static void destroy_owned_process(gdox_runtime *runtime)
             gdox_xenia_process_destroy(runtime->xenia);
             runtime->xenia = NULL;
             break;
+        case GDOX_RUNTIME_PLAYBACK_DOLPHIN:
+            return; /* Consumed by gdox_runtime_dolphin_stop/poll. */
         case GDOX_RUNTIME_PLAYBACK_NONE:
             break;
     }
@@ -67,6 +72,9 @@ bool gdox_runtime_playback_ready(const gdox_runtime_snapshot *snapshot)
     if (snapshot->media_backend == GDOX_MEDIA_BACKEND_XENIA) {
         return snapshot->xenia_ready;
     }
+    if (snapshot->media_backend == GDOX_MEDIA_BACKEND_DOLPHIN) {
+        return snapshot->dolphin_ready;
+    }
     return snapshot->media_backend == GDOX_MEDIA_BACKEND_XEMU
         && snapshot->xemu_ready;
 }
@@ -81,6 +89,9 @@ void gdox_runtime_playback_prepare(
     if (runtime != NULL && snapshot != NULL
         && snapshot->media_backend == GDOX_MEDIA_BACKEND_XENIA) {
         (void)gdox_runtime_xenia_prepare(runtime, snapshot, &error);
+    } else if (runtime != NULL && snapshot != NULL
+        && snapshot->media_backend == GDOX_MEDIA_BACKEND_DOLPHIN) {
+        (void)gdox_runtime_dolphin_prepare(runtime, snapshot, &error);
     }
 }
 
@@ -93,10 +104,15 @@ void gdox_runtime_playback_reset_xenia(
 
     if (runtime != NULL && !running) {
         memset(&runtime->xenia_runtime, 0, sizeof(runtime->xenia_runtime));
+        memset(&runtime->dolphin_runtime, 0, sizeof(runtime->dolphin_runtime));
     }
     if (snapshot == NULL || running) {
         return;
     }
+    snapshot->dolphin_ready = false;
+    snapshot->bundled_dolphin = false;
+    snapshot->dolphin_setup[0] = '\0';
+    snapshot->dolphin_executable[0] = '\0';
     snapshot->xenia_ready = false;
     snapshot->bundled_xenia = false;
     snapshot->xenia_policy = NULL;
@@ -143,6 +159,8 @@ bool gdox_runtime_playback_start(
         owner = GDOX_RUNTIME_PLAYBACK_XEMU;
     } else if (snapshot->media_backend == GDOX_MEDIA_BACKEND_XENIA) {
         owner = GDOX_RUNTIME_PLAYBACK_XENIA;
+    } else if (snapshot->media_backend == GDOX_MEDIA_BACKEND_DOLPHIN) {
+        owner = GDOX_RUNTIME_PLAYBACK_DOLPHIN;
     } else {
         gdox_error_set(
             error, GDOX_ERROR_INVALID_ARGUMENT, "media backend is unavailable"
@@ -174,7 +192,9 @@ bool gdox_runtime_playback_start(
     runtime->playback_owner = owner;
     started = owner == GDOX_RUNTIME_PLAYBACK_XEMU
         ? gdox_runtime_xemu_start(runtime, error)
-        : gdox_runtime_xenia_start(runtime, error);
+        : owner == GDOX_RUNTIME_PLAYBACK_DOLPHIN
+            ? gdox_runtime_dolphin_start(runtime, error)
+            : gdox_runtime_xenia_start(runtime, error);
     if (!started) {
         if (!owner_has_process(runtime)) {
             runtime->playback_owner = GDOX_RUNTIME_PLAYBACK_NONE;
@@ -193,7 +213,8 @@ bool gdox_runtime_playback_start(
         sizeof(snapshot->status),
         owner == GDOX_RUNTIME_PLAYBACK_XENIA
             ? "Xenia is running"
-            : "xemu is running"
+            : owner == GDOX_RUNTIME_PLAYBACK_DOLPHIN
+                ? "Dolphin is running" : "xemu is running"
     );
     if (owner == GDOX_RUNTIME_PLAYBACK_XEMU
         && runtime->xemu_save_migration.retained_due_to_rejected_migration) {
@@ -257,7 +278,7 @@ bool gdox_runtime_playback_stop(
         return false;
     }
     if (runtime->playback_owner == GDOX_RUNTIME_PLAYBACK_NONE) {
-        if (runtime->xemu != NULL || runtime->xenia != NULL) {
+        if (runtime->xemu != NULL || runtime->xenia != NULL || runtime->dolphin != NULL) {
             set_missing_process_error(error);
             return false;
         }
@@ -271,7 +292,9 @@ bool gdox_runtime_playback_stop(
 
     stopped = runtime->playback_owner == GDOX_RUNTIME_PLAYBACK_XEMU
         ? gdox_runtime_xemu_stop(runtime, error)
-        : gdox_runtime_xenia_stop(runtime, error);
+        : runtime->playback_owner == GDOX_RUNTIME_PLAYBACK_DOLPHIN
+            ? gdox_runtime_dolphin_stop(runtime, error)
+            : gdox_runtime_xenia_stop(runtime, error);
     if (!stopped) {
         if (!owner_has_process(runtime)) {
             runtime->playback_owner = GDOX_RUNTIME_PLAYBACK_NONE;
@@ -323,7 +346,9 @@ bool gdox_runtime_playback_poll(
     }
     polled = runtime->playback_owner == GDOX_RUNTIME_PLAYBACK_XEMU
         ? gdox_runtime_xemu_poll(runtime, running, exit_code, error)
-        : gdox_runtime_xenia_poll(runtime, running, exit_code, error);
+        : runtime->playback_owner == GDOX_RUNTIME_PLAYBACK_DOLPHIN
+            ? gdox_runtime_dolphin_poll(runtime, running, exit_code, error)
+            : gdox_runtime_xenia_poll(runtime, running, exit_code, error);
     if (!polled) {
         if (!owner_has_process(runtime)) {
             runtime->playback_owner = GDOX_RUNTIME_PLAYBACK_NONE;
@@ -377,7 +402,9 @@ bool gdox_runtime_playback_shutdown(
     gdox_error_clear(&stop_error);
     stopped = runtime->playback_owner == GDOX_RUNTIME_PLAYBACK_XEMU
         ? gdox_runtime_xemu_stop(runtime, &stop_error)
-        : gdox_runtime_xenia_stop(runtime, &stop_error);
+        : runtime->playback_owner == GDOX_RUNTIME_PLAYBACK_DOLPHIN
+            ? gdox_runtime_dolphin_stop(runtime, &stop_error)
+            : gdox_runtime_xenia_stop(runtime, &stop_error);
     if (stopped && owner_has_process(runtime)) {
         destroy_owned_process(runtime);
     } else if (!owner_has_process(runtime)) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject code and public content outside the Xbox release scope."""
+"""Reject code and public content outside the Xbox and GameCube release scope."""
 
 from __future__ import annotations
 
@@ -38,8 +38,6 @@ TEXT_SUFFIXES = {
     ".yml",
 }
 FORBIDDEN = (
-    re.compile("game" + r"[\s_-]*" + "cube", re.IGNORECASE),
-    re.compile("dol" + "phin", re.IGNORECASE),
     re.compile("dream" + r"[\s_-]*" + "cast", re.IGNORECASE),
     re.compile("red" + "ream", re.IGNORECASE),
     re.compile("fly" + "cast", re.IGNORECASE),
@@ -96,9 +94,9 @@ def main() -> int:
 
     if failures:
         for failure in failures:
-            print(f"Xbox release audit: {failure}", file=sys.stderr)
+            print(f"Release scope audit: {failure}", file=sys.stderr)
         return 1
-    print("Xbox release scope is clean.")
+    print("Xbox and GameCube release scope is clean.")
     return 0
 
 

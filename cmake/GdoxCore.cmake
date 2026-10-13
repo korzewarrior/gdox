@@ -136,6 +136,7 @@ add_library(
     STATIC
         ${GDOX_PRESERVATION_MEDIA_SOURCES}
         ${GDOX_DESKTOP_CORE_SOURCES}
+        src/core/disc_uri.c
 )
 add_library(gdox::core ALIAS gdox_core)
 target_include_directories(
@@ -166,6 +167,7 @@ target_link_libraries(
 add_library(
     gdox_application_support
     OBJECT
+        src/app/dolphin_profile.c
         src/app/optical_monitor.c
         src/app/preferences.c
         src/app/preservation_naming.c

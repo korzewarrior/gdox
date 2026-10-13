@@ -32,8 +32,8 @@
 #endif
 
 #if defined(__linux__)
-#include "platform/xenia_bridge_linux.h"
-#include "platform/xenia_bridge_tools_linux.h"
+#include "platform/disc_bridge_linux.h"
+#include "platform/disc_bridge_tools_linux.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -567,7 +567,7 @@ static void test_bundled_bridge_precedes_path(const xenia_fixture *fixture)
         "#!/bin/sh\n"
         "if [ \"${1:-}\" = \"--version\" ]; then exit 0; fi\n"
         "exit 91\n";
-    gdox_xenia_bridge_tools tools;
+    gdox_disc_bridge_tools tools;
     gdox_error error;
     const char *current_path = getenv("PATH");
     char *saved_path = current_path != NULL ? strdup(current_path) : NULL;
@@ -597,7 +597,7 @@ static void test_bundled_bridge_precedes_path(const xenia_fixture *fixture)
         bundled, bundled_script, sizeof(bundled_script) - 1U
     ));
     GDOX_TEST_CHECK(setenv("PATH", fixture->root, 1) == 0);
-    GDOX_TEST_CHECK(gdox_xenia_bridge_tools_resolve(&tools, &error));
+    GDOX_TEST_CHECK(gdox_disc_bridge_tools_resolve(&tools, &error));
     GDOX_TEST_CHECK(strcmp(tools.mount, bundled) == 0);
     GDOX_TEST_CHECK(gdox_test_remove(bundled) == 0);
     if (saved_path != NULL) {
@@ -620,7 +620,7 @@ static void test_bridge_cleanup_failure_is_retriable(
         private_uri,
         4096U,
     };
-    gdox_xenia_bridge *bridge = NULL;
+    gdox_disc_bridge *bridge = NULL;
     gdox_error error;
     const char *current_path = getenv("PATH");
     char *saved_path = current_path != NULL ? strdup(current_path) : NULL;
@@ -650,11 +650,11 @@ static void test_bridge_cleanup_failure_is_retriable(
     GDOX_TEST_CHECK(setenv(
         "GDOX_XENIA_TEST_BRIDGE_STOP", fixture->bridge_stop, 1
     ) == 0);
-    GDOX_TEST_CHECK(gdox_xenia_bridge_start(
-        &options, &target, &bridge, &error
+    GDOX_TEST_CHECK(gdox_disc_bridge_start(
+        options.storage_root, options.console_output, target.location, target.length, &bridge, &error
     ));
     for (attempt = 0U; attempt < 120U && close_result; ++attempt) {
-        close_result = gdox_xenia_bridge_try_close(
+        close_result = gdox_disc_bridge_try_close(
             bridge, &closed, &error
         );
         GDOX_TEST_CHECK(!closed);
@@ -666,18 +666,18 @@ static void test_bridge_cleanup_failure_is_retriable(
             stale,
             sizeof(stale),
             "%s.stale",
-            gdox_xenia_bridge_path(bridge)
+            gdox_disc_bridge_path(bridge)
         )
         : -1;
     GDOX_TEST_CHECK(written >= 0 && (size_t)written < sizeof(stale));
     GDOX_TEST_CHECK(write_file(stale, "stale\n", 6U));
     GDOX_TEST_CHECK(write_file(fixture->bridge_stop, "stop\n", 5U));
     GDOX_TEST_CHECK(setenv("GDOX_XENIA_TEST_UNMOUNT_FAIL", "1", 1) == 0);
-    GDOX_TEST_CHECK(!gdox_xenia_bridge_close(bridge, &error));
+    GDOX_TEST_CHECK(!gdox_disc_bridge_close(bridge, &error));
     GDOX_TEST_CHECK(error.code == GDOX_ERROR_IO);
     GDOX_TEST_CHECK(gdox_test_remove(stale) == 0);
     GDOX_TEST_CHECK(unsetenv("GDOX_XENIA_TEST_UNMOUNT_FAIL") == 0);
-    GDOX_TEST_CHECK(gdox_xenia_bridge_close(bridge, &error));
+    GDOX_TEST_CHECK(gdox_disc_bridge_close(bridge, &error));
     bridge = NULL;
     GDOX_TEST_CHECK(unsetenv("GDOX_XENIA_TEST_BRIDGE_STOP") == 0);
     GDOX_TEST_CHECK(unsetenv("GDOX_XENIA_TEST_BRIDGE_LENGTH") == 0);
@@ -688,7 +688,7 @@ static void test_bridge_cleanup_failure_is_retriable(
         GDOX_TEST_CHECK(unsetenv("PATH") == 0);
     }
     free(saved_path);
-    gdox_xenia_bridge_destroy(bridge);
+    gdox_disc_bridge_destroy(bridge);
 }
 #endif
 
