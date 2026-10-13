@@ -60,7 +60,8 @@ void draw_details(const gdox_app_snapshot &snapshot)
             "%s",
             snapshot.media_platform == GDOX_MEDIA_PLATFORM_XBOX_360
                 ? "Xbox 360"
-                : "Original Xbox"
+                : snapshot.media_platform == GDOX_MEDIA_PLATFORM_GAMECUBE
+                    ? "Nintendo GameCube" : "Original Xbox"
         );
     }
     if (snapshot.media_source == GDOX_MEDIA_DISC_IMAGE) {
@@ -216,6 +217,9 @@ void draw_details(const gdox_app_snapshot &snapshot)
             );
         }
         ImGui::TextColored(muted, "%s", snapshot.xenia_setup);
+    } else if (snapshot.media_backend == GDOX_MEDIA_BACKEND_DOLPHIN) {
+        status_line("Dolphin 2609a", snapshot.dolphin_ready);
+        ImGui::TextColored(muted, "%s", snapshot.dolphin_setup);
     } else {
         status_line("xemu", snapshot.xemu_ready);
         status_line("MCPX boot ROM", snapshot.mcpx_ready);

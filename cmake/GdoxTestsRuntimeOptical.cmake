@@ -1,3 +1,21 @@
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(gdox_dolphin_profile_tests tests/test_dolphin_profile.c
+        src/app/dolphin_profile.c src/platform/user_storage_posix.c)
+    target_include_directories(gdox_dolphin_profile_tests PRIVATE include src)
+    target_link_libraries(gdox_dolphin_profile_tests PRIVATE gdox::services)
+    gdox_enable_c_warnings(gdox_dolphin_profile_tests)
+    add_test(NAME runtime.dolphin_profile COMMAND gdox_dolphin_profile_tests)
+    gdox_label_tests(runtime runtime.dolphin_profile)
+    add_executable(gdox_dolphin_process_tests tests/test_dolphin_process.c
+        src/platform/dolphin_process_linux.c src/core/error.c)
+    target_include_directories(gdox_dolphin_process_tests PRIVATE include src)
+    target_link_options(gdox_dolphin_process_tests PRIVATE
+        -Wl,--wrap=posix_spawn -Wl,--wrap=waitpid -Wl,--wrap=kill -Wl,--wrap=nanosleep)
+    gdox_enable_c_warnings(gdox_dolphin_process_tests)
+    add_test(NAME runtime.dolphin_process COMMAND gdox_dolphin_process_tests)
+    gdox_label_tests(runtime runtime.dolphin_process)
+endif()
+
 add_executable(
     gdox_emulator_process_tests
     tests/test_emulator_process.c
@@ -447,4 +465,30 @@ if(GDOX_BUILD_OPTICAL)
         runtime.shutdown
         runtime.media
     )
+endif()
+
+if(GDOX_BUILD_OPTICAL AND GDOX_BUILD_GAMECUBE)
+    add_executable(gdox_runtime_gamecube_media_tests tests/test_runtime_gamecube_media.c)
+    target_include_directories(gdox_runtime_gamecube_media_tests PRIVATE src)
+    target_link_libraries(gdox_runtime_gamecube_media_tests PRIVATE gdox::runtime)
+    target_link_options(gdox_runtime_gamecube_media_tests PRIVATE
+        -Wl,--wrap=gdox_optical_open_device_media)
+    gdox_enable_c_warnings(gdox_runtime_gamecube_media_tests)
+    add_test(NAME runtime.gamecube_media COMMAND gdox_runtime_gamecube_media_tests)
+    foreach(name gp63_gamecube_source gp63_sg_linux)
+        add_executable(gdox_${name}_tests tests/test_${name}.c)
+        target_include_directories(gdox_${name}_tests PRIVATE src tests)
+        target_link_libraries(gdox_${name}_tests PRIVATE gdox::optical)
+        gdox_enable_c_warnings(gdox_${name}_tests)
+        add_test(NAME optical.${name} COMMAND gdox_${name}_tests)
+    endforeach()
+endif()
+
+if(GDOX_BUILD_OPTICAL AND GDOX_BUILD_GAMECUBE)
+    add_executable(gdox_gp63_gamecube_device_tests tests/test_gp63_gamecube_device.c
+        src/platform/gp63_gamecube_device.c)
+    target_include_directories(gdox_gp63_gamecube_device_tests PRIVATE src)
+    target_link_libraries(gdox_gp63_gamecube_device_tests PRIVATE gdox::optical)
+    gdox_enable_c_warnings(gdox_gp63_gamecube_device_tests)
+    add_test(NAME optical.gp63_gamecube_device COMMAND gdox_gp63_gamecube_device_tests)
 endif()

@@ -19,6 +19,7 @@ add_library(
         src/app/runtime_xemu.c
         src/app/xemu_process_stop.c
         src/app/runtime_xenia.c
+        src/app/runtime_dolphin.c
         src/app/xenia_process_stop.c
         $<TARGET_OBJECTS:gdox_application_support>
 )
@@ -35,5 +36,6 @@ target_link_libraries(
         gdox::services
         gdox::optical
         gdox::xenia
+        gdox::dolphin
 )
 gdox_enable_c_warnings(gdox_desktop_runtime)

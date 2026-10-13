@@ -37,6 +37,7 @@ check: shellcheck
 	python scripts/fetch_runtime.py validate
 	python scripts/xenia_compatibility.py
 	python scripts/generate_xenia_policy.py --check
+	python scripts/generate_dolphin_policy.py --check
 	python scripts/audit_architecture.py
 	python scripts/audit_xbox_release.py
 	python scripts/audit_release.py --path .

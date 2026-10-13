@@ -1,7 +1,7 @@
 # gdox
 
 gdox plays original Xbox and Xbox 360 games from supported physical discs or
-owned images. it can also make playable xisos and full-disc preservation
+owned images, and GameCube games directly from supported physical discs on Linux. it can also make playable xisos and full-disc preservation
 images from original Xbox discs.
 
 [download](https://gdox.korze.org/download/) /
@@ -10,14 +10,14 @@ images from original Xbox discs.
 
 ## support
 
-| platform | original Xbox | Xbox 360 |
-|---|---|---|
-| windows 11 x86-64 | discs, images, preservation | discs and images |
-| linux x86-64 | discs, images, preservation | discs and images |
-| steam deck | discs, images, preservation | discs and images |
-| macos apple silicon | discs, images, preservation | — |
-| macos intel | images | — |
-| android arm64 | in development | — |
+| platform | original Xbox | Xbox 360 | GameCube |
+|---|---|---|---|
+| windows 11 x86-64 | discs, images, preservation | discs and images | — |
+| linux x86-64 | discs, images, preservation | discs and images | GP63EX70 RF02 discs |
+| steam deck | discs, images, preservation | discs and images | included; hardware validation pending |
+| macos apple silicon | discs, images, preservation | — | — |
+| macos intel | images | — | — |
+| android arm64 | in development | — | — |
 
 original Xbox physical play recognizes five exact optical-drive profiles. Xbox
 360 validated physical play uses the exact GP63EX70/RF02 profile. The complete
@@ -34,7 +34,9 @@ Wave 2 only. Reads and restoration are verified through diagnostics; Hexode
 also reports Windows playback with the ASUS drive.
 
 gdox reads game data from the disc or image while the emulator runs. saves and
-profiles persist; game contents, shader caches, and session files do not.
+profiles persist; game contents are streamed. Xbox emulator scratch remains
+transient. Dolphin retains its settings, saves and shader caches. See
+[GameCube playback](docs/gamecube-live.md) for the exact supported reader and limits.
 
 [contributing](CONTRIBUTING.md) /
 [status](docs/STATUS.md) /

@@ -45,6 +45,8 @@ extern "C" {
 #define GDOX_GP57_SCSI_VENDOR "HL-DT-ST"
 #define GDOX_GP57_SCSI_MODEL "DVDRAM GP57EB40"
 #define GDOX_GP57_SCSI_REVISION "PB00"
+#define GDOX_GAMECUBE_TOTAL_SECTORS UINT64_C(712880)
+
 #define GDOX_XGD1_TOTAL_SECTORS UINT64_C(3820880)
 #define GDOX_XGD2_TOTAL_SECTORS UINT64_C(0x3a6104)
 #define GDOX_XGD2_GAME_PARTITION_LBA UINT64_C(0x1fb20)
@@ -104,6 +106,7 @@ typedef enum gdox_optical_media_profile {
     GDOX_OPTICAL_MEDIA_XGD1,
     GDOX_OPTICAL_MEDIA_XGD2,
     GDOX_OPTICAL_MEDIA_XGD3,
+    GDOX_OPTICAL_MEDIA_GAMECUBE,
 } gdox_optical_media_profile;
 
 typedef struct gdox_optical_media_info {

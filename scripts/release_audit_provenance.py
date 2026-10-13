@@ -19,6 +19,7 @@ from android_source_provenance import (
     validate_component_path,
 )
 from fetch_runtime import load_manifest
+from dolphin_distribution import inventory as dolphin_inventory
 
 ROOT = Path(__file__).resolve().parent.parent
 ANDROID_SOURCE_ARCHIVE_PATTERN = re.compile(
@@ -27,6 +28,7 @@ ANDROID_SOURCE_ARCHIVE_PATTERN = re.compile(
 
 
 RUNTIME_MANIFEST = load_manifest()
+DOLPHIN_FILES = dolphin_inventory(RUNTIME_MANIFEST)
 XENIA_RUNTIME_FILES = tuple(
     (
         f"runtime/xenia/{revision}/{asset['executable']}",
@@ -355,6 +357,8 @@ def is_pinned_source_member(label: str, data: bytes) -> bool:
     assets = (
         RUNTIME_MANIFEST["xemu"]["source"],
         RUNTIME_MANIFEST["linux_bridge"]["source"],
+        RUNTIME_MANIFEST["dolphin"]["source"],
+        RUNTIME_MANIFEST["dolphin"]["dependencies"],
     )
     if any(
         archive_name == asset["name"] and asset_matches_file(archive, asset)
@@ -473,6 +477,42 @@ def is_verified_xenia_runtime_file(label: str, data: bytes) -> bool:
                 and member.removeprefix("./") == archive_member
             ):
                 return True
+    return False
+
+
+def verified_dolphin_member(label: str, data: bytes) -> str | None:
+    """Return the exact pinned member; a name alone never grants an exemption."""
+    normalized = label.replace("\\", "/").replace("!", "/")
+    marker = "/dolphin/"
+    if marker not in "/" + normalized:
+        return None
+    relative = ("/" + normalized).rsplit(marker, 1)[1]
+    pin = DOLPHIN_FILES.get(relative)
+    if pin and len(data) == pin["size"] and hashlib.sha256(data).hexdigest() == pin["sha256"]:
+        return relative
+    return None
+
+
+def is_verified_dolphin_inventory(label: str, data: bytes) -> bool:
+    normalized = label.replace("\\", "/")
+    pin = RUNTIME_MANIFEST["dolphin"]["inventory"]
+    return normalized.endswith("/packaging/dolphin/linux-files.json") and len(data) == pin["size"] and hashlib.sha256(data).hexdigest() == pin["sha256"]
+
+
+def is_dolphin_resource_name(label: str, data: bytes) -> bool:
+    # High-DPI resource filenames are not email addresses. This
+    # applies only to the exact known name; file contents are audited normally.
+    for suffix in (" file name", " member name"):
+        if not label.endswith(suffix):
+            continue
+        normalized = label.removesuffix(suffix).replace("\\", "/").replace("!", "/")
+        if "/dolphin/" not in "/" + normalized:
+            return False
+        relative = ("/" + normalized).rsplit("/dolphin/", 1)[1]
+        if relative not in DOLPHIN_FILES or not re.fullmatch(r"bin/Sys/(?:Resources|Themes)/[^\n]*@[234]x\.png", relative):
+            return False
+        name = data.decode("utf-8", errors="strict")
+        return name == relative or name.endswith("/" + relative)
     return False
 
 

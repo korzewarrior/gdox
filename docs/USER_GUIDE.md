@@ -1,6 +1,7 @@
 # GDOX user guide
 
-This guide covers Original Xbox support and the 0.2 Xbox 360 path for Windows
+This guide covers Original Xbox, Xbox 360, and Linux GameCube direct-disc playback.
+The Xbox 360 path supports Windows
 x86-64, Linux x86-64, and Steam Deck. macOS and Android do not provide Xbox 360
 gameplay. The exact platform matrix is in `XBOX360.md`.
 
@@ -38,6 +39,19 @@ extension is installed.
 
 Open `gdox.exe`. GDOX uses Windows' standard optical-storage driver; do not
 replace it with WinUSB or install a third-party device driver.
+
+## GameCube on Linux
+
+Use an LG GP63EX70 RF02 drive and insert a GameCube disc. GDOX opens the disc
+with its included Dolphin runtime; GameCube does not need Xbox firmware.
+Use Dolphin's **Controllers** and **Graphics** menus in the game window. New
+profiles use Vulkan and hybrid shader compilation, so working Vulkan drivers
+are required initially. Existing Dolphin profiles are preserved.
+
+Disc data is streamed through bounded RAM buffers. GDOX does not create a
+GameCube image or persistent disc-sector cache. Dolphin saves, settings and
+shader caches persist in GDOX's private user data. See `gamecube-live.md` for
+reader support, configuration and storage details.
 
 ## Choosing a drive
 
@@ -142,7 +156,7 @@ unknown titles use the conservative default policy.
 Linux and Steam Deck run the same reviewed Windows executable identities
 through Proton Experimental. Owned images and physical media use a local
 read-only bridge so Xenia receives the exact source GDOX validated. Generic
-Linux requires host `nbdfuse` and `fusermount3`; without both helpers, all Xbox
+Linux includes `nbdfuse` and requires host `fusermount3`; without both helpers, all Xbox
 360 playback is unavailable. The Steam Deck package includes its reviewed
 `nbdfuse` and libnbd build and uses SteamOS's `fusermount3`. Physical playback
 uses only the exact host, drive, firmware, and media combinations in

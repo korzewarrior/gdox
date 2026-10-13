@@ -43,18 +43,20 @@ bool gdox_runtime_session_refresh_read_stats(
     bool publish
 )
 {
-    gdox_physical_read_stats stats;
+    gdox_physical_read_stats stats = {0};
     gdox_nbd_read_stats read_stats;
     bool physical_changed;
     bool changed;
 
     if (runtime->media.exported == NULL
-        || !gdox_nbd_physical_read_stats(runtime->media.exported, &stats)
         || !gdox_nbd_get_read_stats(
             runtime->media.exported, &read_stats
         )) {
         return false;
     }
+    /* Some direct-disc sources provide stream telemetry without raw-device
+     * counters. Keep the stream visible without inventing physical reads. */
+    (void)gdox_nbd_physical_read_stats(runtime->media.exported, &stats);
     physical_changed = stats.commands != snapshot->physical_read_commands
         || stats.sectors != snapshot->physical_read_sectors
         || stats.bytes != snapshot->physical_read_bytes
@@ -115,12 +117,12 @@ bool gdox_runtime_session_close(
     snapshot->phase = GDOX_RUNTIME_EMPTY;
     if (snapshot->media_source == GDOX_MEDIA_PHYSICAL_DISC) {
         gdox_runtime_copy_text(
-            snapshot->disc, sizeof(snapshot->disc), "No Xbox disc"
+            snapshot->disc, sizeof(snapshot->disc), "No game disc"
         );
         gdox_runtime_copy_text(
             snapshot->status,
             sizeof(snapshot->status),
-            "Waiting for an Xbox disc"
+            "Waiting for a game disc"
         );
         gdox_runtime_copy_text(
             snapshot->notice, sizeof(snapshot->notice), "Drive is ready"
@@ -154,8 +156,9 @@ gdox_runtime_live_prepare_result gdox_runtime_session_prepare_live(
         snapshot, GDOX_MEDIA_PHYSICAL_DISC
     );
     snapshot->phase = GDOX_RUNTIME_PREPARING;
+    gdox_runtime_copy_text(snapshot->drive, sizeof(snapshot->drive), runtime->optical_device.name);
     gdox_runtime_copy_text(
-        snapshot->disc, sizeof(snapshot->disc), "Reading Xbox disc"
+        snapshot->disc, sizeof(snapshot->disc), "Reading game disc"
     );
     gdox_runtime_copy_text(
         snapshot->status, sizeof(snapshot->status), "Preparing live disc"
@@ -201,7 +204,8 @@ gdox_runtime_live_prepare_result gdox_runtime_session_prepare_live(
     gdox_runtime_copy_text(
         snapshot->notice,
         sizeof(snapshot->notice),
-        "Live physical-disc session is active"
+        snapshot->media_backend == GDOX_MEDIA_BACKEND_DOLPHIN && !snapshot->dolphin_ready
+            ? snapshot->dolphin_setup : "Live physical-disc session is active"
     );
     gdox_runtime_set_controls(snapshot, runtime->optical_drive, true, false);
     gdox_runtime_publish(runtime, snapshot);
@@ -327,7 +331,7 @@ void gdox_runtime_session_select_physical(
         snapshot->drive, sizeof(snapshot->drive), "Checking optical drive"
     );
     gdox_runtime_copy_text(
-        snapshot->disc, sizeof(snapshot->disc), "No Xbox disc"
+        snapshot->disc, sizeof(snapshot->disc), "No game disc"
     );
     gdox_runtime_copy_text(
         snapshot->status,

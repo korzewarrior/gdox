@@ -31,8 +31,21 @@ Arch packaging commit and PKGBUILD, SteamOS package, and extracted-file
 digests are fixed in `packaging/runtime-manifest.json`. GDOX does not
 redistribute `fusermount3`; it uses the helper supplied by SteamOS.
 
+Linux and Steam Deck archives include Dolphin 2609a-gdox1 as a separate
+GPL-2.0-or-later program, together with its Linux shared-library dependencies
+and a read-only nbdfuse helper. The exact Dolphin revision and submodules,
+maintained patch series, build recipe, and Debian/Ubuntu dependency sources
+are included in the combined corresponding-source archive. The runtime's
+`licenses` directory retains the applicable notices. Complete runtime file
+identities are pinned in `packaging/dolphin/linux-files.json` and attested by
+`packaging/runtime-manifest.json`. GDOX is not affiliated with or endorsed by
+the Dolphin Emulator project or Nintendo.
+
+The pinned Dolphin and GnuTLS binaries include public upstream cryptographic
+self-test fixtures. Those fixtures are not user credentials or console keys.
+
 GDOX does not distribute Microsoft MCPX data, Xbox BIOS data, EEPROM data,
-keys, game data, optical-drive firmware, or security-sector binaries.
+console keys, game data, optical-drive firmware, or security-sector binaries.
 
 The Android application is based on a pinned official xemu revision and links
 GDOX's physical-disc block source into that emulator. Its Android portability

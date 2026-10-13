@@ -40,7 +40,16 @@ Preserve is the only path that writes game data. It writes to a user-selected
 file, never to the disc or optical drive, and publishes the final name only
 after successful finalization.
 
-Do not run GDOX or xemu as root. On Linux, use the supplied udev rule. On
+GameCube playback uses the exact GP63EX70 RF02 identity on Linux. Its reader
+verifies stock volatile admission fields, restores them after each acquisition,
+and retains cleanup ownership if restoration fails. A timeout does not count
+as disconnection. Data is streamed through a read-only local bridge using
+bounded RAM buffers; GDOX creates no disc image or persistent sector cache.
+Managed Dolphin launches disable loading the whole disc into memory and
+audio, video, texture, and microcode dumps. Saves, controller settings, graphics
+settings, and shader caches may persist in the private Dolphin profile.
+
+Do not run GDOX or its emulators as root. On Linux, use the supplied udev rule. On
 Windows, keep the standard optical-storage driver; no replacement device
 driver is required.
 

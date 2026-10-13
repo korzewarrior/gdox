@@ -17,6 +17,10 @@ gdox_playback_labels gdox_playback_labels_for_backend(
                 "Restart Xenia",
                 "Close Xenia",
             };
+        case GDOX_MEDIA_BACKEND_DOLPHIN:
+            return (gdox_playback_labels){
+                "Start Dolphin", "Restart Dolphin", "Close Dolphin",
+            };
         case GDOX_MEDIA_BACKEND_NONE:
             break;
     }

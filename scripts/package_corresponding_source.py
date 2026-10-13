@@ -28,6 +28,8 @@ def component_definitions() -> tuple[tuple[str, int, str], ...]:
         manifest["xemu"]["source"],
         manifest["linux_bridge"]["source"],
         manifest["linux_bridge"]["recipe"],
+        manifest["dolphin"]["source"],
+        manifest["dolphin"]["dependencies"],
     )
     return tuple(
         (definition["name"], definition["size"], definition["sha256"])
@@ -210,6 +212,8 @@ def component_sources() -> tuple[tuple[str, Path, str], ...]:
         manifest["xemu"]["source"],
         manifest["linux_bridge"]["source"],
         manifest["linux_bridge"]["recipe"],
+        manifest["dolphin"]["source"],
+        manifest["dolphin"]["dependencies"],
     )
     cache = cache_root()
     return tuple(

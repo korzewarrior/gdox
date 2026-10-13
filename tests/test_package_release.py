@@ -418,7 +418,7 @@ class PackageReleaseTest(unittest.TestCase):
 
         self.assertEqual(
             publication_runtime_release(self.manifest),
-            "runtime-v0.2.0",
+            "runtime-v0.3.0",
         )
 
     def test_platform_payload_inventory_requires_every_exact_file(self) -> None:

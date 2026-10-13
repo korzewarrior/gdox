@@ -10,6 +10,11 @@ bool gdox_usb_bot_linux_device_id(
     struct libusb_device *device,
     char output[GDOX_OPTICAL_DEVICE_ID_CAPACITY]
 );
+/* Resolves the same stable identity from a kernel-bound optical block name. */
+bool gdox_usb_bot_linux_block_device_id(
+    const char *name,
+    char output[GDOX_OPTICAL_DEVICE_ID_CAPACITY]
+);
 
 #ifdef GDOX_LINUX_DEVICES_TESTING
 typedef struct gdox_linux_device_roots {

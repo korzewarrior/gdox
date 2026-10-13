@@ -179,8 +179,6 @@ def _check_xenia_target(repository: Repository) -> list[str]:
         "src/platform/xenia_runtime_windows.c",
         "src/platform/xenia_process_posix.c",
         "src/platform/xenia_runtime_posix.c",
-        "src/platform/xenia_bridge_linux.c",
-        "src/platform/xenia_bridge_tools_linux.c",
         "src/platform/xenia_unsupported.c",
     )
     if (
@@ -189,6 +187,18 @@ def _check_xenia_target(repository: Repository) -> list[str]:
         or "gdox::platform" not in links
     ):
         failures.append("Xenia runtime is not isolated behind gdox::xenia")
+    bridge_sources = repository.cmake.target_sources("gdox_disc_bridge")
+    if (aliases.get("gdox::disc_bridge") != "gdox_disc_bridge"
+        or "gdox::disc_bridge" not in links
+        or not all(_contains_path(bridge_sources, path) for path in (
+            "src/platform/disc_bridge_linux.c", "src/platform/disc_bridge_tools_linux.c"))):
+        failures.append("live disc bridge is not shared behind gdox::disc_bridge")
+    dolphin_sources = repository.cmake.target_sources("gdox_dolphin_runtime")
+    if (aliases.get("gdox::dolphin") != "gdox_dolphin_runtime"
+        or not all(_contains_path(dolphin_sources, path) for path in (
+            "src/platform/dolphin_process_linux.c", "src/platform/dolphin_runtime_linux.c",
+            "src/platform/dolphin_unsupported.c"))):
+        failures.append("Dolphin runtime is not isolated behind gdox::dolphin")
     platform_sources = repository.cmake.target_sources("gdox_platform_services")
     if any("src/platform/xenia_" in source for source in platform_sources):
         failures.append(

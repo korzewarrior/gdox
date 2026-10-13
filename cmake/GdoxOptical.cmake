@@ -64,3 +64,19 @@ elseif(NOT APPLE AND NOT WIN32)
     target_compile_definitions(gdox_optical PUBLIC GDOX_HAS_LIBUSB=0)
 endif()
 gdox_enable_c_warnings(gdox_optical)
+
+if(GDOX_BUILD_GAMECUBE)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+        message(FATAL_ERROR "GameCube playback requires Linux SG_IO")
+    endif()
+    if(NOT TARGET PkgConfig::LIBUSB)
+        message(FATAL_ERROR "GameCube drive discovery requires libusb-1.0 development files")
+    endif()
+    target_sources(gdox_optical PRIVATE
+        src/platform/gp63_gamecube_source.c
+        src/platform/gp63_sg_linux.c
+        src/platform/gp63_gamecube_device.c
+    )
+    target_compile_definitions(gdox_optical PRIVATE GDOX_HAS_LINUX_SG=1)
+    target_link_libraries(gdox_optical PRIVATE Threads::Threads)
+endif()

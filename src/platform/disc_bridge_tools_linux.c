@@ -1,6 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 
-#include "platform/xenia_bridge_tools_linux.h"
+#include "platform/disc_bridge_tools_linux.h"
 
 #include "platform/portable_sync.h"
 
@@ -21,8 +21,8 @@
 extern char **environ;
 
 enum {
-    GDOX_XENIA_HELPER_POLL_MS = 10U,
-    GDOX_XENIA_HELPER_TIMEOUT_MS = 2000U,
+    GDOX_DISC_HELPER_POLL_MS = 10U,
+    GDOX_DISC_HELPER_TIMEOUT_MS = 2000U,
 };
 
 static bool helper_probe(const char *helper)
@@ -67,11 +67,11 @@ static bool helper_probe(const char *helper)
         if (waited_child == child) {
             return WIFEXITED(status) && WEXITSTATUS(status) == 0;
         }
-        if (waited_child < 0 || waited >= GDOX_XENIA_HELPER_TIMEOUT_MS) {
+        if (waited_child < 0 || waited >= GDOX_DISC_HELPER_TIMEOUT_MS) {
             break;
         }
-        gdox_sleep_ms(GDOX_XENIA_HELPER_POLL_MS);
-        waited += GDOX_XENIA_HELPER_POLL_MS;
+        gdox_sleep_ms(GDOX_DISC_HELPER_POLL_MS);
+        waited += GDOX_DISC_HELPER_POLL_MS;
     }
     (void)kill(child, SIGKILL);
     while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
@@ -183,8 +183,8 @@ static bool resolve_helper(
         || path_helper(name, output);
 }
 
-bool gdox_xenia_bridge_tools_resolve(
-    gdox_xenia_bridge_tools *tools,
+bool gdox_disc_bridge_tools_resolve(
+    gdox_disc_bridge_tools *tools,
     gdox_error *error
 )
 {
@@ -193,7 +193,7 @@ bool gdox_xenia_bridge_tools_resolve(
         gdox_error_set(
             error,
             GDOX_ERROR_INVALID_ARGUMENT,
-            "Xbox 360 disc bridge tool output is required"
+            "Live disc bridge tool output is required"
         );
         return false;
     }
@@ -202,7 +202,7 @@ bool gdox_xenia_bridge_tools_resolve(
         gdox_error_set(
             error,
             GDOX_ERROR_NOT_FOUND,
-            "the Xbox 360 disc bridge (nbdfuse) is unavailable"
+            "The live disc bridge (nbdfuse) is unavailable"
         );
         return false;
     }
@@ -218,7 +218,7 @@ bool gdox_xenia_bridge_tools_resolve(
         gdox_error_set(
             error,
             GDOX_ERROR_NOT_FOUND,
-            "the Xbox 360 disc bridge failed its runtime check"
+            "The live disc bridge failed its runtime check"
         );
         return false;
     }

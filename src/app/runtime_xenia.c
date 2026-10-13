@@ -12,6 +12,12 @@ static bool cleanup_failed_start(
 {
     gdox_error cleanup_error;
 
+    if (runtime->xenia != NULL) {
+        /* A failed launch can retain a mount. Its process owner must close
+         * that mount before the enclosing session directory is removed. */
+        *error = *failure;
+        return false;
+    }
     if (gdox_xenia_storage_close(&runtime->xenia_storage, &cleanup_error)) {
         *error = *failure;
         return false;

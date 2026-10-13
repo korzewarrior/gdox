@@ -226,7 +226,8 @@ static bool start_export(
 {
     gdox_nbd_client_access client_access;
 
-    if (backend == GDOX_MEDIA_BACKEND_XENIA) {
+    if (backend == GDOX_MEDIA_BACKEND_XENIA
+        || backend == GDOX_MEDIA_BACKEND_DOLPHIN) {
         client_access = GDOX_NBD_CLIENT_READ_ONLY;
     } else if (backend == GDOX_MEDIA_BACKEND_XEMU) {
         /* xemu 0.8.136 opens dvd_path writable before exposing the CD-ROM. */
@@ -369,12 +370,36 @@ bool gdox_runtime_media_open_physical(
         info.backend = GDOX_MEDIA_BACKEND_XEMU;
         info.source_sectors = live_info.input_sectors;
         (void)snprintf(info.title, sizeof(info.title), "%s", live_info.title);
+    } else if (optical.profile == GDOX_OPTICAL_MEDIA_GAMECUBE) {
+        uint8_t header[0x400];
+        size_t bytes = 0U;
+        if (!gdox_disc_from_source(&whole, &disc, error)
+            || !gdox_disc_read_at(&disc, 0U, header, sizeof(header), &bytes, error)) {
+            goto cleanup;
+        }
+        if (bytes != sizeof(header) || memcmp(header + 0x1cU, "\xc2\x33\x9f\x3d", 4U) != 0) {
+            gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME,
+                "GameCube disc header did not validate");
+            goto cleanup;
+        }
+        info.platform = GDOX_MEDIA_PLATFORM_GAMECUBE;
+        info.backend = GDOX_MEDIA_BACKEND_DOLPHIN;
+        size_t index = 0U;
+        for (; index + 1U < sizeof(info.title) && index < 0x3e0U
+                && header[0x20U + index] != 0U; ++index) {
+            const uint8_t c = header[0x20U + index];
+            info.title[index] = c >= 0x20U && c < 0x7fU ? (char)c : '?';
+        }
+        info.title[index] = '\0';
+        if (index == 0U) {
+            (void)snprintf(info.title, sizeof(info.title), "GameCube disc");
+        }
     } else if (!xbox_360) {
         if (!gdox_error_is_set(error)) {
             gdox_error_set(
                 error,
                 GDOX_ERROR_INVALID_SOURCE,
-                "opened optical media has no validated XGD profile"
+                "opened optical media has no validated playback profile"
             );
         }
         goto cleanup;

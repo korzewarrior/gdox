@@ -15,6 +15,7 @@
 
 #include "gdox/optical.h"
 #include "gdox/xenia.h"
+#include "gdox/dolphin.h"
 #include "platform/portable_sync.h"
 
 #include <stdatomic.h>
@@ -24,6 +25,7 @@ typedef enum gdox_runtime_playback_owner {
     GDOX_RUNTIME_PLAYBACK_NONE = 0,
     GDOX_RUNTIME_PLAYBACK_XEMU,
     GDOX_RUNTIME_PLAYBACK_XENIA,
+    GDOX_RUNTIME_PLAYBACK_DOLPHIN,
 } gdox_runtime_playback_owner;
 
 typedef struct gdox_runtime_pending_cleanup {
@@ -53,8 +55,10 @@ struct gdox_runtime {
     union {
         gdox_emulator_process *xemu;
         gdox_xenia_process *xenia;
+        gdox_dolphin_process *dolphin;
     };
     gdox_xenia_runtime_descriptor xenia_runtime;
+    gdox_dolphin_runtime dolphin_runtime;
     gdox_xenia_storage xenia_storage;
     gdox_xemu_legacy_migration_outcome xemu_save_migration;
     gdox_host_profile host_profile;

@@ -30,6 +30,9 @@ from release_audit_provenance import (
     is_verified_xemu_known_test_key_file,
     is_verified_xemu_privacy_file,
     is_verified_xenia_runtime_file,
+    verified_dolphin_member,
+    is_verified_dolphin_inventory,
+    is_dolphin_resource_name,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -597,13 +600,22 @@ def inspect_bytes(label: str, data: bytes, findings: list[str]) -> None:
         normalized_label,
         data,
     )
-    verified_runtime = verified_xemu_runtime or verified_xenia_runtime
+    dolphin_member = verified_dolphin_member(normalized_label, data)
+    verified_dolphin_runtime = dolphin_member is not None and data.startswith(b"\x7fELF")
+    # These exact reviewed binaries retain upstream mbedTLS/GnuTLS self-test
+    # keys. Their complete identities are pinned; changed bytes remain scanned.
+    verified_known_test_key = verified_known_test_key or dolphin_member in {
+        "bin/dolphin-emu", "lib/libgnutls.so.30"
+    }
+    verified_runtime = verified_xemu_runtime or verified_xenia_runtime or verified_dolphin_runtime
     third_party_source = is_third_party_source(normalized_label, data)
     android_core_patch = is_android_core_patch(normalized_label)
     third_party_notice = is_verified_third_party_notice(
         normalized_label,
         data,
     )
+    dolphin_data = dolphin_member is not None and dolphin_member.startswith("bin/Sys/")
+    third_party_notice = third_party_notice or (dolphin_member is not None and not verified_dolphin_runtime) or is_verified_dolphin_inventory(normalized_label, data) or is_dolphin_resource_name(normalized_label, data)
     if not verified_runtime:
         for marker_label, marker in RUNTIME_MARKERS:
             wide_marker = marker.decode(errors="ignore").encode("utf-16le")
@@ -623,7 +635,7 @@ def inspect_bytes(label: str, data: bytes, findings: list[str]) -> None:
         return
     text = data.decode("utf-8", errors="replace")
     for line_number, line in enumerate(text.splitlines(), 1):
-        if not third_party_source:
+        if not third_party_source and not dolphin_data:
             for rule_label, rule in PUBLIC_HYGIENE_RULES:
                 if (
                     (android_core_patch or third_party_notice)

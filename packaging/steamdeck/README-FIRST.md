@@ -3,7 +3,7 @@
 1. in desktop mode, extract the archive and run `install.sh`.
 2. complete the one administrator prompt.
 3. return to gaming mode and open gdox from the non-steam library.
-4. add your firmware, connect a supported optical drive, and insert a disc.
+4. add firmware for Original Xbox, connect a supported optical drive, and insert a disc.
 
 d-pad and A navigate. LB/RB change pages. gdox hands the controller to the
 selected emulator while a game runs.
@@ -20,6 +20,12 @@ Wave 1, XGD2 Wave 2, and XGD3 profiles. gdox reports a missing host facility
 instead of starting an incomplete session. without the included bridge or
 SteamOS FUSE support, all
 xbox 360 playback is unavailable, including owned images.
+
+the included Dolphin runtime supports the Linux GameCube reader for the exact
+GP63EX70 RF02 drive. physical GameCube playback has been validated on a Linux
+desktop; Steam Deck hardware validation is still pending. GameCube does not
+need Xbox firmware or a stored game image. Dolphin's Controllers and Graphics
+windows configure its input and display settings.
 
 reinstalling updates the same shortcut and leaves firmware, EEPROM, settings,
 supported save data, and preservation output alone. the clean xbox HDD remains

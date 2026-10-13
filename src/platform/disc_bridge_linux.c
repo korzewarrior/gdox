@@ -1,9 +1,10 @@
 #define _POSIX_C_SOURCE 200809L
 
-#include "platform/xenia_bridge_linux.h"
+#include "platform/disc_bridge_linux.h"
+#include "core/disc_uri.h"
 
 #include "platform/portable_sync.h"
-#include "platform/xenia_bridge_tools_linux.h"
+#include "platform/disc_bridge_tools_linux.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -23,10 +24,10 @@
 extern char **environ;
 
 enum {
-    GDOX_XENIA_BRIDGE_CLOSE_MAX_POLLS = 120U,
+    GDOX_DISC_BRIDGE_CLOSE_MAX_POLLS = 120U,
 };
 
-struct gdox_xenia_bridge {
+struct gdox_disc_bridge {
     pid_t child;
     bool unmount_requested;
     unsigned int close_polls;
@@ -35,11 +36,11 @@ struct gdox_xenia_bridge {
     char unmount_helper[GDOX_EMULATOR_PATH_CAPACITY];
 };
 
-bool gdox_xenia_bridge_preflight(gdox_error *error)
+bool gdox_disc_bridge_preflight(gdox_error *error)
 {
-    gdox_xenia_bridge_tools tools;
+    gdox_disc_bridge_tools tools;
 
-    return gdox_xenia_bridge_tools_resolve(&tools, error);
+    return gdox_disc_bridge_tools_resolve(&tools, error);
 }
 
 static bool child_finished(pid_t *child, bool *finished)
@@ -153,7 +154,7 @@ static bool unmount_bridge(
     return false;
 }
 
-static bool remove_bridge_files(gdox_xenia_bridge *bridge)
+static bool remove_bridge_files(gdox_disc_bridge *bridge)
 {
     const bool file_removed = unlink(bridge->file) == 0 || errno == ENOENT;
     const bool directory_removed = rmdir(bridge->directory) == 0
@@ -162,8 +163,8 @@ static bool remove_bridge_files(gdox_xenia_bridge *bridge)
     return file_removed && directory_removed;
 }
 
-bool gdox_xenia_bridge_try_close(
-    gdox_xenia_bridge *bridge,
+bool gdox_disc_bridge_try_close(
+    gdox_disc_bridge *bridge,
     bool *closed,
     gdox_error *error
 )
@@ -175,7 +176,7 @@ bool gdox_xenia_bridge_try_close(
         gdox_error_set(
             error,
             GDOX_ERROR_INVALID_ARGUMENT,
-            "private Xbox 360 disc view close output is required"
+            "private live disc view close output is required"
         );
         return false;
     }
@@ -190,7 +191,7 @@ bool gdox_xenia_bridge_try_close(
             gdox_error_set(
                 error,
                 GDOX_ERROR_IO,
-                "could not request private Xbox 360 disc view shutdown"
+                "could not request private live disc view shutdown"
             );
             return false;
         }
@@ -200,17 +201,17 @@ bool gdox_xenia_bridge_try_close(
         gdox_error_set(
             error,
             GDOX_ERROR_IO,
-            "could not monitor private Xbox 360 disc view shutdown"
+            "could not monitor private live disc view shutdown"
         );
         return false;
     }
     if (!finished) {
         ++bridge->close_polls;
-        if (bridge->close_polls >= GDOX_XENIA_BRIDGE_CLOSE_MAX_POLLS) {
+        if (bridge->close_polls >= GDOX_DISC_BRIDGE_CLOSE_MAX_POLLS) {
             gdox_error_set(
                 error,
                 GDOX_ERROR_IO,
-                "private Xbox 360 disc view did not exit after unmount"
+                "private live disc view did not exit after unmount"
             );
             return false;
         }
@@ -220,7 +221,7 @@ bool gdox_xenia_bridge_try_close(
         gdox_error_set(
             error,
             GDOX_ERROR_IO,
-            "could not remove the private Xbox 360 disc view"
+            "could not remove the private live disc view"
         );
         return false;
     }
@@ -229,8 +230,8 @@ bool gdox_xenia_bridge_try_close(
     return true;
 }
 
-bool gdox_xenia_bridge_close(
-    gdox_xenia_bridge *bridge,
+bool gdox_disc_bridge_close(
+    gdox_disc_bridge *bridge,
     gdox_error *error
 )
 {
@@ -255,7 +256,7 @@ bool gdox_xenia_bridge_close(
         gdox_error_set(
             error,
             GDOX_ERROR_IO,
-            "could not completely close the private Xbox 360 disc view"
+            "could not completely close the private live disc view"
         );
         return false;
     }
@@ -263,11 +264,11 @@ bool gdox_xenia_bridge_close(
     return true;
 }
 
-void gdox_xenia_bridge_destroy(gdox_xenia_bridge *bridge)
+void gdox_disc_bridge_destroy(gdox_disc_bridge *bridge)
 {
     gdox_error error;
 
-    if (!gdox_xenia_bridge_close(bridge, &error)) {
+    if (!gdox_disc_bridge_close(bridge, &error)) {
         (void)fprintf(stderr, "GDOX: %s\n", error.message);
     }
 }
@@ -306,24 +307,35 @@ static bool configure_output(
         gdox_error_set(
             error,
             GDOX_ERROR_INTERNAL,
-            "could not configure the private Xenia disc view"
+            "could not configure the private live disc view"
         );
         return false;
     }
     return true;
 }
 
-bool gdox_xenia_bridge_start(
-    const gdox_xenia_options *options,
-    const gdox_xenia_target *target,
-    gdox_xenia_bridge **output,
+static void retain_failed_start(gdox_disc_bridge *bridge,
+    gdox_disc_bridge **output)
+{
+    gdox_error cleanup_error;
+    if (!gdox_disc_bridge_close(bridge, &cleanup_error)) {
+        *output = bridge;
+    }
+}
+
+bool gdox_disc_bridge_start(
+    const char *storage_root,
+    bool console_output,
+    const char *disc_uri,
+    uint64_t length,
+    gdox_disc_bridge **output,
     gdox_error *error
 )
 {
-    gdox_xenia_bridge *bridge;
+    gdox_disc_bridge *bridge;
     posix_spawn_file_actions_t actions;
     char template_path[GDOX_EMULATOR_PATH_CAPACITY];
-    gdox_xenia_bridge_tools tools;
+    gdox_disc_bridge_tools tools;
     char *arguments[8];
     unsigned int attempt;
     int written;
@@ -333,17 +345,15 @@ bool gdox_xenia_bridge_start(
     if (output != NULL) {
         *output = NULL;
     }
-    if (options == NULL || options->storage_root == NULL
-        || target == NULL || output == NULL
-        || target->kind != GDOX_XENIA_TARGET_PRIVATE_NBD
-        || target->length == 0U
-        || target->length > (uint64_t)INT64_MAX
-        || !gdox_xenia_validate_disc_uri(target->location, error)) {
+    if (storage_root == NULL || output == NULL
+        || length == 0U
+        || length > (uint64_t)INT64_MAX
+        || !gdox_disc_uri_validate(disc_uri, error)) {
         if (!gdox_error_is_set(error)) {
             gdox_error_set(
                 error,
                 GDOX_ERROR_INVALID_ARGUMENT,
-                "a bounded private Xbox 360 disc target is required"
+                "a bounded private live disc target is required"
             );
         }
         return false;
@@ -353,12 +363,12 @@ bool gdox_xenia_bridge_start(
         gdox_error_set(
             error,
             GDOX_ERROR_INTERNAL,
-            "could not allocate the private Xenia disc view"
+            "could not allocate the private live disc view"
         );
         return false;
     }
-    if (!gdox_xenia_bridge_tools_resolve(&tools, error)) {
-        gdox_xenia_bridge_destroy(bridge);
+    if (!gdox_disc_bridge_tools_resolve(&tools, error)) {
+        retain_failed_start(bridge, output);
         return false;
     }
     memcpy(
@@ -369,17 +379,17 @@ bool gdox_xenia_bridge_start(
     written = snprintf(
         template_path,
         sizeof(template_path),
-        "%s/.gdox-xenia-XXXXXX",
-        options->storage_root
+        "%s/.gdox-disc-XXXXXX",
+        storage_root
     );
     if (written < 0 || (size_t)written >= sizeof(template_path)
         || mkdtemp(template_path) == NULL
         || strlen(template_path) >= sizeof(bridge->directory)) {
-        gdox_xenia_bridge_destroy(bridge);
+        retain_failed_start(bridge, output);
         gdox_error_set(
             error,
             GDOX_ERROR_IO,
-            "could not create the private Xenia disc view"
+            "could not create the private live disc view"
         );
         return false;
     }
@@ -391,8 +401,8 @@ bool gdox_xenia_bridge_start(
         bridge->directory
     );
     if (written < 0 || (size_t)written >= sizeof(bridge->file)
-        || !configure_output(&actions, options->console_output, error)) {
-        gdox_xenia_bridge_destroy(bridge);
+        || !configure_output(&actions, console_output, error)) {
+        retain_failed_start(bridge, output);
         return false;
     }
     arguments[0] = tools.mount;
@@ -401,7 +411,7 @@ bool gdox_xenia_bridge_start(
     arguments[3] = "-s";
     arguments[4] = "-r";
     arguments[5] = bridge->file;
-    arguments[6] = (char *)target->location;
+    arguments[6] = (char *)disc_uri;
     arguments[7] = NULL;
     spawn_result = posix_spawn(
         &bridge->child,
@@ -413,13 +423,13 @@ bool gdox_xenia_bridge_start(
     );
     (void)posix_spawn_file_actions_destroy(&actions);
     if (spawn_result != 0) {
-        gdox_xenia_bridge_destroy(bridge);
+        retain_failed_start(bridge, output);
         gdox_error_set(
             error,
             spawn_result == ENOENT ? GDOX_ERROR_NOT_FOUND : GDOX_ERROR_IO,
             spawn_result == ENOENT
-                ? "the Xbox 360 disc bridge is unavailable"
-                : "could not start the private Xenia disc view"
+                ? "the live disc bridge is unavailable"
+                : "could not start the private live disc view"
         );
         return false;
     }
@@ -437,28 +447,28 @@ bool gdox_xenia_bridge_start(
         }
         if (stat(bridge->file, &status) == 0 && S_ISREG(status.st_mode)
             && status.st_size >= 0
-            && (uint64_t)status.st_size == target->length) {
+            && (uint64_t)status.st_size == length) {
             *output = bridge;
             return true;
         }
         gdox_sleep_ms(100U);
     }
-    gdox_xenia_bridge_destroy(bridge);
+    retain_failed_start(bridge, output);
     gdox_error_set(
         error,
         GDOX_ERROR_IO,
-        "private Xenia disc view did not become ready"
+        "private live disc view did not become ready"
     );
     return false;
 }
 
-const char *gdox_xenia_bridge_path(const gdox_xenia_bridge *bridge)
+const char *gdox_disc_bridge_path(const gdox_disc_bridge *bridge)
 {
     return bridge != NULL ? bridge->file : NULL;
 }
 
-bool gdox_xenia_bridge_alive(
-    gdox_xenia_bridge *bridge,
+bool gdox_disc_bridge_alive(
+    gdox_disc_bridge *bridge,
     bool *alive,
     gdox_error *error
 )
@@ -471,7 +481,7 @@ bool gdox_xenia_bridge_alive(
         gdox_error_set(
             error,
             GDOX_ERROR_INVALID_ARGUMENT,
-            "private Xenia disc view and status output are required"
+            "private live disc view and status output are required"
         );
         return false;
     }
@@ -496,7 +506,7 @@ bool gdox_xenia_bridge_alive(
     gdox_error_set(
         error,
         GDOX_ERROR_IO,
-        "could not monitor the private Xbox 360 disc view"
+        "could not monitor the private live disc view"
     );
     return false;
 }

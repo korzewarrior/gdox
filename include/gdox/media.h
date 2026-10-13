@@ -21,13 +21,15 @@ typedef enum gdox_media_source {
 typedef enum gdox_media_platform {
     GDOX_MEDIA_PLATFORM_NONE = 0,
     GDOX_MEDIA_PLATFORM_XBOX,
-    GDOX_MEDIA_PLATFORM_XBOX_360
+    GDOX_MEDIA_PLATFORM_XBOX_360,
+    GDOX_MEDIA_PLATFORM_GAMECUBE
 } gdox_media_platform;
 
 typedef enum gdox_media_backend {
     GDOX_MEDIA_BACKEND_NONE = 0,
     GDOX_MEDIA_BACKEND_XEMU,
-    GDOX_MEDIA_BACKEND_XENIA
+    GDOX_MEDIA_BACKEND_XENIA,
+    GDOX_MEDIA_BACKEND_DOLPHIN
 } gdox_media_backend;
 
 typedef enum gdox_media_image_layout {

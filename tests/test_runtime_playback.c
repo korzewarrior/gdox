@@ -1,6 +1,7 @@
 #include "app/runtime_playback.h"
 #include "app/runtime_xemu.h"
 #include "app/runtime_xenia.h"
+#include "app/runtime_dolphin.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -34,6 +35,8 @@ static struct gdox_emulator_process xemu_process;
 static struct gdox_xenia_process xenia_process;
 static mock_playback xemu_mock;
 static mock_playback xenia_mock;
+static struct gdox_dolphin_process { int marker; } dolphin_process;
+static mock_playback dolphin_mock;
 static int failures;
 
 static void check(bool condition, const char *message)
@@ -48,6 +51,8 @@ static void reset_mocks(void)
 {
     memset(&xemu_mock, 0, sizeof(xemu_mock));
     memset(&xenia_mock, 0, sizeof(xenia_mock));
+    dolphin_mock = (mock_playback){.start_success = true, .start_sets_process = true,
+        .stop_success = true, .poll_success = true, .poll_running = true};
     xemu_mock.prepare_success = true;
     xemu_mock.start_success = true;
     xemu_mock.start_sets_process = true;
@@ -82,6 +87,7 @@ static void initialize_runtime(
     snapshot->media_backend = backend;
     snapshot->xemu_ready = true;
     snapshot->xenia_ready = true;
+    snapshot->dolphin_ready = true;
 }
 
 static void destroy_runtime(gdox_runtime *runtime)
@@ -308,6 +314,73 @@ void gdox_xenia_process_destroy(gdox_xenia_process *process)
     if (process != NULL) {
         ++xenia_mock.destroys;
     }
+}
+
+bool gdox_runtime_dolphin_prepare(gdox_runtime *runtime, gdox_runtime_snapshot *snapshot, gdox_error *error)
+{
+    (void)runtime; snapshot->dolphin_ready = true; gdox_error_clear(error); return true;
+}
+bool gdox_runtime_dolphin_start(gdox_runtime *runtime, gdox_error *error)
+{
+    ++dolphin_mock.starts;
+    if (dolphin_mock.start_sets_process) runtime->dolphin = &dolphin_process;
+    if (!dolphin_mock.start_success) gdox_error_set(error, GDOX_ERROR_IO, "Dolphin start failed");
+    return dolphin_mock.start_success;
+}
+bool gdox_runtime_dolphin_stop(gdox_runtime *runtime, gdox_error *error)
+{
+    ++dolphin_mock.stops;
+    if (!dolphin_mock.stop_success) {
+        gdox_error_set(error, GDOX_ERROR_IO, "Dolphin stop failed"); return false;
+    }
+    runtime->dolphin = NULL;
+    ++dolphin_mock.destroys;
+    return true;
+}
+bool gdox_runtime_dolphin_poll(gdox_runtime *runtime, bool *running, int *exit_code, gdox_error *error)
+{
+    ++dolphin_mock.polls;
+    if (!dolphin_mock.poll_success) {
+        gdox_error_set(error, GDOX_ERROR_IO, "Dolphin poll failed"); return false;
+    }
+    *running = dolphin_mock.poll_running; *exit_code = dolphin_mock.poll_exit_code;
+    if (!*running) { runtime->dolphin = NULL; ++dolphin_mock.destroys; }
+    return true;
+}
+
+static void test_dolphin_cleanup_ownership(void)
+{
+    gdox_runtime runtime;
+    gdox_runtime_snapshot snapshot;
+    gdox_error error;
+    reset_mocks();
+    initialize_runtime(&runtime, &snapshot, GDOX_MEDIA_BACKEND_DOLPHIN);
+    check(gdox_runtime_playback_ready(&snapshot), "Dolphin readiness");
+    check(gdox_runtime_playback_start(&runtime, &snapshot, &error), "start Dolphin");
+    check(snapshot.can_close && !snapshot.can_start, "Dolphin running controls");
+    check(runtime.playback_owner == GDOX_RUNTIME_PLAYBACK_DOLPHIN, "Dolphin process owner");
+    dolphin_mock.stop_success = false;
+    check(!gdox_runtime_playback_shutdown(&runtime, &error), "surface failed Dolphin cleanup");
+    check(runtime.dolphin != NULL && gdox_runtime_playback_running(&runtime), "retain failed Dolphin cleanup");
+    snapshot.media_backend = GDOX_MEDIA_BACKEND_XEMU;
+    check(!gdox_runtime_playback_start(&runtime, &snapshot, &error), "exclude other backends during failed cleanup");
+    dolphin_mock.stop_success = true;
+    check(gdox_runtime_playback_shutdown(&runtime, &error), "retry Dolphin cleanup");
+    check(runtime.dolphin == NULL && runtime.playback_owner == GDOX_RUNTIME_PLAYBACK_NONE, "release Dolphin owner");
+    snapshot.media_backend = GDOX_MEDIA_BACKEND_DOLPHIN;
+    dolphin_mock.start_success = false;
+    check(!gdox_runtime_playback_start(&runtime, &snapshot, &error), "failed Dolphin start");
+    check(runtime.playback_owner == GDOX_RUNTIME_PLAYBACK_DOLPHIN, "retain partially opened Dolphin bridge");
+    check(gdox_runtime_playback_shutdown(&runtime, &error), "close partially opened Dolphin bridge");
+    dolphin_mock.start_success = true;
+    check(gdox_runtime_playback_start(&runtime, &snapshot, &error), "restart Dolphin");
+    dolphin_mock.poll_running = false;
+    bool running = true; int code = -1;
+    check(gdox_runtime_playback_poll(&runtime, &running, &code, &error), "Dolphin exits normally");
+    check(!running && code == 0 && runtime.playback_owner == GDOX_RUNTIME_PLAYBACK_NONE, "Dolphin exit releases owner");
+    gdox_runtime_playback_reset_xenia(&runtime, &snapshot);
+    check(!snapshot.dolphin_ready && !snapshot.bundled_dolphin, "clear stale Dolphin readiness");
+    destroy_runtime(&runtime);
 }
 
 static void test_overlapping_text_copy(void)
@@ -826,6 +899,7 @@ int main(void)
         GDOX_XEMU_ORDERLY_STOP_GRACE_MS == UINT32_C(15000),
         "allow the bounded xemu save checkpoint to finish"
     );
+    test_dolphin_cleanup_ownership();
     test_overlapping_text_copy();
     test_media_open_result_presentation();
     test_media_open_retry_policy();

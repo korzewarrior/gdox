@@ -9,6 +9,7 @@ import tempfile
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
+from dolphin_distribution import bundle as bundle_dolphin
 
 FetchAsset = Callable[[dict, Path], Path]
 BundleXeniaAssets = Callable[[str, Path, Path, dict], int]
@@ -152,3 +153,12 @@ def stage_runtime_bundle(
     }:
         raise SystemExit(f"no bundled Xenia runtime is defined for {target}")
     write_runtime_notes(destination, manifest, xenia_bundled != 0)
+    if bundle_dolphin(target, destination, cache, manifest, fetch_asset):
+        with (destination / "SOURCE.md").open("a", encoding="utf-8") as notes:
+            notes.write(
+                "\nThe Linux bundle includes Dolphin " + manifest["dolphin"]["version"]
+                + " under GPL-2.0-or-later. Its pristine source with pinned submodules, "
+                "the GDOX patch series and build recipe, and corresponding sources "
+                "for its bundled libraries are in the combined corresponding-source "
+                "archive. Notices are retained in dolphin/licenses.\n"
+            )

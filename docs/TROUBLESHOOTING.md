@@ -1,6 +1,6 @@
 # Troubleshooting
 
-This guide covers the Original Xbox and Xbox 360 desktop paths in GDOX.
+This guide covers the Original Xbox, Xbox 360, and Linux GameCube paths in GDOX.
 
 ## GDOX shows another drive
 
@@ -107,9 +107,8 @@ Linux and Steam Deck run the reviewed Windows Xenia builds through Proton
 Experimental. If GDOX reports that Proton is missing, install Proton
 Experimental through Steam or set `GDOX_PROTON` to an executable Proton
 launcher. Linux uses a read-only bridge for both owned images and physical Xbox
-360 media. Generic Linux needs host `nbdfuse` and `fusermount3`; the Steam Deck
-package includes its reviewed `nbdfuse` and libnbd build and uses SteamOS's
-`fusermount3`. GDOX checks the bridge before committing a media session. If
+360 media. Both Linux packages include a reviewed `nbdfuse` and libnbd build and use
+the host's `fusermount3`. GDOX checks the bridge before committing a media session. If
 either helper is missing, both owned-image and physical Xbox 360 playback are
 unavailable. Original Xbox firmware does not affect Xenia readiness.
 
@@ -173,3 +172,19 @@ and game-image contents from logs before sharing them. Xenia's managed
 diagnostic log exists only for the active session and is removed during
 teardown; copy and redact it before closing playback if it is needed for a bug
 report.
+
+## GameCube is not ready
+
+GameCube support requires the exact GP63EX70 RF02 profile on Linux. Similar
+DVD drives and the remote ASUS diagnostic bridge are not supported readers.
+Reinstall the complete package if the bundled Dolphin identity check fails.
+Install the host FUSE 3 helper if `fusermount3` is missing.
+
+For a controller that does not respond, turn it on and open **Controllers** in
+Dolphin. Select the connected device and configure port 1. GDOX preserves
+existing mappings; it does not replace them when a different pad appears.
+Use **Graphics** to change the backend if the host has no working Vulkan driver.
+
+A damaged sector or a distant optical seek can still pause streaming. If a
+stream or restoration error is reported, close playback and let GDOX finish
+cleanup before reconnecting the drive.

@@ -4,7 +4,7 @@ this page records physical validation and exact drive support.
 
 ## current systems
 
-original Xbox and Xbox 360 are supported. the exact Xbox 360 platform, drive,
+original Xbox, Xbox 360 and Linux GameCube direct-disc playback are supported. the exact Xbox 360 platform, drive,
 and media matrix is maintained in `XBOX360.md`.
 
 ## host platforms
@@ -60,6 +60,25 @@ Xbox 360 physical validation is narrower:
 | `ASUS SDRW-08D1S-U A202`, Initio USB `13fd:1640` | XGD2 | reader, sustained stream, rendered startup, and restoration validated on Linux through Proton; stable tested-title execution not established |
 | `ASUS DRW-24D5MT 2.00`, native SATA on Windows | XGD2 Wave 2 only | experimental reader and restoration validated remotely; Assassin's Creed playback reported by Hexode on Windows |
 | `HL-DT-ST DVDRAM GP57EB40 PB00`, USB `0e8d:1887` on Windows | XGD2 Wave 2 only | experimental reader and restoration verified remotely; gameplay pending |
+
+## GameCube validation
+
+The Linux GP63EX70 RF02 reader has been tested with X-Men Legends (`GXLE52`)
+using the bundled Dolphin 2609a build. The integrated application boots the
+physical disc, completes the story intro, accepts automated gameplay input,
+and restores the drive on normal shutdown. A terminated stream helper is
+reported and can be shut down without retaining a mount or emulator process.
+Vulkan playback remained active for over 23 minutes. A final 5,000-frame sample
+had no frame longer than 100 ms; the performance overlay also confirmed full
+emulation speed. Optical seeks still produced occasional loading stalls, so
+this is not a guarantee of stall-free playback for every scene or disc.
+
+This release does not claim full-game completion, universal DVD-drive support,
+remote-drive playback, Wii support, or GameCube support on Windows or macOS.
+The Linux runtime is included on Steam Deck; GameCube hardware validation on
+the Deck remains pending. Physical controller validation for this packaged
+build remains pending; controller configuration is available in Dolphin.
+See `gamecube-live.md` for the complete reader and storage contract.
 
 ## preservation
 

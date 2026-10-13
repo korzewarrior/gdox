@@ -80,6 +80,7 @@ compatibility cross-links, and the generated policy with:
 ```sh
 python scripts/fetch_runtime.py validate
 python scripts/generate_xenia_policy.py --check
+python scripts/generate_dolphin_policy.py --check
 ```
 
 This validation is intentionally offline. It accepts a patched runtime marked
@@ -99,6 +100,34 @@ source patches do not satisfy this gate; the exact rebuilt executables must be
 pinned in the runtime metadata and admitted by the separate code-reviewed
 artifact-digest gates after exact capability testing. Manifest flags alone
 cannot make an emulator publishable.
+
+Linux and Steam Deck also require the reviewed Dolphin distribution. Its
+manifest pins the upstream commit, complete file inventory, binary archive,
+pristine source with submodules, and exact dependency source packages. The
+launcher and executable identities are compiled into GDOX. Stage validation
+checks every extracted file independently, including libraries and notices.
+An archive or manifest change must not silently replace the generated policy.
+
+Build Dolphin in `packaging/dolphin/Containerfile`, using a pristine source
+export made by `packaging/dolphin/export_source.py` at the pinned commit:
+
+```sh
+packaging/dolphin/build.sh /work/source /work/build /work/runtime
+```
+
+The recipe applies the reviewed controller-default and distributor-version
+patches, disables analytics and automatic updates, and packages Qt, SDL and
+the live-disc helper with their dependency licenses. Export the exact source
+versions recorded in `dependencies.json`, verify their `.dsc` checksums, and
+include them in the pinned dependency-source archive. Keep Dolphin
+`candidate-only` until the packaged application has passed physical intro,
+gameplay, shutdown, stream-failure, relocation, and no-disc-file checks.
+Record controller and host validation limits in `STATUS.md`; a desktop test
+does not establish Steam Deck or arbitrary drive compatibility.
+
+The release auditor recognizes upstream embedded self-test key fixtures only
+inside the exact reviewed Dolphin and GnuTLS binaries. Other credential
+checks remain active, and changing either binary removes that exemption.
 
 Build patched xemu from the extracted pinned source archive without a `.git`
 directory so `XEMU_VERSION` and `XEMU_COMMIT` remain the authoritative source
@@ -184,7 +213,8 @@ python scripts/package_android_source.py
 ```
 
 The desktop archive contains the exact GDOX tree, xemu source, libnbd source,
-and Arch PKGBUILD used by the released packages. The GDOX tree comes from the
+Arch PKGBUILD, Dolphin source with submodules, and the corresponding source
+packages for Dolphin's bundled dependencies. The GDOX tree comes from the
 release commit; third-party component identities come from the runtime
 manifest. Xenia's BSD 3-Clause license remains beside every staged executable,
 and its integration patches and pinned build recipe are in the GDOX tree. The

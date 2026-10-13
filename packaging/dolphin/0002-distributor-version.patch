@@ -1,0 +1,30 @@
+diff --git a/CMake/ScmRevGen.cmake b/CMake/ScmRevGen.cmake
+index f108370..9eaab43 100644
+--- a/CMake/ScmRevGen.cmake
++++ b/CMake/ScmRevGen.cmake
+@@ -1,7 +1,7 @@
+ cmake_minimum_required(VERSION 3.13)
+ 
+ # for revision info
+-if(GIT_FOUND)
++if(GIT_FOUND AND NOT DISTRIBUTOR STREQUAL "GDOX")
+   # defines DOLPHIN_WC_REVISION
+   execute_process(WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+       OUTPUT_VARIABLE DOLPHIN_WC_REVISION
+@@ -30,6 +30,16 @@ if(GIT_FOUND)
+     ERROR_QUIET)
+ endif()
+ 
++# GDOX distributes this exact release with a reviewed patch series.
++# Keep source-archive builds independent of an enclosing Git worktree.
++if(DISTRIBUTOR STREQUAL "GDOX")
++  set(DOLPHIN_WC_REVISION "409881c34357d0f105fd473167d15ab0bd9c1628")
++  set(DOLPHIN_WC_DESCRIBE "2609a-gdox1")
++  set(DOLPHIN_WC_BRANCH "gdox")
++  set(DOLPHIN_WC_COMMITS_AHEAD_MASTER 0)
++  set(DOLPHIN_WC_TAG "2609a-gdox1")
++endif()
++
+ string(TIMESTAMP DOLPHIN_WC_BUILD_DATE "%Y-%m-%d" UTC)
+ 
+ # version number

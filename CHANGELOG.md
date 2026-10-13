@@ -1,5 +1,14 @@
 # changes
 
+## 0.3.0
+
+- add Linux GameCube playback directly from physical discs in an LG GP63EX70 RF02 drive
+- include the reviewed Dolphin 2609a runtime, controller and graphics settings, and the Linux disc-stream helper
+- keep GameCube disc data in bounded RAM buffers, with validated sectors and background read-ahead
+- preserve Dolphin saves and controller profiles, and initialize new profiles with Vulkan and hybrid shader compilation
+- retain drive and stream ownership until restoration and orderly emulator shutdown complete
+- include exact Dolphin and dependency sources, licenses, runtime inventories, and archive-integrity checks
+
 ## 0.2.9
 
 - preserve existing partial images and retain completed images when finalization fails

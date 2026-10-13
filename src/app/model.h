@@ -83,6 +83,7 @@ typedef struct gdox_app_snapshot {
     char pending_cleanup_notice[384];
     bool xemu_ready;
     bool xenia_ready;
+    bool dolphin_ready;
     bool can_start;
     bool can_restart;
     bool can_close;
@@ -92,6 +93,7 @@ typedef struct gdox_app_snapshot {
     bool preservation_complete;
     bool bundled_xemu;
     bool bundled_xenia;
+    bool bundled_dolphin;
     bool mcpx_ready;
     bool flash_ready;
     bool hdd_ready;
@@ -120,10 +122,12 @@ typedef struct gdox_app_snapshot {
     char notice[GDOX_APP_TEXT_CAPACITY];
     char xemu_setup[GDOX_APP_TEXT_CAPACITY];
     char xenia_setup[GDOX_APP_TEXT_CAPACITY];
+    char dolphin_setup[GDOX_APP_TEXT_CAPACITY];
     char preservation_output[GDOX_EMULATOR_PATH_CAPACITY];
     char disc_image_path[GDOX_EMULATOR_PATH_CAPACITY];
     char xemu_executable[GDOX_EMULATOR_PATH_CAPACITY];
     char xenia_executable[GDOX_EMULATOR_PATH_CAPACITY];
+    char dolphin_executable[GDOX_EMULATOR_PATH_CAPACITY];
     char xemu_configuration[GDOX_EMULATOR_PATH_CAPACITY];
     char mcpx_path[GDOX_EMULATOR_PATH_CAPACITY];
     char flash_path[GDOX_EMULATOR_PATH_CAPACITY];

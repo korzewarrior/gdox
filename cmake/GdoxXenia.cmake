@@ -18,8 +18,6 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         PRIVATE
             src/platform/xenia_process_posix.c
             src/platform/xenia_runtime_posix.c
-            src/platform/xenia_bridge_linux.c
-            src/platform/xenia_bridge_tools_linux.c
     )
 else()
     target_sources(
@@ -41,6 +39,6 @@ target_link_libraries(
         gdox::platform
 )
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(gdox_xenia_runtime PRIVATE Threads::Threads)
+    target_link_libraries(gdox_xenia_runtime PRIVATE Threads::Threads gdox::disc_bridge)
 endif()
 gdox_enable_c_warnings(gdox_xenia_runtime)

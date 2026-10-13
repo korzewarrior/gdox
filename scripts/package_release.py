@@ -25,6 +25,7 @@ from linux_bridge_distribution import (
     validate_stage as validate_linux_bridge_stage,
 )
 from project_version import validated_project_version
+from dolphin_distribution import validate_stage as validate_dolphin_stage
 from release_archive import copy_file, create_archive, file_sha256
 from release_paths import cache_root, output_root
 from xenia_distribution import validate_stage as validate_xenia_stage
@@ -51,6 +52,7 @@ RUNTIME_TARGETS = {
     "x86_64-pc-windows-gnu": "x86_64-pc-windows-msvc",
 }
 DOCUMENTS = (
+    "gamecube-live.md",
     "ASUS_NR09.md",
     "PRESERVATION.md",
     "SAFETY.md",
@@ -260,6 +262,9 @@ def add_platform_files(platform_name: str, stage: Path) -> None:
                 stage / "libexec" / "nbdfuse",
                 executable=True,
             )
+        else:
+            copy_file(ROOT / "packaging/linux/nbdfuse-dolphin",
+                      stage / "libexec/nbdfuse", executable=True)
 
 
 def payload_inventory(
@@ -298,6 +303,7 @@ def payload_inventory(
                 "install.sh",
                 "lib/libusb-1.0.so.0",
                 "libexec/gdox",
+                "libexec/nbdfuse",
                 "packaging/60-gdox.rules",
                 "packaging/gdox.png",
                 "packaging/org.gdox.gdox.desktop",
@@ -338,6 +344,9 @@ def payload_inventory(
         }
     )
     prefixes.append(f"{runtime_root}/xemu/")
+    if platform_name in {"linux", "steamdeck"}:
+        prefixes.append(f"{runtime_root}/dolphin/")
+        exact.add("libexec/nbdfuse")
     runtime_target = RUNTIME_TARGETS.get(target, target)
     if any(
         definition["targets"].get(runtime_target) is not None
@@ -476,6 +485,7 @@ def validate_runtime_components(
         manifest,
     )
     validate_linux_bridge_stage(target, stage, manifest)
+    validate_dolphin_stage(target, stage, manifest)
     forbidden_roots = {"research", "site", "website", "workspace"}
     leaked = [
         str(path)
