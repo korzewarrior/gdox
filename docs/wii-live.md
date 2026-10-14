@@ -1,7 +1,5 @@
 # Wii direct-disc playback
 
-Wii support is in development and is not in the published 0.3.0 release.
-
 The Linux reader accepts single-layer Wii discs in an LG GP63EX70 with RF02
 firmware and USB ID `0e8d:1887`. Select the drive and choose **Start Dolphin**.
 Configure a Wii Remote and Nunchuk in the game window's **Controllers** settings.

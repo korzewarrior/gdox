@@ -1,23 +1,21 @@
 # gdox
 
 gdox plays original Xbox and Xbox 360 games from supported physical discs or
-owned images, and GameCube games directly from supported physical discs on Linux. it can also make playable xisos and full-disc preservation
-images from original Xbox discs.
+owned images, and GameCube and Wii games directly from supported physical discs
+on Linux. it can also make playable xisos and full-disc preservation images
+from original Xbox discs.
 
 [download](https://gdox.korze.org/download/) /
 [user guide](docs/USER_GUIDE.md) /
 [supported drives](https://gdox.korze.org/drives/)
 
-This branch adds experimental [Wii disc playback](docs/wii-live.md) on Linux.
-It is not yet in a published release.
-
 ## support
 
-| platform | original Xbox | Xbox 360 | GameCube |
+| platform | original Xbox | Xbox 360 | GameCube / Wii |
 |---|---|---|---|
 | windows 11 x86-64 | discs, images, preservation | discs and images | — |
 | linux x86-64 | discs, images, preservation | discs and images | GP63EX70 RF02 discs |
-| steam deck | discs, images, preservation | discs and images | included; hardware validation pending |
+| steam deck | discs, images, preservation | discs and images | hardware validation pending |
 | macos apple silicon | discs, images, preservation | — | — |
 | macos intel | images | — | — |
 | android arm64 | in development | — | — |
@@ -39,7 +37,8 @@ also reports Windows playback with the ASUS drive.
 gdox reads game data from the disc or image while the emulator runs. saves and
 profiles persist; game contents are streamed. Xbox emulator scratch remains
 transient. Dolphin retains its settings, saves and shader caches. See
-[GameCube playback](docs/gamecube-live.md) for the exact supported reader and limits.
+[GameCube playback](docs/gamecube-live.md) and [Wii playback](docs/wii-live.md)
+for supported discs and reader limits. Wii support is single-layer only.
 
 [contributing](CONTRIBUTING.md) /
 [status](docs/STATUS.md) /

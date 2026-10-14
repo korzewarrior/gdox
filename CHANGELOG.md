@@ -1,9 +1,8 @@
 # changes
 
-## unreleased
+## 0.4.0
 
-- add Linux single-layer Wii disc playback with the GP63EX70 RF02 reader
-- validate Wii partition bounds and keep the larger disc stream in RAM
+- add single-layer Wii disc playback on Linux with the LG GP63EX70 RF02
 
 ## 0.3.0
 

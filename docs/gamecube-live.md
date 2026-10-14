@@ -3,8 +3,8 @@
 GDOX includes Dolphin for GameCube playback on Linux x64. The supported reader
 profile is the LG GP63EX70 with RF02 firmware (USB ID `0e8d:1887`). Other DVD
 drives and firmware revisions are not interchangeable with this profile.
-Windows and macOS GameCube playback, Wii discs, and remote-drive playback are
-not part of this release.
+Windows and macOS GameCube playback and remote-drive playback are not supported.
+For Wii discs, see [Wii playback](wii-live.md).
 
 Insert a GameCube disc, select the supported drive in GDOX, and choose
 **Start Dolphin**. Auto start on insert also works. No separate Dolphin

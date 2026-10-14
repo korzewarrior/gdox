@@ -21,9 +21,9 @@ instead of starting an incomplete session. without the included bridge or
 SteamOS FUSE support, all
 xbox 360 playback is unavailable, including owned images.
 
-the included Dolphin runtime supports the Linux GameCube reader for the exact
-GP63EX70 RF02 drive. physical GameCube playback has been validated on a Linux
-desktop; Steam Deck hardware validation is still pending. GameCube does not
+gamecube and single-layer wii discs use the GP63EX70 RF02 reader. playback has
+been tested on a Linux desktop; Steam Deck hardware validation is still
+pending. GameCube and Wii do not
 need Xbox firmware or a stored game image. Dolphin's Controllers and Graphics
 windows configure its input and display settings.
 
