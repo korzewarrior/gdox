@@ -6,6 +6,7 @@
 
 static struct {
     uint8_t header[GDOX_LOGICAL_SECTOR_BYTES];
+    bool wii;
     bool read_fails;
     bool restore_fails;
     unsigned closes;
@@ -21,7 +22,7 @@ static struct {
 static uint64_t source_sectors(const void *context)
 {
     (void)context;
-    return GDOX_GAMECUBE_TOTAL_SECTORS;
+    return fixture.wii ? GDOX_WII_SL_TOTAL_SECTORS : GDOX_GAMECUBE_TOTAL_SECTORS;
 }
 
 static bool source_read(void *context, uint64_t lba, uint32_t blocks,
@@ -76,12 +77,12 @@ bool __wrap_gdox_optical_open_device_media(const gdox_optical_device *device,
     source->context = &fixture;
     source->ops = &source_ops;
     memset(info, 0, sizeof(*info));
-    info->profile = GDOX_OPTICAL_MEDIA_GAMECUBE;
+    info->profile = fixture.wii ? GDOX_OPTICAL_MEDIA_WII : GDOX_OPTICAL_MEDIA_GAMECUBE;
     gdox_error_clear(error);
     return true;
 }
 
-static bool test_physical_gamecube(void)
+static bool test_physical_nintendo(bool wii)
 {
     for (unsigned scenario = 0U; scenario < 6U; ++scenario) {
         gdox_runtime_media_session session = {0};
@@ -89,14 +90,16 @@ static bool test_physical_gamecube(void)
         gdox_optical_device device = {0};
         gdox_error error;
         memset(&fixture, 0, sizeof(fixture));
-        memcpy(fixture.header + 0x1cU, "\xc2\x33\x9f\x3d", 4U);
+        fixture.wii = wii;
+        const size_t magic = wii ? 0x18U : 0x1cU;
+        memcpy(fixture.header + magic, wii ? "\x5d\x1c\x9e\xa3" : "\xc2\x33\x9f\x3d", 4U);
         memcpy(fixture.header + 0x20U, "Test title", 11U);
-        if (scenario == 1U) fixture.header[0x1cU] = 0U;
+        if (scenario == 1U) fixture.header[magic] = 0U;
         if (scenario == 2U) fixture.read_fails = true;
         if (scenario == 3U) memset(fixture.header + 0x20U, 0xff, 0x3e0U);
         if (scenario == 4U) fixture.header[0x20U] = 0U;
         if (scenario == 5U) {
-            fixture.header[0x1cU] = 0U;
+            fixture.header[magic] = 0U;
             fixture.restore_fails = true;
         }
         const bool opened = gdox_runtime_media_open_physical(&device, &session, &result, &error);
@@ -107,9 +110,9 @@ static bool test_physical_gamecube(void)
         } else {
             CHECK(opened && session.open && session.exported != NULL);
             CHECK(session.info.source == GDOX_MEDIA_PHYSICAL_DISC);
-            CHECK(session.info.platform == GDOX_MEDIA_PLATFORM_GAMECUBE);
+            CHECK(session.info.platform == (wii ? GDOX_MEDIA_PLATFORM_WII : GDOX_MEDIA_PLATFORM_GAMECUBE));
             CHECK(session.info.backend == GDOX_MEDIA_BACKEND_DOLPHIN);
-            CHECK(session.info.source_sectors == GDOX_GAMECUBE_TOTAL_SECTORS);
+            CHECK(session.info.source_sectors == (wii ? GDOX_WII_SL_TOTAL_SECTORS : GDOX_GAMECUBE_TOTAL_SECTORS));
             CHECK(session.image_path[0] == '\0');
             if (scenario == 0U) CHECK(strcmp(session.info.title, "Test title") == 0);
             if (scenario == 3U) {
@@ -117,7 +120,7 @@ static bool test_physical_gamecube(void)
                 for (size_t index = 0U; index < strlen(session.info.title); ++index)
                     CHECK(session.info.title[index] == '?');
             }
-            if (scenario == 4U) CHECK(strcmp(session.info.title, "GameCube disc") == 0);
+            if (scenario == 4U) CHECK(strcmp(session.info.title, wii ? "Wii disc" : "GameCube disc") == 0);
         }
         if (scenario == 5U) {
             CHECK(fixture.closes == 0U);
@@ -134,5 +137,5 @@ static bool test_physical_gamecube(void)
 
 int main(void)
 {
-    return test_physical_gamecube() ? 0 : 1;
+    return test_physical_nintendo(false) && test_physical_nintendo(true) ? 0 : 1;
 }

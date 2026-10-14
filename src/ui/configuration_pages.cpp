@@ -259,11 +259,11 @@ void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
 
     ImGui::TextUnformatted("Playback display");
     ImGui::Separator();
-    const bool gamecube = snapshot.media_platform == GDOX_MEDIA_PLATFORM_GAMECUBE;
-    if (gamecube) {
-        ImGui::TextWrapped("Use Dolphin's Controllers and Graphics menus in the game window to configure GameCube playback. Existing controller mappings are kept.");
+    const bool dolphin = snapshot.media_backend == GDOX_MEDIA_BACKEND_DOLPHIN;
+    if (dolphin) {
+        ImGui::TextWrapped("Use Controllers and Graphics in the game window.");
     }
-    ImGui::BeginDisabled(gamecube);
+    ImGui::BeginDisabled(dolphin);
     ImGui::SetNextItemWidth(250.0F);
     ImGui::BeginDisabled(handheld);
     if (ImGui::Combo(
@@ -378,10 +378,9 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
         "Physical discs remain the default and are never replaced automatically."
     );
     source_actions_spacing();
-    if (snapshot.media_platform == GDOX_MEDIA_PLATFORM_GAMECUBE) {
-        path_row("dolphin", "Included Dolphin executable", snapshot.dolphin_executable, "Not available");
+    if (snapshot.media_backend == GDOX_MEDIA_BACKEND_DOLPHIN) {
+        path_row("dolphin", "Dolphin executable", snapshot.dolphin_executable, "Not available");
         ImGui::TextWrapped("%s", snapshot.dolphin_setup);
-        ImGui::TextWrapped("GameCube runs directly from a supported physical disc. Dolphin keeps saves, controller settings and shader caches in GDOX's private user data.");
         source_actions_spacing();
     }
     if (snapshot.media_platform == GDOX_MEDIA_PLATFORM_XBOX_360) {

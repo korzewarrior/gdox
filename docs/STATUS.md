@@ -2,6 +2,14 @@
 
 this page records physical validation and exact drive support.
 
+## unreleased Wii support
+
+The GP63EX70 RF02 Linux reader accepts single-layer Wii discs. Twilight Princess
+(`RZDE01`, revision 2) reads through the final sector, boots, creates a save,
+and reaches the new-game opening through the GDOX disc bridge. Automated
+input uses an emulated Wii Remote and Nunchuk. See [Wii playback](wii-live.md)
+for current limits.
+
 ## current systems
 
 original Xbox, Xbox 360 and Linux GameCube direct-disc playback are supported. the exact Xbox 360 platform, drive,

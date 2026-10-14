@@ -53,6 +53,7 @@ RUNTIME_TARGETS = {
 }
 DOCUMENTS = (
     "gamecube-live.md",
+    "wii-live.md",
     "ASUS_NR09.md",
     "PRESERVATION.md",
     "SAFETY.md",

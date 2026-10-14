@@ -4,7 +4,7 @@
 static bool unavailable(gdox_error *error)
 {
     gdox_error_set(error, GDOX_ERROR_UNSUPPORTED,
-        "Live GameCube playback currently requires Linux and a supported LG GP63EX70 RF02 drive");
+        "Live GameCube or Wii playback currently requires Linux and a supported LG GP63EX70 RF02 drive");
     return false;
 }
 bool gdox_dolphin_resolve(gdox_dolphin_runtime *runtime, gdox_error *error)

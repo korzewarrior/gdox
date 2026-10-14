@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject code and public content outside the Xbox and GameCube release scope."""
+"""Reject code and public content outside the supported release scope."""
 
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ def main() -> int:
         for failure in failures:
             print(f"Release scope audit: {failure}", file=sys.stderr)
         return 1
-    print("Xbox and GameCube release scope is clean.")
+    print("Release scope is clean.")
     return 0
 
 

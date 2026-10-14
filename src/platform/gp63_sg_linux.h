@@ -13,7 +13,7 @@
  * Opens the SCSI generic character device bound to the uniquely identified
  * Linux optical block device for an
  * HL-DT-ST DVDRAM GP63EX70 RF02 behind USB 0e8d:1887.
- * The returned SG_IO transport admits only the audited GameCube data-in
+ * The returned SG_IO transport admits only the audited GameCube and Wii data-in
  * packets, one START packet, and four L259 volatile admission fields;
  * data-out commands, other RAM writes, and resets are rejected.
  */

@@ -8,6 +8,9 @@ images from original Xbox discs.
 [user guide](docs/USER_GUIDE.md) /
 [supported drives](https://gdox.korze.org/drives/)
 
+This branch adds experimental [Wii disc playback](docs/wii-live.md) on Linux.
+It is not yet in a published release.
+
 ## support
 
 | platform | original Xbox | Xbox 360 | GameCube |

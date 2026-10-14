@@ -64,7 +64,8 @@ bool gdox_runtime_apply_media_open_result(
             && info->backend == GDOX_MEDIA_BACKEND_XEMU)
         || (info->platform == GDOX_MEDIA_PLATFORM_XBOX_360
             && info->backend == GDOX_MEDIA_BACKEND_XENIA)
-        || (info->platform == GDOX_MEDIA_PLATFORM_GAMECUBE
+        || ((info->platform == GDOX_MEDIA_PLATFORM_GAMECUBE
+                || info->platform == GDOX_MEDIA_PLATFORM_WII)
             && info->backend == GDOX_MEDIA_BACKEND_DOLPHIN);
     if (!valid_identity) {
         return false;
@@ -94,7 +95,8 @@ void gdox_runtime_mark_drive_unavailable(
                 && snapshot->media_backend == GDOX_MEDIA_BACKEND_XEMU)
             || (snapshot->media_platform == GDOX_MEDIA_PLATFORM_XBOX_360
                 && snapshot->media_backend == GDOX_MEDIA_BACKEND_XENIA)
-            || (snapshot->media_platform == GDOX_MEDIA_PLATFORM_GAMECUBE
+            || ((snapshot->media_platform == GDOX_MEDIA_PLATFORM_GAMECUBE
+                    || snapshot->media_platform == GDOX_MEDIA_PLATFORM_WII)
                 && snapshot->media_backend == GDOX_MEDIA_BACKEND_DOLPHIN));
 
     if (snapshot == NULL) {

@@ -8,7 +8,7 @@ bool gdox_runtime_dolphin_prepare(gdox_runtime *runtime, gdox_runtime_snapshot *
     gdox_error_clear(error);
     if (runtime == NULL || snapshot == NULL || !runtime->media.open
         || runtime->media.info.backend != GDOX_MEDIA_BACKEND_DOLPHIN) {
-        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "An open GameCube disc is required");
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "An open GameCube or Wii disc is required");
         return false;
     }
     snapshot->dolphin_ready = false;
@@ -33,7 +33,7 @@ bool gdox_runtime_dolphin_start(gdox_runtime *runtime, gdox_error *error)
     if (runtime == NULL || runtime->dolphin != NULL || !runtime->media.open
         || runtime->media.info.backend != GDOX_MEDIA_BACKEND_DOLPHIN
         || runtime->media.exported == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "A ready live GameCube session is required");
+        gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "A ready live GameCube or Wii session is required");
         return false;
     }
     if (!gdox_mutex_lock(&runtime->mutex)) {

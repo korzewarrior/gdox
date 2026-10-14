@@ -61,7 +61,9 @@ void draw_details(const gdox_app_snapshot &snapshot)
             snapshot.media_platform == GDOX_MEDIA_PLATFORM_XBOX_360
                 ? "Xbox 360"
                 : snapshot.media_platform == GDOX_MEDIA_PLATFORM_GAMECUBE
-                    ? "Nintendo GameCube" : "Original Xbox"
+                    ? "Nintendo GameCube"
+                    : snapshot.media_platform == GDOX_MEDIA_PLATFORM_WII
+                        ? "Nintendo Wii" : "Original Xbox"
         );
     }
     if (snapshot.media_source == GDOX_MEDIA_DISC_IMAGE) {
