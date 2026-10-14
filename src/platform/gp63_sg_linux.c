@@ -372,7 +372,7 @@ bool gdox_gp63_sg_linux_command_allowed(
         if (cdb[1] == 1U) {
             return !data_in && data_bytes == 0U && cdb[6] == 0U
                 && (!ready || cdb[9] <= 1U)
-                && (cdb[5] != 0x38U || cdb[9] <= 0x0dU);
+                && (cdb[5] != 0x38U || cdb[9] <= 0x26U);
         }
         return false;
     }
@@ -380,7 +380,7 @@ bool gdox_gp63_sg_linux_command_allowed(
         if (cdb_bytes == 10U && cdb[0] == 0x2bU && cdb[1] == 0U
             && memcmp(cdb + 6U, (uint8_t[4]){0}, 4U) == 0) {
             const uint32_t lba = read_be_u32(cdb + 2U);
-            return lba < UINT32_C(712880) && lba % 16U == 0U
+            return lba < GDOX_WII_SL_TOTAL_SECTORS && lba % 16U == 0U
                 && data_bytes == 0U && timeout_ms == UINT32_C(30000);
         }
         return cdb != NULL
@@ -408,7 +408,7 @@ bool gdox_gp63_sg_linux_command_allowed(
     if (cdb_bytes == 12U && cdb[0] == 0xa8U && cdb[1] == 0U
         && read_be_u32(cdb + 6U) == 1U && cdb[10] == 0x80U && cdb[11] == 0U) {
         const uint32_t lba = read_be_u32(cdb + 2U);
-        return lba < UINT32_C(712880) && lba % 16U == 0U
+        return lba < GDOX_WII_SL_TOTAL_SECTORS && lba % 16U == 0U
             && data_bytes == 2048U && timeout_ms == UINT32_C(30000);
     }
     if (cdb_bytes == 12U
@@ -614,7 +614,7 @@ static bool command_in(
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
-            "the GP63 GameCube SG_IO transport rejected an unrecognized data-in command"
+            "the GP63 Nintendo SG_IO transport rejected an unrecognized data-in command"
         );
         return false;
     }
@@ -655,7 +655,7 @@ static bool command_out(
     gdox_error_set(
         error,
         GDOX_ERROR_UNSUPPORTED,
-        "the GP63 GameCube SG_IO transport is read-only"
+        "the GP63 Nintendo SG_IO transport is read-only"
     );
     return false;
 }
@@ -682,7 +682,7 @@ static bool command_none(
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
-            "the GP63 GameCube SG_IO transport rejected an unrecognized no-data command"
+            "the GP63 Nintendo SG_IO transport rejected an unrecognized no-data command"
         );
         return false;
     }
@@ -706,7 +706,7 @@ static bool reset(void *raw_context, gdox_error *error)
     gdox_error_set(
         error,
         GDOX_ERROR_UNSUPPORTED,
-        "the GP63 GameCube SG_IO transport cannot reset the drive"
+        "the GP63 Nintendo SG_IO transport cannot reset the drive"
     );
     return false;
 }

@@ -6,6 +6,7 @@
 #include "platform/mt1887_source.h"
 #if defined(GDOX_HAS_LINUX_SG) && GDOX_HAS_LINUX_SG
 #include "platform/gp63_gamecube_device.h"
+#include "platform/gp63_gamecube_source.h"
 #endif
 
 #include <stdio.h>
@@ -176,7 +177,7 @@ static bool open_selected_media(
         bool candidate = false;
         if (!gdox_gp63_gamecube_open_selected(device, source, &candidate, error)) return false;
         if (candidate) {
-            info->profile = GDOX_OPTICAL_MEDIA_GAMECUBE;
+            info->profile = gdox_gp63_gamecube_source_profile(source);
             info->game_partition_lba = 0U;
             return true;
         }

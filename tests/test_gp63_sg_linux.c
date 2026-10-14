@@ -49,7 +49,18 @@ static void test_fixed_commands(void)
     CHECK(gdox_gp63_sg_linux_command_allowed(seek, sizeof(seek), false, 0U, 30000U));
     seek[5] = 1U;
     CHECK(!gdox_gp63_sg_linux_command_allowed(seek, sizeof(seek), false, 0U, 30000U));
-    put_be_u32(seek + 2U, 712880U);
+    put_be_u32(seek + 2U, (uint32_t)GDOX_WII_SL_TOTAL_SECTORS - 16U);
+    CHECK(gdox_gp63_sg_linux_command_allowed(seek, sizeof(seek), false, 0U, 30000U));
+    uint8_t read[12] = {0xa8U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 1U, 0x80U};
+    put_be_u32(read + 2U, (uint32_t)GDOX_WII_SL_TOTAL_SECTORS - 16U);
+    CHECK(gdox_gp63_sg_linux_command_allowed(read, sizeof(read), true, 2048U, 30000U));
+    put_be_u32(read + 2U, (uint32_t)GDOX_WII_SL_TOTAL_SECTORS);
+    CHECK(!gdox_gp63_sg_linux_command_allowed(read, sizeof(read), true, 2048U, 30000U));
+    uint8_t capacity[10] = {0xf1U, 1U, 0U, 0U, 0x85U, 0x38U, 0U, 0U, 0U, 0x26U};
+    CHECK(gdox_gp63_sg_linux_command_allowed(capacity, sizeof(capacity), false, 0U, 10000U));
+    capacity[9] = 0x27U;
+    CHECK(!gdox_gp63_sg_linux_command_allowed(capacity, sizeof(capacity), false, 0U, 10000U));
+    put_be_u32(seek + 2U, (uint32_t)GDOX_WII_SL_TOTAL_SECTORS);
     CHECK(!gdox_gp63_sg_linux_command_allowed(seek, sizeof(seek), false, 0U, 30000U));
     uint8_t inquiry[6] = {0x12U, 0U, 0U, 0U, 36U, 0U};
     uint8_t configuration[10] = {

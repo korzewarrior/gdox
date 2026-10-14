@@ -1,6 +1,6 @@
 # GDOX user guide
 
-This guide covers Original Xbox, Xbox 360, and Linux GameCube direct-disc playback.
+This guide covers Original Xbox, Xbox 360, and Linux GameCube and Wii direct-disc playback.
 The Xbox 360 path supports Windows
 x86-64, Linux x86-64, and Steam Deck. macOS and Android do not provide Xbox 360
 gameplay. The exact platform matrix is in `XBOX360.md`.
@@ -40,18 +40,20 @@ extension is installed.
 Open `gdox.exe`. GDOX uses Windows' standard optical-storage driver; do not
 replace it with WinUSB or install a third-party device driver.
 
-## GameCube on Linux
+## GameCube and Wii on Linux
 
-Use an LG GP63EX70 RF02 drive and insert a GameCube disc. GDOX opens the disc
-with its included Dolphin runtime; GameCube does not need Xbox firmware.
+Use an LG GP63EX70 RF02 drive and insert a GameCube or single-layer Wii disc.
+Select the drive and choose **Start Dolphin**.
 Use Dolphin's **Controllers** and **Graphics** menus in the game window. New
 profiles use Vulkan and hybrid shader compilation, so working Vulkan drivers
 are required initially. Existing Dolphin profiles are preserved.
 
+For Wii, configure a Wii Remote and any extension required by the game, such
+as the Nunchuk in Twilight Princess.
+
 Disc data is streamed through bounded RAM buffers. GDOX does not create a
-GameCube image or persistent disc-sector cache. Dolphin saves, settings and
-shader caches persist in GDOX's private user data. See `gamecube-live.md` for
-reader support, configuration and storage details.
+disc image or persistent disc-sector cache. Saves, settings and shader caches
+persist. See `gamecube-live.md` and `wii-live.md` for supported discs and limits.
 
 ## Choosing a drive
 

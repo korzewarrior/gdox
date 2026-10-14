@@ -370,19 +370,23 @@ bool gdox_runtime_media_open_physical(
         info.backend = GDOX_MEDIA_BACKEND_XEMU;
         info.source_sectors = live_info.input_sectors;
         (void)snprintf(info.title, sizeof(info.title), "%s", live_info.title);
-    } else if (optical.profile == GDOX_OPTICAL_MEDIA_GAMECUBE) {
+    } else if (optical.profile == GDOX_OPTICAL_MEDIA_GAMECUBE
+        || optical.profile == GDOX_OPTICAL_MEDIA_WII) {
+        const bool wii = optical.profile == GDOX_OPTICAL_MEDIA_WII;
         uint8_t header[0x400];
         size_t bytes = 0U;
         if (!gdox_disc_from_source(&whole, &disc, error)
             || !gdox_disc_read_at(&disc, 0U, header, sizeof(header), &bytes, error)) {
             goto cleanup;
         }
-        if (bytes != sizeof(header) || memcmp(header + 0x1cU, "\xc2\x33\x9f\x3d", 4U) != 0) {
+        if (bytes != sizeof(header)
+            || memcmp(header + (wii ? 0x18U : 0x1cU),
+                wii ? "\x5d\x1c\x9e\xa3" : "\xc2\x33\x9f\x3d", 4U) != 0) {
             gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME,
-                "GameCube disc header did not validate");
+                wii ? "Wii disc header did not validate" : "GameCube disc header did not validate");
             goto cleanup;
         }
-        info.platform = GDOX_MEDIA_PLATFORM_GAMECUBE;
+        info.platform = wii ? GDOX_MEDIA_PLATFORM_WII : GDOX_MEDIA_PLATFORM_GAMECUBE;
         info.backend = GDOX_MEDIA_BACKEND_DOLPHIN;
         size_t index = 0U;
         for (; index + 1U < sizeof(info.title) && index < 0x3e0U
@@ -392,7 +396,7 @@ bool gdox_runtime_media_open_physical(
         }
         info.title[index] = '\0';
         if (index == 0U) {
-            (void)snprintf(info.title, sizeof(info.title), "GameCube disc");
+            (void)snprintf(info.title, sizeof(info.title), "%s", wii ? "Wii disc" : "GameCube disc");
         }
     } else if (!xbox_360) {
         if (!gdox_error_is_set(error)) {

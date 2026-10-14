@@ -1,6 +1,8 @@
 #ifndef GDOX_GP63_GAMECUBE_SOURCE_H
 #define GDOX_GP63_GAMECUBE_SOURCE_H
 
+#include "gdox/optical.h"
+
 #include "gdox/error.h"
 #include "gdox/source.h"
 #include "platform/scsi_transport.h"
@@ -55,5 +57,8 @@ bool gdox_gp63_gamecube_stream_source_open(
     gdox_sector_source *source,
     gdox_error *error
 );
+
+/* The decoded header selects GameCube or a validated single-layer Wii layout. */
+gdox_optical_media_profile gdox_gp63_gamecube_source_profile(const gdox_sector_source *source);
 
 #endif

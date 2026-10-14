@@ -22,7 +22,8 @@ typedef enum gdox_media_platform {
     GDOX_MEDIA_PLATFORM_NONE = 0,
     GDOX_MEDIA_PLATFORM_XBOX,
     GDOX_MEDIA_PLATFORM_XBOX_360,
-    GDOX_MEDIA_PLATFORM_GAMECUBE
+    GDOX_MEDIA_PLATFORM_GAMECUBE,
+    GDOX_MEDIA_PLATFORM_WII
 } gdox_media_platform;
 
 typedef enum gdox_media_backend {

@@ -463,6 +463,20 @@ static void test_media_open_result_presentation(void)
         "reject inconsistent platform and backend identity"
     );
 
+    result.info.platform = GDOX_MEDIA_PLATFORM_WII;
+    result.info.backend = GDOX_MEDIA_BACKEND_DOLPHIN;
+    (void)snprintf(result.info.title, sizeof(result.info.title), "Wii title");
+    check(gdox_runtime_apply_media_open_result(&snapshot, &result),
+        "apply identified Wii media result");
+    gdox_runtime_mark_drive_unavailable(&snapshot, "Reconnect the drive");
+    check(snapshot.media_platform == GDOX_MEDIA_PLATFORM_WII
+        && snapshot.media_backend == GDOX_MEDIA_BACKEND_DOLPHIN
+        && strcmp(snapshot.disc, "Wii title") == 0,
+        "retain Wii identity across transient drive loss");
+    result.info.backend = GDOX_MEDIA_BACKEND_XEMU;
+    check(!gdox_runtime_apply_media_open_result(&snapshot, &result),
+        "reject Wii media paired with xemu");
+
     snapshot.physical_read_commands = 7U;
     snapshot.physical_read_sectors = 9U;
     snapshot.nbd_read_stats.requests = 11U;

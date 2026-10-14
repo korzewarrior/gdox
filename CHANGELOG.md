@@ -1,5 +1,9 @@
 # changes
 
+## 0.3.1
+
+- add single-layer Wii disc playback on Linux with the LG GP63EX70 RF02
+
 ## 0.3.0
 
 - add Linux GameCube playback directly from physical discs in an LG GP63EX70 RF02 drive

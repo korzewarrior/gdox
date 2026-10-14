@@ -38,6 +38,7 @@
 #define GDOX_GC_SEED_BITS 15U
 #define GDOX_GC_EDC_BITS 32U
 #define GDOX_GC_MAGIC UINT32_C(0xc2339f3d)
+#define GDOX_WII_MAGIC UINT32_C(0x5d1c9ea3)
 #define GDOX_GC_BUFFER_BLOCKS 512U
 #define GDOX_GC_STREAMS 4U
 #define GDOX_GC_READAHEAD_SECTORS 1024U
@@ -60,6 +61,8 @@ typedef struct gdox_gc_identity {
 
 typedef struct gdox_gc_context {
     gdox_scsi_transport transport;
+    uint32_t sector_count;
+    gdox_optical_media_profile profile;
     gdox_mutex mutex;
     gdox_mutex cache_mutex;
     pthread_cond_t work_ready;
@@ -417,7 +420,7 @@ static bool decode_block(
             gdox_error_set(
                 error,
                 GDOX_ERROR_INVALID_SOURCE,
-                "GP63 cache did not contain the requested GameCube sector sequence"
+                "GP63 cache did not contain the requested Nintendo sector sequence"
             );
             return false;
         }
@@ -428,8 +431,8 @@ static bool decode_block(
             error,
             GDOX_ERROR_INVALID_SOURCE,
             solution == GDOX_GC_SEED_SOLUTION_INCONSISTENT
-                ? "GP63 cache frame has no valid GameCube scrambling seed"
-                : "GP63 cache frame has an ambiguous GameCube scrambling seed"
+                ? "GP63 cache frame has no valid Nintendo scrambling seed"
+                : "GP63 cache frame has an ambiguous Nintendo scrambling seed"
         );
         return false;
     }
@@ -443,14 +446,14 @@ static bool decode_block(
         gdox_error_set(
             error,
             GDOX_ERROR_INVALID_SOURCE,
-            "GP63 cache block failed GameCube EDC validation"
+            "GP63 cache block failed Nintendo EDC validation"
         );
         return false;
     }
     return true;
 }
 
-/* Fixed eight-MiB RAM buffer with LRU replacement. The RAM lock is never
+/* Fixed sixteen-MiB RAM buffer with LRU replacement. The RAM lock is never
  * held during drive I/O, so buffered reads can finish while read-ahead runs. */
 static size_t decoded_slot_locked(const gdox_gc_context *context, size_t block_index)
 {
@@ -505,7 +508,7 @@ static bool load_decoded_block(gdox_gc_context *context, size_t block_index, gdo
 {
     if (copy_decoded(context, block_index, 0U, GDOX_GC_LOGICAL_BLOCK_BYTES,
             context->decode_buffer)) return true;
-    gdox_error_set(error, GDOX_ERROR_INTERNAL, "GameCube RAM buffer does not cover the requested block");
+    gdox_error_set(error, GDOX_ERROR_INTERNAL, "Nintendo RAM buffer does not cover the requested block");
     return false;
 }
 
@@ -553,7 +556,7 @@ static bool read_method4_cache(
 
     if (!gdox_scsi_command_in(
             &context->transport,
-            "READ BUFFER (GameCube method-4 cache)",
+            "READ BUFFER (Nintendo method-4 cache)",
             cdb,
             sizeof(cdb),
             context->raw_cache,
@@ -568,7 +571,7 @@ static bool read_method4_cache(
         gdox_error_set(
             error,
             GDOX_ERROR_TRANSPORT,
-            "GameCube method-4 cache returned a short transfer"
+            "Nintendo method-4 cache returned a short transfer"
         );
         return false;
     }
@@ -702,8 +705,8 @@ static bool run_ready_cache_producer(
     uint32_t limit = lba;
     if (quality_scan) {
         limit = lba + 1024U;
-        if (limit >= GDOX_GAMECUBE_TOTAL_SECTORS) {
-            limit = GDOX_GAMECUBE_TOTAL_SECTORS - 1U;
+        if (limit >= context->sector_count) {
+            limit = context->sector_count - 1U;
         }
     }
     put_be_u24(desired, GDOX_GC_PHYSICAL_BASE + limit);
@@ -728,11 +731,11 @@ static bool run_ready_cache_producer(
         uint8_t counters[16];
         put_be_u32(seek + 2U, lba);
         success = gdox_scsi_command_none(
-            &context->transport, "RF02 GameCube scan seek", seek, sizeof(seek),
+            &context->transport, "RF02 Nintendo scan seek", seek, sizeof(seek),
             GDOX_GC_READ_TIMEOUT_MS, error);
         if (success) {
             success = gdox_scsi_command_in(
-                &context->transport, "RF02 GameCube quality scan", scan, sizeof(scan),
+                &context->transport, "RF02 Nintendo quality scan", scan, sizeof(scan),
                 counters, sizeof(counters), GDOX_GC_READ_TIMEOUT_MS, &transferred, error);
             if (success && transferred != 12U) {
                 gdox_error_set(error, GDOX_ERROR_PROTOCOL,
@@ -746,7 +749,7 @@ static bool run_ready_cache_producer(
         goto restore;
     }
     success = gdox_scsi_command_in(
-        &context->transport, "RF02 GameCube physical cache acquisition",
+        &context->transport, "RF02 Nintendo physical cache acquisition",
         cdb, sizeof(cdb), context->producer_buffer, GDOX_LOGICAL_SECTOR_BYTES,
         GDOX_GC_READ_TIMEOUT_MS, &transferred, error);
     if (!success && error->code == GDOX_ERROR_IO
@@ -797,7 +800,7 @@ static bool run_cache_producer(
     if ((uint64_t)lba
         + GDOX_GC_METHOD4_DISPLACEMENT_SECTORS
         + GDOX_GC_SECTORS_PER_BLOCK
-        <= GDOX_GAMECUBE_TOTAL_SECTORS) {
+        <= context->sector_count) {
         displacement_lba =
             lba + GDOX_GC_METHOD4_DISPLACEMENT_SECTORS;
     } else {
@@ -814,7 +817,7 @@ static bool run_cache_producer(
         gdox_error_set(
             error,
             GDOX_ERROR_IO,
-            "the consumed GameCube producer transaction has no validated coverage for this block"
+            "the consumed Nintendo producer transaction has no validated coverage for this block"
         );
         return false;
     }
@@ -822,7 +825,7 @@ static bool run_cache_producer(
     context->raw_cache_bytes = 0U;
     if (gdox_scsi_command_none(
             &context->transport,
-            "START STOP UNIT (GameCube method-4 producer)",
+            "START STOP UNIT (Nintendo method-4 producer)",
             start_cdb,
             sizeof(start_cdb),
             GDOX_GC_METHOD4_TIMEOUT_MS,
@@ -831,7 +834,7 @@ static bool run_cache_producer(
         gdox_error_set(
             error,
             GDOX_ERROR_PROTOCOL,
-            "GameCube method-4 START unexpectedly completed GOOD"
+            "Nintendo method-4 START unexpectedly completed GOOD"
         );
         return false;
     }
@@ -841,7 +844,7 @@ static bool run_cache_producer(
     context->producer_started = true;
     if (gdox_scsi_command_in(
             &context->transport,
-            "READ(12) FUA (GameCube method-4 displacement)",
+            "READ(12) FUA (Nintendo method-4 displacement)",
             displacement_cdb,
             sizeof(displacement_cdb),
             context->producer_buffer,
@@ -853,7 +856,7 @@ static bool run_cache_producer(
         gdox_error_set(
             error,
             GDOX_ERROR_PROTOCOL,
-            "GameCube method-4 displacement unexpectedly completed GOOD"
+            "Nintendo method-4 displacement unexpectedly completed GOOD"
         );
         return false;
     }
@@ -861,7 +864,7 @@ static bool run_cache_producer(
         gdox_error_set(
             error,
             GDOX_ERROR_PROTOCOL,
-            "GameCube method-4 displacement returned unexpected data"
+            "Nintendo method-4 displacement returned unexpected data"
         );
         return false;
     }
@@ -870,7 +873,7 @@ static bool run_cache_producer(
     }
     if (gdox_scsi_command_in(
             &context->transport,
-            "READ(12) STREAMING (GameCube method-4 target)",
+            "READ(12) STREAMING (Nintendo method-4 target)",
             streaming_cdb,
             sizeof(streaming_cdb),
             context->producer_buffer,
@@ -882,7 +885,7 @@ static bool run_cache_producer(
         gdox_error_set(
             error,
             GDOX_ERROR_PROTOCOL,
-            "GameCube method-4 STREAMING unexpectedly completed GOOD"
+            "Nintendo method-4 STREAMING unexpectedly completed GOOD"
         );
         return false;
     }
@@ -890,7 +893,7 @@ static bool run_cache_producer(
         gdox_error_set(
             error,
             GDOX_ERROR_PROTOCOL,
-            "GameCube method-4 STREAMING returned unexpected data"
+            "Nintendo method-4 STREAMING returned unexpected data"
         );
         return false;
     }
@@ -928,7 +931,7 @@ static bool read_raw_cache(
     put_be_u24(cdb + 6U, (uint32_t)output_bytes);
     if (!gdox_scsi_command_in(
             &context->transport,
-            "READ BUFFER (GP63 GameCube raw cache)",
+            "READ BUFFER (GP63 Nintendo raw cache)",
             cdb,
             sizeof(cdb),
             output,
@@ -981,7 +984,7 @@ static bool capture_full_raw_cache(
             gdox_error_set(
                 error,
                 GDOX_ERROR_CANCELLED,
-                "GameCube optical session was cancelled"
+                "Nintendo optical session was cancelled"
             );
             return false;
         }
@@ -1159,7 +1162,7 @@ static bool locate_and_decode_cached_block(
         gdox_error_set(
             error,
             GDOX_ERROR_IO,
-            "GP63 cache has no validated coverage for the requested GameCube block"
+            "GP63 cache has no validated coverage for the requested Nintendo block"
         );
         return false;
     }
@@ -1175,7 +1178,7 @@ static bool locate_and_decode_cached_block(
             gdox_error_set(
                 error,
                 GDOX_ERROR_CANCELLED,
-                "GameCube optical session was cancelled"
+                "Nintendo optical session was cancelled"
             );
             return false;
         }
@@ -1197,7 +1200,7 @@ static bool locate_and_decode_cached_block(
             const uint8_t *frame = context->raw_cache + record * GDOX_GC_CACHE_RECORD_BYTES;
             if (atomic_load_explicit(&context->abort, memory_order_acquire)) {
                 gdox_error_set(error, GDOX_ERROR_CANCELLED,
-                    "GameCube optical session was cancelled");
+                    "Nintendo optical session was cancelled");
                 return false;
             }
             if (frame_identity_matches(frame, lba + sector)) {
@@ -1238,7 +1241,7 @@ unavailable:
         gdox_error_set(
             error,
             GDOX_ERROR_IO,
-            "GP63 cache has no validated coverage for the requested GameCube block"
+            "GP63 cache has no validated coverage for the requested Nintendo block"
         );
     }
     return false;
@@ -1257,8 +1260,8 @@ static bool read_decoded_block(
     gdox_error last;
 
     if (lba % GDOX_GC_SECTORS_PER_BLOCK != 0U
-        || lba >= GDOX_GAMECUBE_TOTAL_SECTORS) {
-        gdox_error_set(error, GDOX_ERROR_OUT_OF_BOUNDS, "invalid aligned GameCube cache read");
+        || lba >= context->sector_count) {
+        gdox_error_set(error, GDOX_ERROR_OUT_OF_BOUNDS, "invalid aligned Nintendo cache read");
         return false;
     }
     if (decoded_block_is_valid(context, block_index)) {
@@ -1272,12 +1275,12 @@ static bool read_decoded_block(
         return false;
     }
     if (atomic_load_explicit(&context->abort, memory_order_acquire)) {
-        gdox_error_set(error, GDOX_ERROR_CANCELLED, "GameCube optical session was cancelled");
+        gdox_error_set(error, GDOX_ERROR_CANCELLED, "Nintendo optical session was cancelled");
         return false;
     }
     for (attempt = 0U; attempt < attempts; ++attempt) {
         if (atomic_load_explicit(&context->abort, memory_order_acquire)) {
-            gdox_error_set(error, GDOX_ERROR_CANCELLED, "GameCube optical session was cancelled");
+            gdox_error_set(error, GDOX_ERROR_CANCELLED, "Nintendo optical session was cancelled");
             return false;
         }
         /* Quality scanning can skip incomplete physical coverage. A final
@@ -1302,7 +1305,7 @@ static bool read_decoded_block(
         }
     }
     char message[GDOX_ERROR_MESSAGE_CAPACITY];
-    (void)snprintf(message, sizeof(message), "GameCube block LBA %u: %.300s",
+    (void)snprintf(message, sizeof(message), "Nintendo block LBA %u: %.300s",
         (unsigned)lba, last.message);
     gdox_error_set(error, last.code, message);
     return false;
@@ -1310,8 +1313,8 @@ static bool read_decoded_block(
 
 static uint64_t gc_sector_count(const void *raw_context)
 {
-    (void)raw_context;
-    return GDOX_GAMECUBE_TOTAL_SECTORS;
+    const gdox_gc_context *context = raw_context;
+    return context->sector_count;
 }
 
 static void schedule_readahead(gdox_gc_context *context, uint32_t lba, uint32_t blocks)
@@ -1354,7 +1357,7 @@ static void schedule_readahead(gdox_gc_context *context, uint32_t lba, uint32_t 
     if (next >= stream->retry_after) stream->retry_after = 0U;
     stream->end = sequential && stream->retry_after == 0U
         ? next + GDOX_GC_READAHEAD_SECTORS : stream->next;
-    if (stream->end > GDOX_GAMECUBE_TOTAL_SECTORS) stream->end = GDOX_GAMECUBE_TOTAL_SECTORS;
+    if (stream->end > context->sector_count) stream->end = context->sector_count;
     stream->used = ++context->use_counter;
     stream->valid = true;
     ++stream->generation;
@@ -1395,7 +1398,7 @@ static void *readahead_worker(void *raw_context)
         gdox_error error;
         const bool success = read_decoded_block(context, lba, true, &error);
         if (!success && atomic_load(&context->poisoned)) {
-            (void)fprintf(stderr, "GDOX: GameCube read-ahead stopped at sector %u: %s\n",
+            (void)fprintf(stderr, "GDOX: Nintendo read-ahead stopped at sector %u: %s\n",
                 lba, error.message);
         }
         /* Speculation never uses the slow normal-read recovery. A rejected
@@ -1403,7 +1406,7 @@ static void *readahead_worker(void *raw_context)
         if (!success && error.code != GDOX_ERROR_INVALID_SOURCE
             && error.code != GDOX_ERROR_IO && error.code != GDOX_ERROR_CANCELLED) {
             atomic_store(&context->poisoned, true);
-            (void)fprintf(stderr, "GDOX: GameCube transport failed at sector %u: %s\n",
+            (void)fprintf(stderr, "GDOX: Nintendo transport failed at sector %u: %s\n",
                 lba, error.message);
         }
         gdox_mutex_unlock(&context->mutex);
@@ -1424,11 +1427,11 @@ static void *readahead_worker(void *raw_context)
 static bool session_readable(gdox_gc_context *context, gdox_error *error)
 {
     if (atomic_load(&context->abort)) {
-        gdox_error_set(error, GDOX_ERROR_CANCELLED, "GameCube optical session was cancelled");
+        gdox_error_set(error, GDOX_ERROR_CANCELLED, "Nintendo optical session was cancelled");
         return false;
     }
     if (atomic_load(&context->poisoned) || !atomic_load(&context->session_present)) {
-        gdox_error_set(error, GDOX_ERROR_TRANSPORT, "GameCube optical session is unavailable");
+        gdox_error_set(error, GDOX_ERROR_TRANSPORT, "Nintendo optical session is unavailable");
         return false;
     }
     return true;
@@ -1444,7 +1447,7 @@ static bool gc_read(
     uint32_t remaining = blocks;
     size_t output_offset = 0U;
     bool success = true;
-    if (!gdox_source_validate_read(GDOX_GAMECUBE_TOTAL_SECTORS,
+    if (!gdox_source_validate_read(context->sector_count,
             lba, blocks, output_bytes, error)) return false;
     atomic_fetch_add(&context->demand_reads, 1U);
     while (remaining != 0U) {
@@ -1505,7 +1508,7 @@ static bool gc_prepare_close(void *raw_context, gdox_error *error)
     gc_abort(context);
     if (context->worker_started) {
         if (pthread_join(context->worker, NULL) != 0) {
-            gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not drain GameCube reads");
+            gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not drain Nintendo reads");
             return false;
         }
         context->worker_started = false;
@@ -1560,6 +1563,90 @@ static void destroy_failed_open(gdox_gc_context *context, gdox_sector_source *so
     free(context);
 }
 
+static bool read_wii_metadata(gdox_gc_context *context, uint64_t offset,
+    uint8_t *output, size_t bytes, gdox_error *error)
+{
+    const uint64_t length = (uint64_t)context->sector_count * GDOX_LOGICAL_SECTOR_BYTES;
+    if (offset > length || bytes > length - offset) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME, "Wii metadata is outside the disc");
+        return false;
+    }
+    while (bytes != 0U) {
+        const size_t block = (size_t)(offset / GDOX_GC_LOGICAL_BLOCK_BYTES);
+        const size_t within = (size_t)(offset % GDOX_GC_LOGICAL_BLOCK_BYTES);
+        const size_t available = GDOX_GC_LOGICAL_BLOCK_BYTES - within;
+        const size_t count = bytes < available ? bytes : available;
+        if (!read_decoded_block(context, (uint32_t)block * GDOX_GC_SECTORS_PER_BLOCK,
+                false, error)) return false;
+        if (!copy_decoded(context, block, within, count, output)) {
+            gdox_error_set(error, GDOX_ERROR_INTERNAL, "Wii metadata buffer is unavailable");
+            return false;
+        }
+        offset += count;
+        output += count;
+        bytes -= count;
+    }
+    return true;
+}
+
+static bool validate_wii_layout(gdox_gc_context *context, gdox_error *error)
+{
+    uint8_t groups[32];
+    uint8_t entries[32 * 8];
+    uint8_t header[0x2c0];
+    bool game = false;
+    const uint64_t length = GDOX_WII_SL_TOTAL_SECTORS * GDOX_LOGICAL_SECTOR_BYTES;
+    if (!read_wii_metadata(context, UINT64_C(0x40000), groups, sizeof(groups), error))
+        return false;
+    for (size_t group = 0U; group < 4U; ++group) {
+        const uint32_t count = read_be_u32(groups + group * 8U);
+        const uint64_t table = (uint64_t)read_be_u32(groups + group * 8U + 4U) * 4U;
+        if (count == 0U) continue;
+        /* Retail tables live before the first partition. Bound the number of
+         * reads and reject invalid metadata before following disc offsets. */
+        if (count > 32U || table < UINT64_C(0x40020)
+            || table > UINT64_C(0x50000) - (uint64_t)count * 8U) {
+            gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME, "Invalid Wii partition table");
+            return false;
+        }
+        if (!read_wii_metadata(context, table, entries, (size_t)count * 8U, error))
+            return false;
+        for (uint32_t i = 0U; i < count; ++i) {
+            const uint64_t offset = (uint64_t)read_be_u32(entries + i * 8U) * 4U;
+            const uint32_t type = read_be_u32(entries + i * 8U + 4U);
+            if (offset < UINT64_C(0x50000) || offset % UINT64_C(0x8000) != 0U) {
+                gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME, "Invalid Wii partition offset");
+                return false;
+            }
+            if (offset > length - sizeof(header)) {
+                gdox_error_set(error, GDOX_ERROR_UNSUPPORTED,
+                    "Wii dual-layer discs are not supported by this reader");
+                return false;
+            }
+            if (!read_wii_metadata(context, offset, header, sizeof(header), error))
+                return false;
+            const uint64_t data = (uint64_t)read_be_u32(header + 0x2b8U) * 4U;
+            const uint64_t size = (uint64_t)read_be_u32(header + 0x2bcU) * 4U;
+            if (data < UINT64_C(0x20000) || data % UINT64_C(0x8000) != 0U
+                || size == 0U || size % UINT64_C(0x8000) != 0U) {
+                gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME, "Invalid Wii partition size");
+                return false;
+            }
+            if (data > length - offset || size > length - offset - data) {
+                gdox_error_set(error, GDOX_ERROR_UNSUPPORTED,
+                    "Wii dual-layer discs are not supported by this reader");
+                return false;
+            }
+            game = game || type == 0U;
+        }
+    }
+    if (!game) {
+        gdox_error_set(error, GDOX_ERROR_INVALID_VOLUME, "Wii disc has no game partition");
+        return false;
+    }
+    return true;
+}
+
 static bool open_gamecube_source(
     gdox_gp63_gamecube_transport_opener opener,
     void *opener_context,
@@ -1581,19 +1668,21 @@ static bool open_gamecube_source(
         gdox_error_set(
             error,
             GDOX_ERROR_INVALID_ARGUMENT,
-            "a GP63 GameCube transport opener and empty source are required"
+            "a GP63 Nintendo transport opener and empty source are required"
         );
         return false;
     }
     context = calloc(1U, sizeof(*context));
     if (context == NULL) {
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate GameCube optical source");
+        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate Nintendo optical source");
         return false;
     }
     atomic_init(&context->abort, false);
     atomic_init(&context->poisoned, false);
     atomic_init(&context->session_present, false);
     atomic_init(&context->demand_reads, 0U);
+    context->sector_count = (uint32_t)GDOX_GAMECUBE_TOTAL_SECTORS;
+    context->profile = GDOX_OPTICAL_MEDIA_GAMECUBE;
     context->ready_gate = ready_gate;
     context->quality_scan = quality_scan;
     (void)read_retries;
@@ -1603,7 +1692,7 @@ static bool open_gamecube_source(
         free(context->decoded_cache);
         free(context->raw_cache);
         free(context);
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate GameCube RAM read buffers");
+        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not allocate Nintendo RAM read buffers");
         return false;
     }
     initialize_edc_table(context->edc_table);
@@ -1611,19 +1700,19 @@ static bool open_gamecube_source(
         free(context->decoded_cache);
         free(context->raw_cache);
         free(context);
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not initialize GameCube source lock");
+        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not initialize Nintendo source lock");
         return false;
     }
     if (!gdox_mutex_init(&context->cache_mutex)) {
         gdox_mutex_destroy(&context->mutex);
         free(context->decoded_cache); free(context->raw_cache); free(context);
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not initialize GameCube RAM lock");
+        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not initialize Nintendo RAM lock");
         return false;
     }
     if (pthread_cond_init(&context->work_ready, NULL) != 0) {
         gdox_mutex_destroy(&context->cache_mutex); gdox_mutex_destroy(&context->mutex);
         free(context->decoded_cache); free(context->raw_cache); free(context);
-        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not initialize GameCube read-ahead signal");
+        gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not initialize Nintendo read-ahead signal");
         return false;
     }
     if (!opener(opener_context, &context->transport, error)
@@ -1652,12 +1741,19 @@ static bool open_gamecube_source(
         destroy_failed_open(context, source);
         return false;
     }
-    if (read_be_u32(context->decode_buffer + 0x1cU)
-        != GDOX_GC_MAGIC) {
+    if (read_be_u32(context->decode_buffer + 0x18U) == GDOX_WII_MAGIC
+        && read_be_u32(context->decode_buffer + 0x1cU) == 0U) {
+        context->sector_count = (uint32_t)GDOX_WII_SL_TOTAL_SECTORS;
+        context->profile = GDOX_OPTICAL_MEDIA_WII;
+        if (!validate_wii_layout(context, error)) {
+            destroy_failed_open(context, source);
+            return false;
+        }
+    } else if (read_be_u32(context->decode_buffer + 0x1cU) != GDOX_GC_MAGIC) {
         gdox_error_set(
             error,
             GDOX_ERROR_UNSUPPORTED,
-            "profile-zero media did not contain the GameCube disc magic"
+            "profile-zero media did not contain a GameCube or Wii disc header"
         );
         destroy_failed_open(context, source);
         return false;
@@ -1665,7 +1761,7 @@ static bool open_gamecube_source(
     context->session_present = true;
     if (readahead) {
         if (pthread_create(&context->worker, NULL, readahead_worker, context) != 0) {
-            gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not start GameCube read-ahead worker");
+            gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not start Nintendo read-ahead worker");
             destroy_failed_open(context, source);
             return false;
         }
@@ -1684,6 +1780,14 @@ bool gdox_gp63_gamecube_source_open(
 {
     return open_gamecube_source(opener, opener_context, read_retries,
         ready_timeout_ms, false, false, false, source, error);
+}
+
+gdox_optical_media_profile gdox_gp63_gamecube_source_profile(const gdox_sector_source *source)
+{
+    if (source == NULL || source->ops != &gc_source_ops || source->context == NULL)
+        return GDOX_OPTICAL_MEDIA_UNKNOWN;
+    const gdox_gc_context *context = source->context;
+    return context->profile;
 }
 
 bool gdox_gp63_gamecube_ready_source_open(

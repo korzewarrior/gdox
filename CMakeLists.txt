@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.25)
 
 project(
     gdox
-    VERSION 0.3.0
-    DESCRIPTION "Play supported Xbox and GameCube discs directly from optical drives"
+    VERSION 0.3.1
+    DESCRIPTION "Play supported Xbox, GameCube and Wii discs directly from optical drives"
     LANGUAGES C CXX
 )
 
@@ -19,7 +19,7 @@ set(GDOX_GAMECUBE_DEFAULT OFF)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
     set(GDOX_GAMECUBE_DEFAULT ON)
 endif()
-option(GDOX_BUILD_GAMECUBE "Build Linux GameCube direct-disc playback" ${GDOX_GAMECUBE_DEFAULT})
+option(GDOX_BUILD_GAMECUBE "Build Linux GameCube and Wii direct-disc playback" ${GDOX_GAMECUBE_DEFAULT})
 option(GDOX_BUILD_OPTICAL "Build optical-drive services" ON)
 option(GDOX_FETCH_RAYLIB "Fetch raylib when no compatible system package exists" ON)
 option(GDOX_REQUIRE_LIBUSB "Fail instead of building a Linux optical stub" OFF)

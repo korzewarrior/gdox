@@ -2,10 +2,19 @@
 
 this page records physical validation and exact drive support.
 
+## Wii validation
+
+The GP63EX70 RF02 Linux reader accepts single-layer Wii discs. Twilight Princess
+(`RZDE01`, revision 2) reads through the final sector, boots, creates a save,
+and reaches the new-game opening through the GDOX disc bridge. Automated
+input uses an emulated Wii Remote and Nunchuk. See [Wii playback](wii-live.md)
+for current limits.
+
 ## current systems
 
-original Xbox, Xbox 360 and Linux GameCube direct-disc playback are supported. the exact Xbox 360 platform, drive,
-and media matrix is maintained in `XBOX360.md`.
+original Xbox, Xbox 360, and Linux GameCube and single-layer Wii direct-disc
+playback are supported. the exact Xbox 360 platform, drive, and media matrix
+is maintained in `XBOX360.md`.
 
 ## host platforms
 
@@ -74,7 +83,7 @@ emulation speed. Optical seeks still produced occasional loading stalls, so
 this is not a guarantee of stall-free playback for every scene or disc.
 
 This release does not claim full-game completion, universal DVD-drive support,
-remote-drive playback, Wii support, or GameCube support on Windows or macOS.
+remote-drive playback, or GameCube support on Windows or macOS.
 The Linux runtime is included on Steam Deck; GameCube hardware validation on
 the Deck remains pending. Physical controller validation for this packaged
 build remains pending; controller configuration is available in Dolphin.

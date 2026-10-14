@@ -55,6 +55,8 @@ typedef struct fake_gc {
     bool bad_edc;
     bool inconsistent_seed;
     bool bad_magic;
+    bool wii;
+    unsigned wii_fault;
     bool short_buffer;
     bool short_configuration;
     bool prime_sense_inline;
@@ -236,6 +238,22 @@ static void make_raw_frame(
     plain[0] = 0U;
     put_be_u24(plain + 1U, GC_PHYSICAL_BASE + lba);
     make_logical_sector(lba, fake->bad_magic, logical);
+    if (fake->wii && lba == 0U) {
+        memset(logical, 0, sizeof(logical));
+        memcpy(logical, "RTEST1", 6U);
+        put_be_u32(logical + 0x18U, UINT32_C(0x5d1c9ea3));
+    } else if (fake->wii && lba == 128U) {
+        memset(logical, 0, sizeof(logical));
+        put_be_u32(logical, fake->wii_fault == 1U ? 33U : 1U);
+        put_be_u32(logical + 4U, fake->wii_fault == 2U ? UINT32_MAX : 0x10008U);
+        put_be_u32(logical + 0x20U, fake->wii_fault == 4U ? 1U : 0x14000U);
+        put_be_u32(logical + 0x24U, fake->wii_fault == 3U ? 1U : 0U);
+    } else if (fake->wii && lba == 160U) {
+        memset(logical, 0, sizeof(logical));
+        put_be_u32(logical + 0x2b8U, fake->wii_fault == 8U ? UINT32_MAX : 0x8000U);
+        put_be_u32(logical + 0x2bcU, fake->wii_fault == 5U ? 0x50000000U
+            : fake->wii_fault == 6U ? 0U : fake->wii_fault == 7U ? 1U : 0x2000U);
+    }
     memcpy(plain + 6U, logical, sizeof(logical));
     for (index = 0U; index < 2060U; ++index) {
         edc = edc_update(fake, edc, plain[index]);
@@ -742,8 +760,8 @@ static bool fake_command_none(
         if (cdb_bytes == 10U && cdb[0] == 0x2bU && fake->quality_scan_mode) {
             const uint32_t lba = read_be_u32(cdb + 2U);
             uint32_t limit = lba + 1024U;
-            if (limit >= GDOX_GAMECUBE_TOTAL_SECTORS) {
-                limit = GDOX_GAMECUBE_TOTAL_SECTORS - 1U;
+            if (limit >= (fake->wii ? GDOX_WII_SL_TOTAL_SECTORS : GDOX_GAMECUBE_TOTAL_SECTORS)) {
+                limit = (uint32_t)(fake->wii ? GDOX_WII_SL_TOTAL_SECTORS : GDOX_GAMECUBE_TOTAL_SECTORS) - 1U;
             }
             if (cdb[1] != 0U || memcmp(cdb + 6U, (uint8_t[4]){0}, 4U) != 0
                 || timeout_ms != UINT32_C(30000)
@@ -1102,7 +1120,7 @@ static void test_cache_validation_fails_closed(void)
     fake.bad_edc = true;
     CHECK(!open_fake(&fake, 0U, &source, &error));
     CHECK(error.code == GDOX_ERROR_UNSUPPORTED);
-    CHECK(strstr(error.message, "no valid GameCube scrambling seed") != NULL);
+    CHECK(strstr(error.message, "no valid Nintendo scrambling seed") != NULL);
     CHECK(fake.prime_count == 1U);
     CHECK(fake.buffer_count == GC_METHOD4_CACHE_READS);
     CHECK(fake.write_count == 0U);
@@ -1112,7 +1130,7 @@ static void test_cache_validation_fails_closed(void)
     fake.inconsistent_seed = true;
     CHECK(!open_fake(&fake, 0U, &source, &error));
     CHECK(error.code == GDOX_ERROR_UNSUPPORTED);
-    CHECK(strstr(error.message, "block failed GameCube EDC validation") != NULL);
+    CHECK(strstr(error.message, "block failed Nintendo EDC validation") != NULL);
     CHECK(fake.prime_count == 1U);
     CHECK(fake.buffer_count == GC_METHOD4_CACHE_READS);
     CHECK(fake.write_count == 0U);
@@ -1724,6 +1742,47 @@ static void test_cancel_rejects_buffered_data(void)
     CHECK(gdox_source_close(&source, &error));
 }
 
+static void test_wii_disc_and_bounds(void)
+{
+    for (unsigned fault = 0U; fault <= 8U; ++fault) {
+        fake_gc fake;
+        gdox_sector_source source = {0};
+        gdox_error error;
+        uint8_t output[GC_LOGICAL_BLOCK_BYTES];
+        uint8_t expected[GDOX_LOGICAL_SECTOR_BYTES];
+        initialize_fake(&fake);
+        fake.wii = true;
+        fake.wii_fault = fault;
+        fake.ready_gate_mode = true;
+        fake.quality_scan_mode = true;
+        const bool opened = gdox_gp63_gamecube_scan_source_open(fake_opener, &fake, &source, &error);
+        if (fault != 0U) {
+            CHECK(!opened);
+            CHECK(error.code == (fault == 5U ? GDOX_ERROR_UNSUPPORTED : GDOX_ERROR_INVALID_VOLUME));
+            CHECK(!gdox_source_is_valid(&source));
+            CHECK(fake.closed);
+        } else {
+            CHECK(opened);
+            CHECK(gdox_gp63_gamecube_source_profile(&source) == GDOX_OPTICAL_MEDIA_WII);
+            CHECK(gdox_source_sector_count(&source) == GDOX_WII_SL_TOTAL_SECTORS);
+            const uint32_t sectors[] = {712880U, 1048576U, (uint32_t)GDOX_WII_SL_TOTAL_SECTORS - 16U};
+            for (size_t i = 0U; i < sizeof(sectors)/sizeof(sectors[0]); ++i) {
+                CHECK(gdox_source_read(&source, sectors[i], 16U, output, sizeof(output), &error));
+                for (uint32_t j = 0U; j < 16U; ++j) {
+                    make_logical_sector(sectors[i] + j, false, expected);
+                    CHECK(memcmp(output + j * GDOX_LOGICAL_SECTOR_BYTES, expected, sizeof(expected)) == 0);
+                }
+            }
+            CHECK(!gdox_source_read(&source, GDOX_WII_SL_TOTAL_SECTORS, 1U,
+                output, GDOX_LOGICAL_SECTOR_BYTES, &error));
+            CHECK(error.code == GDOX_ERROR_OUT_OF_BOUNDS);
+            CHECK(gdox_source_close(&source, &error));
+        }
+        CHECK(fake.protocol_valid);
+        CHECK(memcmp(fake.admission, (uint8_t[4]){0}, 4U) == 0);
+    }
+}
+
 int main(void)
 {
     test_close_requires_restoration_or_confirmed_disconnect();
@@ -1747,6 +1806,7 @@ int main(void)
     test_exact_identity_is_required();
     test_cache_validation_fails_closed();
     test_gamecube_header_is_required();
+    test_wii_disc_and_bounds();
     test_exact_replay_and_transport_gates();
     test_initial_read_does_not_retry();
     test_ready_timeout_adds_no_device_command();

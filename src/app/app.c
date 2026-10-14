@@ -32,7 +32,7 @@ void gdox_app_initialize(gdox_app *app, gdox_host_profile host_profile)
     app->snapshot.phase = GDOX_APP_DISCOVERING;
     app->snapshot.settings.auto_start = true;
     gdox_app_copy(app->snapshot.drive, sizeof(app->snapshot.drive), "Checking optical drive");
-    gdox_app_copy(app->snapshot.disc, sizeof(app->snapshot.disc), "No Xbox disc");
+    gdox_app_copy(app->snapshot.disc, sizeof(app->snapshot.disc), "No game disc");
     gdox_app_copy(app->snapshot.status, sizeof(app->snapshot.status), "Starting GDOX");
     gdox_app_copy(app->snapshot.notice, sizeof(app->snapshot.notice), "Native runtime is initializing");
     if (app->runtime == NULL) {

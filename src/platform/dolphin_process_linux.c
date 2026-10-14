@@ -118,7 +118,7 @@ bool gdox_dolphin_poll(gdox_dolphin_process *process,
     if (*running && (!gdox_disc_bridge_alive(process->bridge, &bridge_alive, error)
             || !bridge_alive)) {
         if (!gdox_error_is_set(error)) {
-            gdox_error_set(error, GDOX_ERROR_IO, "Live GameCube disc stream closed unexpectedly");
+            gdox_error_set(error, GDOX_ERROR_IO, "Live GameCube or Wii disc stream closed unexpectedly");
         }
         return false;
     }
