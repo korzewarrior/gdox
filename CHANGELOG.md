@@ -1,6 +1,6 @@
 # changes
 
-## 0.4.0
+## 0.3.1
 
 - add single-layer Wii disc playback on Linux with the LG GP63EX70 RF02
 
