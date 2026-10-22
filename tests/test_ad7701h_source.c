@@ -48,6 +48,7 @@ typedef struct drive {
     unsigned int commands, fail_at, short_at, writes, reads, closed;
     bool fail_after_write, wrong_identity, wrong_mode, wrong_pfi, bad_descriptor;
     uint32_t firmware_address;
+    gdox_sector_source *abort_during_read;
 } drive;
 
 static drive fresh(void)
@@ -108,6 +109,7 @@ static bool command_in(void *raw, const char *name, const uint8_t *cdb, size_t c
                 CHECK(memcmp(mock->geometry, (uint8_t[4]){0xafU, 0x33U, 0x20U, 0U}, 4U) == 0);
                 CHECK(be(cdb + 8U, 2U) <= 16U && bytes == be(cdb + 8U, 2U) * 2048U);
                 ++mock->reads;
+                if (mock->abort_during_read != NULL) gdox_source_abort(mock->abort_during_read);
                 memset(data, 0x5a, bytes);
                 if (be(cdb + 4U, 4U) == 0x60620U && !mock->bad_descriptor) {
                     memcpy(data, "MICROSOFT*XBOX*MEDIA", 20U);
@@ -257,6 +259,15 @@ int main(void)
     total = mock.commands;
     CHECK(!gdox_source_read(&source, 2000000U, 1U, buffer, 2048U, &error));
     CHECK(error.code == GDOX_ERROR_CANCELLED && mock.commands == total);
+    CHECK(!gdox_source_read(&source, 2000000U, 1U, buffer, 2048U, &error));
+    CHECK(error.code == GDOX_ERROR_CANCELLED && mock.commands == total);
+    CHECK(gdox_source_close(&source, &error));
+
+    mock = fresh();
+    CHECK(open_source(&mock, &source, &error));
+    mock.abort_during_read = &source;
+    CHECK(!gdox_source_read(&source, 2000000U, 33U, buffer, sizeof(buffer), &error));
+    CHECK(error.code == GDOX_ERROR_CANCELLED && mock.reads == 2U);
     CHECK(gdox_source_close(&source, &error));
 
     mock = fresh();

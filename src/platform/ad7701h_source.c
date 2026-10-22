@@ -222,6 +222,13 @@ static uint64_t sector_count(const void *context)
     return GDOX_XGD1_TOTAL_SECTORS;
 }
 
+static bool cancelled(ad7701h *context, gdox_error *error)
+{
+    if (!atomic_load(&context->aborted)) return false;
+    gdox_error_set(error, GDOX_ERROR_CANCELLED, "AD-7701H read cancelled");
+    return true;
+}
+
 static bool read_sectors(void *raw, uint64_t lba, uint32_t blocks,
     uint8_t *output, size_t bytes, gdox_error *error)
 {
@@ -233,13 +240,10 @@ static bool read_sectors(void *raw, uint64_t lba, uint32_t blocks,
         gdox_error_set(error, GDOX_ERROR_INTERNAL, "could not lock AD-7701H transport");
         return false;
     }
+    if (cancelled(context, error)) goto done;
     if (context->faulted || context->prepared || !context->dirty
         || gdox_mmc_media_tracker_transitioned(&context->media, context->generation)) {
         (void)reject(error, "AD-7701H source must be closed before further reads");
-        goto done;
-    }
-    if (atomic_load(&context->aborted)) {
-        gdox_error_set(error, GDOX_ERROR_CANCELLED, "AD-7701H read cancelled");
         goto done;
     }
     if (!read_ram(context, GEOMETRY_ADDRESS, state, error)) goto done;
@@ -249,11 +253,10 @@ static bool read_sectors(void *raw, uint64_t lba, uint32_t blocks,
     }
     while (blocks != 0U) {
         const uint32_t count = blocks < MAX_BLOCKS ? blocks : MAX_BLOCKS;
-        if (atomic_load(&context->aborted)) {
-            gdox_error_set(error, GDOX_ERROR_CANCELLED, "AD-7701H read cancelled");
-            goto done;
-        }
-        if (!read_game(context, (uint32_t)lba, count, output, error)) goto done;
+        bool read;
+        if (cancelled(context, error)) goto done;
+        read = read_game(context, (uint32_t)lba, count, output, error);
+        if (cancelled(context, error) || !read) goto done;
         lba += count;
         blocks -= count;
         output += (size_t)count * GDOX_LOGICAL_SECTOR_BYTES;

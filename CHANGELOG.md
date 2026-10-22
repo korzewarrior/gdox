@@ -1,5 +1,11 @@
 # changes
 
+## 0.3.2
+
+- add an experimental Windows reader for HP DVD RW AD-7701H 2.85 with USB bridge `13fd:0840`
+- verify the complete firmware image before temporary geometry changes and retain cleanup ownership until restoration succeeds
+- validate original Xbox directory, complete executable and both-layer reads through diagnostics; native discovery and gameplay remain pending
+
 ## 0.3.1
 
 - add single-layer Wii disc playback on Linux with the LG GP63EX70 RF02
