@@ -9,6 +9,10 @@ from original Xbox discs.
 [user guide](docs/USER_GUIDE.md) /
 [supported drives](https://gdox.korze.org/drives/)
 
+The experimental [HP AD-7701H 2.85 reader](docs/AD7701H.md) supports original
+Xbox sector reads on Windows with USB bridge `13fd:0840`. Game executable reads
+and restoration are verified through diagnostics; native gameplay is pending.
+
 ## support
 
 | platform | original Xbox | Xbox 360 | GameCube / Wii |
@@ -20,7 +24,7 @@ from original Xbox discs.
 | macos intel | images | — | — |
 | android arm64 | in development | — | — |
 
-original Xbox physical play recognizes five exact optical-drive profiles. Xbox
+original Xbox physical play recognizes six exact optical-drive profiles. Xbox
 360 validated physical play uses the exact GP63EX70/RF02 profile. The complete
 host, media, and validation matrix is in [Xbox 360 support](docs/XBOX360.md).
 similar drive names, firmware revisions, and USB bridges are not

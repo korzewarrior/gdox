@@ -349,8 +349,24 @@ static void test_gp57(void)
     GDOX_TEST_CHECK(!gdox_usb_bot_identity_matches(GDOX_USB_BOT_GP57, &observed));
 }
 
+static void test_ad7701h(void)
+{
+    gdox_usb_bot_observed_identity observed = {
+        0x13fdU, 0x0840U, "hp", "DVD RW AD-7701H", "2.85"
+    };
+    GDOX_TEST_CHECK(gdox_usb_bot_identity_matches(GDOX_USB_BOT_AD7701H, &observed));
+    GDOX_TEST_CHECK(gdox_optical_identity_requires_windows(GDOX_USB_BOT_AD7701H));
+    GDOX_TEST_CHECK(!gdox_optical_identity_requires_native_sata(GDOX_USB_BOT_AD7701H));
+    observed.product_id = 0x1640U;
+    GDOX_TEST_CHECK(!gdox_usb_bot_identity_matches(GDOX_USB_BOT_AD7701H, &observed));
+    observed.product_id = 0x0840U;
+    observed.scsi_revision = "2.86";
+    GDOX_TEST_CHECK(!gdox_usb_bot_identity_matches(GDOX_USB_BOT_AD7701H, &observed));
+}
+
 int main(void)
 {
+    test_ad7701h();
     test_gp57();
     test_native_sata();
     run();

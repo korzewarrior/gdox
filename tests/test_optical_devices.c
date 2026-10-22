@@ -131,6 +131,12 @@ bool gdox_gp08_source_open(gdox_gp08_transport_opener opener, void *context,
     return open_profile(opener, context, retries, timeout, source, error);
 }
 
+bool gdox_ad7701h_source_open(gdox_gp08_transport_opener opener, void *context,
+    uint8_t retries, uint32_t timeout, gdox_sector_source *source, gdox_error *error)
+{
+    return open_profile(opener, context, retries, timeout, source, error);
+}
+
 bool gdox_mt1887_source_open(gdox_mt1887_transport_opener opener, void *context,
     gdox_usb_bot_identity identity, uint16_t speed, uint8_t retries,
     uint32_t timeout, gdox_sector_source *source, gdox_error *error)
@@ -195,6 +201,7 @@ LEGACY_OPEN(gdox_optical_open_sp80)
 LEGACY_OPEN(gdox_optical_open_asus_nr09)
 LEGACY_OPEN(gdox_optical_open_asus_mt1862)
 LEGACY_OPEN(gdox_optical_open_gp57)
+LEGACY_OPEN(gdox_optical_open_ad7701h)
 LEGACY_MEDIA(gdox_optical_open_gp63_media)
 LEGACY_MEDIA(gdox_optical_open_asus_nr09_media)
 LEGACY_MEDIA(gdox_optical_open_asus_mt1862_media)
@@ -282,10 +289,10 @@ static void test_open_routing(void)
 {
     const gdox_optical_drive drives[] = {GDOX_OPTICAL_DRIVE_GP63, GDOX_OPTICAL_DRIVE_GP65,
         GDOX_OPTICAL_DRIVE_GP08, GDOX_OPTICAL_DRIVE_ASUS_NR09, GDOX_OPTICAL_DRIVE_SP80,
-        GDOX_OPTICAL_DRIVE_ASUS_MT1862, GDOX_OPTICAL_DRIVE_GP57};
+        GDOX_OPTICAL_DRIVE_ASUS_MT1862, GDOX_OPTICAL_DRIVE_GP57, GDOX_OPTICAL_DRIVE_AD7701H};
     const gdox_usb_bot_identity identities[] = {GDOX_USB_BOT_GP63, GDOX_USB_BOT_GP65,
         GDOX_USB_BOT_GP08, GDOX_USB_BOT_ASUS_NR09, GDOX_USB_BOT_SP80,
-        GDOX_SATA_ASUS_MT1862, GDOX_USB_BOT_GP57};
+        GDOX_SATA_ASUS_MT1862, GDOX_USB_BOT_GP57, GDOX_USB_BOT_AD7701H};
     for (size_t index = 0U; index < sizeof(drives) / sizeof(drives[0]); ++index) {
         gdox_optical_device device = selected_device(drives[index]);
         gdox_sector_source source = {0};
@@ -299,9 +306,9 @@ static void test_open_routing(void)
         check(routed_identity == identities[index] && strcmp(routed_id, device.id) == 0
             && routed_retries == 7U && routed_timeout == 1234U,
             "physical ID, registry identity and read policy reach the opener unchanged");
-        check(info.profile == (index >= 5U ? GDOX_OPTICAL_MEDIA_XGD2 : GDOX_OPTICAL_MEDIA_XGD1),
+        check(info.profile == (index == 5U || index == 6U ? GDOX_OPTICAL_MEDIA_XGD2 : GDOX_OPTICAL_MEDIA_XGD1),
             "media profile maps to the existing public classification");
-        if (index >= 5U) check(routed_speed == 0U && info.sequential_read_blocks == 32U
+        if (index == 5U || index == 6U) check(routed_speed == 0U && info.sequential_read_blocks == 32U
             && info.game_partition_lba == GDOX_XGD2_GAME_PARTITION_LBA,
             "experimental profiles retain speed and use bounded XGD2 reads");
         check(gdox_source_close(&source, &error), "opened device retains close ownership");
@@ -367,7 +374,7 @@ static void test_connection_and_eject_routing(void)
         && routed_identity == GDOX_USB_BOT_GP57 && strcmp(routed_id, device.id) == 0,
         "connection check targets selected physical instance");
     for (gdox_optical_drive drive = GDOX_OPTICAL_DRIVE_GP63;
-         drive <= GDOX_OPTICAL_DRIVE_GP57; ++drive) {
+         drive <= GDOX_OPTICAL_DRIVE_AD7701H; ++drive) {
         const bool automatic = drive == GDOX_OPTICAL_DRIVE_GP63
             || drive == GDOX_OPTICAL_DRIVE_GP65 || drive == GDOX_OPTICAL_DRIVE_GP08;
         const unsigned int calls = backend_calls;

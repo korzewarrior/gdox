@@ -17,6 +17,7 @@ typedef enum gdox_usb_bot_identity {
     GDOX_SATA_ASUS_MT1862,
     /* Exact experimental Windows USB/SPTI profile. */
     GDOX_USB_BOT_GP57,
+    GDOX_USB_BOT_AD7701H,
     GDOX_USB_BOT_IDENTITY_COUNT,
 } gdox_usb_bot_identity;
 

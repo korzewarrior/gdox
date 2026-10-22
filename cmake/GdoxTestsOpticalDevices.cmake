@@ -1,4 +1,11 @@
 if(GDOX_BUILD_OPTICAL)
+    add_executable(gdox_ad7701h_tests tests/test_ad7701h_source.c)
+    target_include_directories(gdox_ad7701h_tests PRIVATE include src)
+    target_link_libraries(gdox_ad7701h_tests PRIVATE gdox::optical)
+    gdox_enable_c_warnings(gdox_ad7701h_tests)
+    add_test(NAME optical.ad7701h COMMAND gdox_ad7701h_tests)
+    gdox_label_tests(optical optical.ad7701h)
+
     add_executable(gdox_runtime_setup_tests
         tests/test_runtime_setup.c
         src/app/runtime_setup.c

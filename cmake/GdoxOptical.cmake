@@ -3,6 +3,7 @@ find_package(PkgConfig QUIET)
 add_library(
     gdox_optical
     STATIC
+        src/platform/ad7701h_source.c
         src/platform/asus_nr09_source.c
         src/platform/gp08_source.c
         src/platform/optical.c
@@ -12,6 +13,7 @@ add_library(
 add_library(gdox::optical ALIAS gdox_optical)
 target_include_directories(gdox_optical PRIVATE src)
 target_link_libraries(gdox_optical PUBLIC gdox::media)
+target_link_libraries(gdox_optical PRIVATE gdox::services)
 if(NOT WIN32)
     target_link_libraries(gdox_optical PRIVATE Threads::Threads)
 endif()

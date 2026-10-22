@@ -61,6 +61,14 @@ static const gdox_usb_bot_identity_spec identities[] = {
         GDOX_GP57_SCSI_MODEL,
         GDOX_GP57_SCSI_REVISION,
     },
+    {
+        GDOX_USB_BOT_AD7701H,
+        GDOX_AD7701H_USB_VENDOR_ID,
+        GDOX_AD7701H_USB_PRODUCT_ID,
+        GDOX_AD7701H_SCSI_VENDOR,
+        GDOX_AD7701H_SCSI_MODEL,
+        GDOX_AD7701H_SCSI_REVISION,
+    },
 };
 
 _Static_assert(
@@ -129,7 +137,8 @@ bool gdox_optical_identity_requires_native_sata(gdox_usb_bot_identity identity)
 bool gdox_optical_identity_requires_windows(gdox_usb_bot_identity identity)
 {
     return gdox_optical_identity_requires_native_sata(identity)
-        || identity == GDOX_USB_BOT_GP57;
+        || identity == GDOX_USB_BOT_GP57
+        || identity == GDOX_USB_BOT_AD7701H;
 }
 
 bool gdox_optical_native_sata_identity_matches(
