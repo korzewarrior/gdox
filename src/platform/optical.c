@@ -130,6 +130,17 @@ static const gdox_optical_driver drivers[] = {
         NULL,
         GDOX_OPTICAL_EJECT_REQUEST_RELEASE_FOR_MANUAL_EJECT,
     },
+    {
+        GDOX_OPTICAL_DRIVE_AD7701H,
+        GDOX_USB_BOT_AD7701H,
+        GDOX_AD7701H_SCSI_VENDOR " " GDOX_AD7701H_SCSI_MODEL " "
+            GDOX_AD7701H_SCSI_REVISION " (experimental)",
+        gdox_optical_open_ad7701h,
+        NULL,
+        UINT32_C(16),
+        NULL,
+        GDOX_OPTICAL_EJECT_REQUEST_RELEASE_FOR_MANUAL_EJECT,
+    },
 };
 
 _Static_assert(

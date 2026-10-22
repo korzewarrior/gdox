@@ -44,8 +44,8 @@ runtime and managed-storage transition pass the equivalent save-boundary tests.
 
 ## drive profiles
 
-the physical adapters recognize seven exact profiles. SP80, GP57EB40, and the
-native SATA ASUS DRW-24D5MT remain experimental:
+the physical adapters recognize eight exact profiles. SP80, GP57EB40, HP
+AD-7701H, and the native SATA ASUS DRW-24D5MT remain experimental:
 
 | identity | current validation |
 |---|---|
@@ -56,6 +56,7 @@ native SATA ASUS DRW-24D5MT remain experimental:
 | `ASUS SDRW-08D1S-U A202`, Initio USB `13fd:1640` | original Xbox live play and restoration validated on windows 11 with the stock driver |
 | `ASUS DRW-24D5MT 2.00`, native SATA on Windows | XGD2 Wave 2 activation, game-sector reads, and restoration validated through the diagnostic transport; Assassin's Creed playback reported by Hexode on Windows; see `ASUS_MT1862.md` |
 | `HL-DT-ST DVDRAM GP57EB40 PB00`, USB `0e8d:1887` on Windows | XGD2 Wave 2 activation, game-sector reads, and restoration verified through diagnostics; gameplay pending; see `GP57EB40_PB00.md` |
+| `hp DVD RW AD-7701H 2.85`, USB `13fd:0840` on Windows | XGD1 directory, complete game executable, both-layer reads and restoration verified with the C adapter through diagnostics; native discovery and gameplay pending; see `AD7701H.md` |
 
 similar retail names, firmware revisions, bridges, and internal mechanisms are
 not implied compatible. `GP65NB60 PB01` is not supported. other drives need

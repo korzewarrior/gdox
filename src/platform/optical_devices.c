@@ -2,6 +2,7 @@
 #include "platform/optical_inventory_filter.h"
 
 #include "platform/asus_nr09_source.h"
+#include "platform/ad7701h_source.h"
 #include "platform/gp08_source.h"
 #include "platform/mt1887_source.h"
 #if defined(GDOX_HAS_LINUX_SG) && GDOX_HAS_LINUX_SG
@@ -186,6 +187,10 @@ static bool open_selected_media(
 
     if (device->drive == GDOX_OPTICAL_DRIVE_GP08) {
         return gdox_gp08_source_open(open_selected_transport, device,
+            read_retries, ready_timeout_ms, source, error);
+    }
+    if (device->drive == GDOX_OPTICAL_DRIVE_AD7701H) {
+        return gdox_ad7701h_source_open(open_selected_transport, device,
             read_retries, ready_timeout_ms, source, error);
     }
     if (device->drive == GDOX_OPTICAL_DRIVE_ASUS_NR09) {
