@@ -107,10 +107,13 @@ static bool command_in(void *raw, const char *name, const uint8_t *cdb, size_t c
             } else {
                 CHECK(cdb[1] == 5U && cdb[2] == 1U && cdb[3] == 0x28U);
                 CHECK(memcmp(mock->geometry, (uint8_t[4]){0xafU, 0x33U, 0x20U, 0U}, 4U) == 0);
-                CHECK(be(cdb + 8U, 2U) <= 16U && bytes == be(cdb + 8U, 2U) * 2048U);
+                CHECK(be(cdb + 8U, 2U) <= 32U && bytes == be(cdb + 8U, 2U) * 2048U);
                 ++mock->reads;
                 if (mock->abort_during_read != NULL) gdox_source_abort(mock->abort_during_read);
-                memset(data, 0x5a, bytes);
+                for (size_t sector = 0U; sector < bytes / 2048U; ++sector) {
+                    memset(data + sector * 2048U,
+                        (int)((be(cdb + 4U, 4U) + (uint32_t)sector) & 0xffU), 2048U);
+                }
                 if (be(cdb + 4U, 4U) == 0x60620U && !mock->bad_descriptor) {
                     memcpy(data, "MICROSOFT*XBOX*MEDIA", 20U);
                     memcpy(data + 2048U - 20U, "MICROSOFT*XBOX*MEDIA", 20U);
@@ -198,15 +201,18 @@ int main(void)
 {
     gdox_error error;
     unsigned int total;
-    uint8_t buffer[33U * 2048U];
+    uint8_t buffer[65U * 2048U];
     drive mock = fresh();
     gdox_sector_source source = {0};
     if (!open_source(&mock, &source, &error)) {
         fprintf(stderr, "open failed: %s\n", error.message);
         return 1;
     }
-    CHECK(gdox_source_read(&source, 2000000U, 33U, buffer, sizeof(buffer), &error));
+    CHECK(gdox_source_read(&source, 2000000U, 65U, buffer, sizeof(buffer), &error));
     CHECK(mock.reads == 4U);
+    for (size_t byte = 0U; byte < sizeof(buffer); ++byte) {
+        CHECK(buffer[byte] == (uint8_t)(2000000U + byte / 2048U));
+    }
     CHECK(gdox_source_prepare_close(&source, &error));
     total = mock.commands;
     CHECK(gdox_source_prepare_close(&source, &error) && mock.commands == total);
@@ -219,7 +225,7 @@ int main(void)
         for (unsigned int fail = 1U; fail <= total; ++fail) {
             mock = fresh(); mock.fail_at = fail; mock.fail_after_write = after != 0U;
             if (open_source(&mock, &source, &error)) {
-                (void)gdox_source_read(&source, 2000000U, 33U, buffer, sizeof(buffer), &error);
+                (void)gdox_source_read(&source, 2000000U, 65U, buffer, sizeof(buffer), &error);
             }
             if (gdox_source_is_valid(&source) && !gdox_source_close(&source, &error)) {
                 CHECK(gdox_source_is_valid(&source) && mock.closed == 0U);
@@ -266,7 +272,7 @@ int main(void)
     mock = fresh();
     CHECK(open_source(&mock, &source, &error));
     mock.abort_during_read = &source;
-    CHECK(!gdox_source_read(&source, 2000000U, 33U, buffer, sizeof(buffer), &error));
+    CHECK(!gdox_source_read(&source, 2000000U, 65U, buffer, sizeof(buffer), &error));
     CHECK(error.code == GDOX_ERROR_CANCELLED && mock.reads == 2U);
     CHECK(gdox_source_close(&source, &error));
 

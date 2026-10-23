@@ -11,7 +11,8 @@ from original Xbox discs.
 
 The experimental [HP AD-7701H 2.85 reader](docs/AD7701H.md) supports original
 Xbox sector reads on Windows with USB bridge `13fd:0840`. Game executable reads
-and restoration are verified through diagnostics; native gameplay is pending.
+and restoration are verified through diagnostics; Unreal Championship launch
+has been reported, with playback performance under investigation.
 
 ## support
 
