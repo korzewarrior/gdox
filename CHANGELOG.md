@@ -1,5 +1,10 @@
 # changes
 
+## 0.3.3
+
+- double HP AD-7701H read batches and file read-ahead to 64 KiB, within the tested Windows transfer limit
+- improve measured game-sector throughput from about 0.75 to 1.25 MiB/s on the tested drive; gameplay frame-rate improvement remains unmeasured
+
 ## 0.3.2
 
 - add an experimental Windows reader for HP DVD RW AD-7701H 2.85 with USB bridge `13fd:0840`

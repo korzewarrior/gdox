@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 project(
     gdox
-    VERSION 0.3.2
+    VERSION 0.3.3
     DESCRIPTION "Play supported Xbox, GameCube and Wii discs directly from optical drives"
     LANGUAGES C CXX
 )

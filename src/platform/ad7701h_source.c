@@ -14,7 +14,8 @@
 #define COMMAND_TIMEOUT UINT32_C(10000)
 #define GEOMETRY_ADDRESS UINT32_C(0x03ff8688)
 #define MODE_ADDRESS UINT32_C(0x03ff9790)
-#define MAX_BLOCKS UINT32_C(16)
+/* The Windows bridge rejected 128 KiB; keep the verified 64 KiB limit. */
+#define MAX_BLOCKS UINT32_C(32)
 
 static const uint8_t stock_geometry[4] = {0xafU, 0x1aU, 0x03U, 0U};
 static const uint8_t game_geometry[4] = {0xafU, 0x33U, 0x20U, 0U};
