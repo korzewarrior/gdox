@@ -310,7 +310,7 @@ static bool copy_cached_request(
     return true;
 }
 
-static bool has_adjacent_slot(
+static bool continues_cached_extent(
     const file_readahead_context *context,
     uint64_t epoch,
     size_t extent_index,
@@ -324,7 +324,8 @@ static bool has_adjacent_slot(
 
         if (slot->valid && slot->epoch == epoch
             && slot->extent_index == extent_index
-            && slot->start_sector + slot->blocks == lba) {
+            && lba >= slot->start_sector
+            && lba <= slot->start_sector + slot->blocks) {
             return true;
         }
     }
@@ -603,7 +604,7 @@ static bool readahead_read(
     bool contained;
     bool cache_hit;
     bool first_touch;
-    bool adjacent;
+    bool continuing;
     bool success;
 
     if (request_cancelled(context, error)) {
@@ -630,7 +631,7 @@ static bool readahead_read(
         return !request_cancelled(context, error);
     }
     first_touch = contained && mark_extent_touched(context, extent_index);
-    adjacent = contained && has_adjacent_slot(
+    continuing = contained && continues_cached_extent(
         context,
         atomic_load_explicit(
             &context->cache_epoch,
@@ -639,7 +640,7 @@ static bool readahead_read(
         extent_index,
         lba
     );
-    if ((first_touch || adjacent)
+    if ((first_touch || continuing)
         && blocks < context->max_window_blocks) {
         success = bounded_window_read(
             context,

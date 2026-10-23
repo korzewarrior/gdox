@@ -1,5 +1,10 @@
 # changes
 
+## 0.3.4
+
+- retain file read-ahead when a request crosses a cached window boundary
+- reduce drive commands by one third in the measured sequential music workload; this does not establish a gameplay frame-rate improvement
+
 ## 0.3.3
 
 - double HP AD-7701H read batches and file read-ahead to 64 KiB, within the tested Windows transfer limit
