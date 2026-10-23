@@ -346,14 +346,15 @@ static void test_random_retention_and_per_slot_adjacency(void)
     free(audit.bytes);
 }
 
-static void test_cache_does_not_stitch_slots(void)
+static void test_sequential_reads_cross_cache_windows(void)
 {
     readahead_audit audit;
-    gdox_xdvdfs_file_extent extent = {10U, 16U, 0U};
+    gdox_xdvdfs_file_extent extent = {10U, 44U, 0U};
     gdox_xdvdfs_metadata metadata = {0};
     gdox_sector_source inner = {0};
     gdox_sector_source source = {0};
-    uint8_t output[2U * GDOX_LOGICAL_SECTOR_BYTES];
+    uint8_t output[9U * GDOX_LOGICAL_SECTOR_BYTES];
+    uint64_t lba;
     gdox_error error;
 
     GDOX_TEST_CHECK(initialize_audit(&audit));
@@ -362,20 +363,24 @@ static void test_cache_does_not_stitch_slots(void)
     metadata.file_extent_count = 1U;
     GDOX_TEST_CHECK(make_memory_source(&audit, &inner));
     GDOX_TEST_CHECK(gdox_source_make_file_readahead(
-        &inner, &metadata, 4U, &source, &error
+        &inner, &metadata, 32U, &source, &error
     ));
 
-    GDOX_TEST_CHECK(read_blocks(&source, 10U, 1U, output, &error));
-    GDOX_TEST_CHECK(read_blocks(&source, 14U, 1U, output, &error));
+    for (lba = 10U; lba < 54U; lba += 9U) {
+        const uint32_t blocks = lba + 9U <= 54U ? 9U : 8U;
+
+        GDOX_TEST_CHECK(read_blocks(&source, lba, blocks, output, &error));
+        GDOX_TEST_CHECK(memcmp(
+            output,
+            audit.bytes + (size_t)lba * GDOX_LOGICAL_SECTOR_BYTES,
+            (size_t)blocks * GDOX_LOGICAL_SECTOR_BYTES
+        ) == 0);
+    }
     GDOX_TEST_CHECK(audit.read_count == 2U);
-    GDOX_TEST_CHECK(read_blocks(&source, 13U, 2U, output, &error));
-    GDOX_TEST_CHECK(audit.read_count == 3U);
-    GDOX_TEST_CHECK(audit.reads[2].lba == 13U);
-    GDOX_TEST_CHECK(audit.reads[2].blocks == 2U);
-    GDOX_TEST_CHECK(output[0] == 13U);
-    GDOX_TEST_CHECK(
-        output[GDOX_LOGICAL_SECTOR_BYTES] == 14U
-    );
+    GDOX_TEST_CHECK(audit.reads[0].lba == 10U);
+    GDOX_TEST_CHECK(audit.reads[0].blocks == 32U);
+    GDOX_TEST_CHECK(audit.reads[1].lba == 37U);
+    GDOX_TEST_CHECK(audit.reads[1].blocks == 17U);
     GDOX_TEST_CHECK(gdox_source_close(&source, &error));
     free(audit.bytes);
 }
@@ -688,7 +693,7 @@ void gdox_test_file_readahead_source(void)
 {
     test_sequential_extent_reads();
     test_random_retention_and_per_slot_adjacency();
-    test_cache_does_not_stitch_slots();
+    test_sequential_reads_cross_cache_windows();
     test_speculative_failure_policy();
     test_mid_file_first_touch_stops_at_extent_end();
     test_lru_eviction_and_once_per_extent_speculation();
