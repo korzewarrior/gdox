@@ -87,6 +87,30 @@ window exits; GDOX never leaves an unreachable background process. Steam Deck
 Gaming Mode keeps its controller-focused window lifecycle and does not use the
 desktop notification-area mode.
 
+## Theme
+
+Settings > Appearance > Theme switches between the Windows 7 look and GDOX's
+original dark green look. The change applies at once and is saved.
+
+## Window frame
+
+On Windows and Linux desktops GDOX draws its own Windows 7 style title bar and
+borders, so it looks the same everywhere. Drag the title bar to move the
+window, drag an edge to resize it, and double-click the title bar to maximize
+it. Set `GDOX_NATIVE_FRAME=1` to keep the system's own window frame. The GDOX
+theme always uses the system's frame. Aerode already frames windows this way,
+so GDOX uses its frame there.
+
+## Cover art
+
+When a disc is recognized, the Play page shows its game case in front of the
+disc. GDOX downloads the front cover once over HTTPS and keeps it in the
+`covers` folder of its data directory: Xbox covers from xemu's title database
+(github.com/xemu-project/xdb), Xbox 360 covers from the Xbox 360 Marketplace,
+and GameCube and Wii covers from GameTDB. Only the disc's title or game ID is
+sent. On Linux and macOS the download uses `curl`. A disc without a cover
+shows the disc alone.
+
 ## Saved games
 
 Original Xbox saved games, profiles, and console settings persist between

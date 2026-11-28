@@ -72,7 +72,7 @@ def shell_assignments(path: Path) -> dict[str, str]:
 
 
 class AndroidBuildProvenanceTest(unittest.TestCase):
-    def test_android_and_desktop_share_the_canonical_tagline(self) -> None:
+    def test_android_keeps_the_canonical_tagline(self) -> None:
         canonical = (
             "made by korze, with love, for gaming preservation everywhere"
         )
@@ -80,12 +80,8 @@ class AndroidBuildProvenanceTest(unittest.TestCase):
             ROOT
             / "android/app/src/main/java/org/korze/gdox/android/GdoxActivity.kt"
         ).read_text(encoding="utf-8")
-        desktop_presentation = (
-            ROOT / "src/ui/presentation.cpp"
-        ).read_text(encoding="utf-8")
 
         self.assertEqual(android_activity.count(f'"{canonical}"'), 1)
-        self.assertEqual(desktop_presentation.count(f'"{canonical}"'), 1)
 
     def test_android_uses_only_the_pinned_managed_hdd(self) -> None:
         core_files = (

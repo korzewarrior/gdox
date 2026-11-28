@@ -79,24 +79,17 @@ void path_row(
                 ImGui::GetWindowContentRegionMax().x - copy_width
             )
         );
-        if (ImGui::TextLink("Copy path")) {
+        if (aero::link("Copy path")) {
             ImGui::SetClipboardText(path);
             set_notice("Path copied");
         }
     }
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0F, 5.0F));
-    ImGui::BeginChild(
-        "##path",
-        ImVec2(0.0F, 43.0F),
-        ImGuiChildFlags_Borders,
-        ImGuiWindowFlags_AlwaysHorizontalScrollbar
-    );
-    ImGui::TextUnformatted(shown);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("%s", shown);
+    ImGui::SetNextItemWidth(-1.0F);
+    aero::field("##path", shown, !has_path);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)
+        && !ImGui::IsItemActive()) {
+        aero::tooltip(shown);
     }
-    ImGui::EndChild();
-    ImGui::PopStyleVar();
     ImGui::PopID();
 }
 
@@ -129,6 +122,24 @@ void source_actions_spacing()
     ImGui::Dummy(ImVec2(0.0F, 8.0F));
 }
 
+/* A drop-down list with its caption to the left, as Windows lays them out. */
+bool labeled_combo(
+    const char *label,
+    int *current,
+    const char *const *items,
+    int count
+)
+{
+    ImGui::PushID(label);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine(130.0F);
+    ImGui::SetNextItemWidth(250.0F);
+    const bool changed = aero::combo("##list", current, items, count);
+    ImGui::PopID();
+    return changed;
+}
+
 }
 void draw_drive_selector(gdox_app &app, const gdox_app_snapshot &snapshot)
 {
@@ -148,16 +159,16 @@ void draw_drive_selector(gdox_app &app, const gdox_app_snapshot &snapshot)
         preview += snapshot.optical_inventory_notice[0] != '\0'
             ? " - status unavailable" : " - disconnected";
     }
-    ImGui::TextUnformatted("Drive");
+    ImGui::TextUnformatted("Drive:");
     ImGui::SetNextItemWidth(-1.0F);
     ImGui::BeginDisabled(!snapshot.can_select_drive);
-    if (ImGui::BeginCombo("##drive-selection", preview.c_str())) {
-        if (ImGui::Selectable("Automatic", selected[0] == '\0')) {
+    if (aero::begin_combo("##drive-selection", preview.c_str())) {
+        if (aero::combo_item("Automatic", selected[0] == '\0')) {
             if (gdox_app_select_drive(&app, "")) set_notice("");
             else show_runtime_notice(app);
         }
         if (selected[0] != '\0' && !found) {
-            (void)ImGui::Selectable(preview.c_str(), true);
+            (void)aero::combo_item(preview.c_str(), true);
         }
         for (size_t index = 0U; index < snapshot.optical_device_count; ++index) {
             const gdox_app_optical_device &entry = snapshot.optical_devices[index];
@@ -175,13 +186,13 @@ void draw_drive_selector(gdox_app &app, const gdox_app_snapshot &snapshot)
                 label += entry.device.media_present ? " - disc inserted" : " - empty";
             }
             ImGui::PushID(entry.device.id);
-            if (ImGui::Selectable(label.c_str(), std::strcmp(entry.device.id, selected) == 0)) {
+            if (aero::combo_item(label.c_str(), std::strcmp(entry.device.id, selected) == 0)) {
                 if (gdox_app_select_drive(&app, entry.device.id)) set_notice("");
                 else show_runtime_notice(app);
             }
             ImGui::PopID();
         }
-        ImGui::EndCombo();
+        aero::end_combo();
     }
     ImGui::EndDisabled();
     if (snapshot.optical_inventory_notice[0] != '\0') {
@@ -200,6 +211,9 @@ void draw_drive_selector(gdox_app &app, const gdox_app_snapshot &snapshot)
 
 void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
 {
+    static constexpr std::array<const char *, 10> scale_labels = {
+        "1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x", "9x", "10x",
+    };
     static constexpr std::array<const char *, 4> aspect_labels = {
         "Automatic (game signal)",
         "16:9 widescreen",
@@ -247,38 +261,22 @@ void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
         }
     }
 
-    ImGui::BeginChild(
-        "settings-content",
-        ImVec2(0.0F, -footer_height),
-        ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened
-    );
-    ImGui::SetWindowFontScale(1.25F);
-    ImGui::TextUnformatted("Settings");
-    ImGui::SetWindowFontScale(1.0F);
+    begin_page("settings-content");
+    aero::heading("Settings");
     ImGui::Dummy(ImVec2(0.0F, 8.0F));
 
-    ImGui::TextUnformatted("Playback display");
-    ImGui::Separator();
+    aero::group("Playback display");
     const bool dolphin = snapshot.media_backend == GDOX_MEDIA_BACKEND_DOLPHIN;
     if (dolphin) {
         ImGui::TextWrapped("Use Controllers and Graphics in the game window.");
     }
     ImGui::BeginDisabled(dolphin);
-    ImGui::SetNextItemWidth(250.0F);
     ImGui::BeginDisabled(handheld);
-    if (ImGui::Combo(
-            "Rendering scale",
+    if (labeled_combo(
+            "Rendering scale:",
             &scale_index,
-            "1x\0"
-            "2x\0"
-            "3x\0"
-            "4x\0"
-            "5x\0"
-            "6x\0"
-            "7x\0"
-            "8x\0"
-            "9x\0"
-            "10x\0"
+            scale_labels.data(),
+            static_cast<int>(scale_labels.size())
         )) {
         scale = scale_index + 1;
         display_changed = true;
@@ -287,27 +285,24 @@ void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
     if (handheld) {
         ImGui::TextColored(muted, "Steam Deck playback uses fixed 1x rendering.");
     }
-    ImGui::SetNextItemWidth(250.0F);
-    if (ImGui::Combo(
-            "Picture shape",
+    if (labeled_combo(
+            "Picture shape:",
             &aspect,
             aspect_labels.data(),
             static_cast<int>(aspect_labels.size())
         )) {
         display_changed = true;
     }
-    ImGui::SetNextItemWidth(250.0F);
-    if (ImGui::Combo(
-            "Fit to window",
+    if (labeled_combo(
+            "Fit to window:",
             &fit,
             fit_labels.data(),
             static_cast<int>(fit_labels.size())
         )) {
         display_changed = true;
     }
-    ImGui::SetNextItemWidth(250.0F);
-    if (ImGui::Combo(
-            "Window size",
+    if (labeled_combo(
+            "Window size:",
             &resolution,
             resolution_labels.data(),
             static_cast<int>(resolution_labels.size())
@@ -315,7 +310,7 @@ void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
         display_changed = true;
     }
     ImGui::EndDisabled();
-    if (ImGui::Checkbox("Start playback fullscreen", &fullscreen)) {
+    if (aero::checkbox("Start playback fullscreen", &fullscreen)) {
         display_changed = true;
     }
     if (display_changed) {
@@ -335,26 +330,34 @@ void draw_settings(gdox_app &app, const gdox_app_snapshot &snapshot)
     );
     ImGui::Dummy(ImVec2(0.0F, 14.0F));
 
-    ImGui::TextUnformatted("Startup");
-    ImGui::Separator();
+    aero::group("Appearance");
+    static constexpr std::array<const char *, 2> theme_labels = {
+        "Windows 7",
+        "GDOX",
+    };
+    int theme = snapshot.settings.theme;
+    if (labeled_combo(
+            "Theme:",
+            &theme,
+            theme_labels.data(),
+            static_cast<int>(theme_labels.size())
+        )) {
+        gdox_app_set_theme(&app, static_cast<uint8_t>(theme));
+    }
+    ImGui::Dummy(ImVec2(0.0F, 14.0F));
+
+    aero::group("Startup");
     bool auto_start = snapshot.settings.auto_start;
-    if (ImGui::Checkbox("Auto start on insert", &auto_start)) {
+    if (aero::checkbox("Auto start on insert", &auto_start)) {
         gdox_app_set_auto_start(&app, auto_start);
     }
-    ImGui::EndChild();
+    end_page();
 }
 
 void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
 {
-    ImGui::BeginChild(
-        "sources-content",
-        ImVec2(0.0F, -footer_height),
-        ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened,
-        ImGuiWindowFlags_AlwaysVerticalScrollbar
-    );
-    ImGui::SetWindowFontScale(1.25F);
-    ImGui::TextUnformatted("Sources");
-    ImGui::SetWindowFontScale(1.0F);
+    begin_page("sources-content", ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    aero::heading("Sources");
     ImGui::TextColored(muted, "Choose or inspect the files GDOX uses.");
     ImGui::Dummy(ImVec2(0.0F, 10.0F));
 
@@ -364,12 +367,12 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
         snapshot.disc_image_path,
         "Physical disc selected"
     );
-    if (ImGui::Button("Choose disc image...", ImVec2(174.0F, 34.0F))) {
+    if (aero::button("Choose disc image...")) {
         choose_disc_image(app);
     }
     if (snapshot.media_source == GDOX_MEDIA_DISC_IMAGE) {
         ImGui::SameLine();
-        if (ImGui::Button("Use physical disc", ImVec2(150.0F, 34.0F))) {
+        if (aero::button("Use physical disc")) {
             gdox_app_use_physical_disc(&app);
         }
     }
@@ -394,11 +397,11 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
         source_actions_spacing();
     }
     path_row("xemu", "xemu executable", snapshot.xemu_executable, "Not available");
-    if (ImGui::Button("Choose xemu...", ImVec2(142.0F, 34.0F))) {
+    if (aero::button("Choose xemu...")) {
         choose_xemu(app);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Use included xemu", ImVec2(166.0F, 34.0F))) {
+    if (aero::button("Use included xemu")) {
         if (gdox_app_use_bundled_xemu(&app)) {
             set_notice("");
         } else {
@@ -419,7 +422,7 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
         "mcpx", "MCPX boot ROM",
         snapshot.mcpx_ready ? snapshot.mcpx_path : "", "Not imported"
     );
-    if (ImGui::Button("Choose MCPX...", ImVec2(142.0F, 34.0F))) {
+    if (aero::button("Choose MCPX...")) {
         choose_firmware(app, true);
     }
     source_actions_spacing();
@@ -427,7 +430,7 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
         "bios", "Xbox BIOS",
         snapshot.flash_ready ? snapshot.flash_path : "", "Not imported"
     );
-    if (ImGui::Button("Choose BIOS...", ImVec2(142.0F, 34.0F))) {
+    if (aero::button("Choose BIOS...")) {
         choose_firmware(app, false);
     }
     source_actions_spacing();
@@ -445,7 +448,7 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
         snapshot.settings.preservation_directory,
         "Choose a folder before preserving"
     );
-    if (ImGui::Button("Choose folder...", ImVec2(148.0F, 34.0F))) {
+    if (aero::button("Choose folder...")) {
         choose_preservation_folder(app, snapshot);
     }
     if (snapshot.preservation_output[0] != '\0') {
@@ -456,7 +459,7 @@ void draw_sources(gdox_app &app, const gdox_app_snapshot &snapshot)
             "None"
         );
     }
-    ImGui::EndChild();
+    end_page();
 }
 
 }

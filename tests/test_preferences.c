@@ -96,6 +96,7 @@ void gdox_test_preferences(void)
     GDOX_TEST_CHECK(loaded.preservation_directory[0] == '\0');
     GDOX_TEST_CHECK(loaded.optical_device_id[0] == '\0');
     GDOX_TEST_CHECK(loaded.optical_device_label[0] == '\0');
+    GDOX_TEST_CHECK(loaded.theme == GDOX_THEME_WINDOWS_7);
 
     invalid = fopen(path, "wb");
     GDOX_TEST_CHECK(invalid != NULL);
@@ -129,6 +130,7 @@ void gdox_test_preferences(void)
         "/example/Xbox Preservation",
         "usb:0e8d:1887:serial=GP57-device-2",
         "HL-DT-ST DVDRAM GP57EB40 (USB port 2)",
+        GDOX_THEME_GDOX,
     };
     GDOX_TEST_CHECK(gdox_preferences_save(&saved, &error));
     memset(&loaded, 0, sizeof(loaded));
@@ -142,6 +144,7 @@ void gdox_test_preferences(void)
     GDOX_TEST_CHECK(loaded.fullscreen == saved.fullscreen);
     GDOX_TEST_CHECK(loaded.window_width == saved.window_width);
     GDOX_TEST_CHECK(loaded.window_height == saved.window_height);
+    GDOX_TEST_CHECK(loaded.theme == saved.theme);
     GDOX_TEST_CHECK(
         strcmp(loaded.xemu_override, saved.xemu_override) == 0
     );

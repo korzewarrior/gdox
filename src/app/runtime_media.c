@@ -5,6 +5,7 @@
 #include "gdox/source.h"
 #include "gdox/x360.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -212,6 +213,12 @@ static void describe_x360(gdox_runtime_media_info *info)
             "Xbox 360 title %08X",
             info->x360.execution.title_id
         );
+        (void)snprintf(
+            info->media_id,
+            sizeof(info->media_id),
+            "%08X",
+            (unsigned int)info->x360.execution.title_id
+        );
     } else {
         (void)snprintf(info->title, sizeof(info->title), "Xbox 360 disc");
     }
@@ -370,6 +377,9 @@ bool gdox_runtime_media_open_physical(
         info.backend = GDOX_MEDIA_BACKEND_XEMU;
         info.source_sectors = live_info.input_sectors;
         (void)snprintf(info.title, sizeof(info.title), "%s", live_info.title);
+        if (live_info.title_id_present) {
+            (void)snprintf(info.media_id, sizeof(info.media_id), "%08X", (unsigned int)live_info.title_id);
+        }
     } else if (optical.profile == GDOX_OPTICAL_MEDIA_GAMECUBE
         || optical.profile == GDOX_OPTICAL_MEDIA_WII) {
         const bool wii = optical.profile == GDOX_OPTICAL_MEDIA_WII;
@@ -398,6 +408,11 @@ bool gdox_runtime_media_open_physical(
         if (index == 0U) {
             (void)snprintf(info.title, sizeof(info.title), "%s", wii ? "Wii disc" : "GameCube disc");
         }
+        size_t id = 0U;
+        for (; id < 6U && isalnum(header[id]); ++id) {
+            info.media_id[id] = (char)header[id];
+        }
+        info.media_id[id == 6U ? 6U : 0U] = '\0';
     } else if (!xbox_360) {
         if (!gdox_error_is_set(error)) {
             gdox_error_set(
@@ -528,6 +543,9 @@ bool gdox_runtime_media_open_image(
         (void)snprintf(
             info.title, sizeof(info.title), "%s", image.disc.title
         );
+        if (image.disc.title_id_present) {
+            (void)snprintf(info.media_id, sizeof(info.media_id), "%08X", (unsigned int)image.disc.title_id);
+        }
         identify_media(result, &info);
         if (!start_export(&disc, info.backend, session, error)) {
             goto cleanup;

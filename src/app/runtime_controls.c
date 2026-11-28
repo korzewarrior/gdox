@@ -204,6 +204,19 @@ void gdox_runtime_set_auto_start(gdox_runtime *runtime, bool enabled)
     }
 }
 
+void gdox_runtime_set_theme(gdox_runtime *runtime, uint8_t theme)
+{
+    if (runtime != NULL && gdox_mutex_lock(&runtime->mutex)) {
+        if (atomic_load_explicit(&runtime->stopping, memory_order_acquire)) {
+            gdox_mutex_unlock(&runtime->mutex);
+            return;
+        }
+        runtime->snapshot.settings.theme = theme;
+        gdox_runtime_setup_mark_preferences_dirty(runtime);
+        gdox_mutex_unlock(&runtime->mutex);
+    }
+}
+
 void gdox_runtime_request(gdox_runtime *runtime, gdox_runtime_command command)
 {
     gdox_runtime_request_kind kind = GDOX_RUNTIME_REQUEST_NONE;

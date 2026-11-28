@@ -23,6 +23,7 @@ typedef struct decoded_fields {
     bool preservation_directory;
     bool optical_device_id;
     bool optical_device_label;
+    bool theme;
 } decoded_fields;
 
 void gdox_preferences_defaults(gdox_preferences *preferences)
@@ -42,6 +43,7 @@ void gdox_preferences_defaults(gdox_preferences *preferences)
         "",
         "",
         "",
+        GDOX_THEME_WINDOWS_7,
     };
 }
 
@@ -77,7 +79,8 @@ typedef enum numeric_field_kind {
     NUMERIC_FIT,
     NUMERIC_FULLSCREEN,
     NUMERIC_WIDTH,
-    NUMERIC_HEIGHT
+    NUMERIC_HEIGHT,
+    NUMERIC_THEME
 } numeric_field_kind;
 
 typedef struct numeric_field_description {
@@ -103,6 +106,7 @@ static const numeric_field_description numeric_fields[] = {
     {"fullscreen", 10U, NUMERIC_FULLSCREEN},
     {"window_width", 12U, NUMERIC_WIDTH},
     {"window_height", 13U, NUMERIC_HEIGHT},
+    {"theme", 5U, NUMERIC_THEME},
 };
 
 static bool key_matches(
@@ -224,6 +228,13 @@ static bool assign_numeric_field(
                 return false;
             }
             preferences->window_height = (uint16_t)value;
+            break;
+        case NUMERIC_THEME:
+            seen = &fields->theme;
+            if (value > GDOX_THEME_GDOX) {
+                return false;
+            }
+            preferences->theme = (uint8_t)value;
             break;
         default:
             return false;
@@ -408,7 +419,8 @@ bool gdox_preferences_save(
         || preferences->window_width < 640U
         || preferences->window_width > 7680U
         || preferences->window_height < 480U
-        || preferences->window_height > 4320U) {
+        || preferences->window_height > 4320U
+        || preferences->theme > GDOX_THEME_GDOX) {
         gdox_error_set(error, GDOX_ERROR_INVALID_ARGUMENT, "valid preferences are required");
         return false;
     }
@@ -423,6 +435,7 @@ bool gdox_preferences_save(
         "fullscreen=%u\n"
         "window_width=%u\n"
         "window_height=%u\n"
+        "theme=%u\n"
         "%s%s%s"
         "%s%s%s"
         "%s%s%s"
@@ -435,6 +448,7 @@ bool gdox_preferences_save(
         preferences->fullscreen ? 1U : 0U,
         (unsigned int)preferences->window_width,
         (unsigned int)preferences->window_height,
+        (unsigned int)preferences->theme,
         xemu_override ? "xemu_override=" : "",
         xemu_override ? preferences->xemu_override : "",
         xemu_override ? "\n" : "",

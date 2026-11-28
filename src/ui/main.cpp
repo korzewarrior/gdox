@@ -1,5 +1,6 @@
 #include "ui/presentation.hpp"
 #include "ui/gamepad_input_policy.h"
+#include "ui/window_frame.hpp"
 
 #include "app/background.h"
 #include "app/background_lifecycle.h"
@@ -19,7 +20,6 @@
 
 namespace {
 
-constexpr Color background = {14, 16, 18, 255};
 constexpr int desktop_width = 880;
 constexpr int desktop_height = 680;
 constexpr int desktop_min_width = 680;
@@ -96,13 +96,25 @@ bool initialize_window(bool deck)
         FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_MSAA_4X_HINT;
 
     flags |= deck ? FLAG_WINDOW_UNDECORATED : FLAG_WINDOW_HIGHDPI;
+    flags |= gdox::ui::frame::window_flags(deck);
+    const ImVec2 frame = gdox::ui::frame::extent();
+    const int frame_width = static_cast<int>(frame.x);
+    const int frame_height = static_cast<int>(frame.y);
     SetConfigFlags(flags);
-    InitWindow(deck ? 1280 : desktop_width, deck ? 800 : desktop_height, "GDOX");
+    InitWindow(
+        deck ? 1280 : desktop_width + frame_width,
+        deck ? 800 : desktop_height + frame_height,
+        "GDOX"
+    );
     if (!IsWindowReady()) {
         return false;
     }
+    gdox::ui::frame::attach();
 
-    SetWindowMinSize(desktop_min_width, desktop_min_height);
+    SetWindowMinSize(
+        desktop_min_width + frame_width,
+        desktop_min_height + frame_height
+    );
     if (deck) {
         SetExitKey(KEY_NULL);
     }
@@ -123,9 +135,6 @@ void initialize_imgui(bool deck)
         return;
     }
 
-    ImGuiStyle &style = ImGui::GetStyle();
-    style.ScaleAllSizes(1.18F);
-    style.FontScaleMain = 1.20F;
     ImGui::SetNavCursorVisible(true);
 }
 
@@ -208,32 +217,27 @@ void import_dropped_files(gdox_app &app)
     UnloadDroppedFiles(dropped);
 }
 
-bool draw_frame(gdox_app &app, bool deck, bool closing = false)
+gdox::ui::request draw_frame(gdox_app &app, bool deck, bool closing = false)
 {
+    gdox::ui::frame::update();
     BeginDrawing();
-    ClearBackground(background);
+    /* The self-drawn frame has rounded corners: what lies outside them stays
+     * transparent. */
+    const ImVec4 fill = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+    ClearBackground(
+        gdox::ui::frame::active()
+            ? BLANK : ColorFromNormalized({fill.x, fill.y, fill.z, 1.0F})
+    );
     rlImGuiBegin();
-    bool quit_requested = false;
+    gdox::ui::request request = gdox::ui::request::none;
     if (closing) {
-        const gdox_app_snapshot *snapshot = gdox_app_snapshot_get(&app);
-        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-        ImGui::Begin("##closing", nullptr,
-            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
-        ImGui::TextUnformatted("Closing GDOX");
-        ImGui::Spacing();
-        ImGui::TextWrapped("%s", snapshot->drive);
-        ImGui::TextWrapped("%s", snapshot->notice);
-        if (snapshot->pending_cleanup_count != 0U) {
-            ImGui::TextWrapped("%s", snapshot->pending_cleanup_notice);
-        }
-        ImGui::End();
+        gdox::ui::draw_closing(*gdox_app_snapshot_get(&app));
     } else {
-        quit_requested = gdox::ui::draw_application(app, deck);
+        request = gdox::ui::draw_application(app, deck);
     }
     rlImGuiEnd();
     EndDrawing();
-    return quit_requested;
+    return request;
 }
 
 void close_desktop_window()
@@ -533,10 +537,19 @@ int run_application(bool start_hidden)
         }
         handle_page_navigation(deck, ui_state, app);
         import_dropped_files(app);
-        if (draw_frame(app, deck)) {
-            gdox_background_lifecycle_apply(
-                &lifecycle, GDOX_BACKGROUND_QUIT_REQUESTED
-            );
+        switch (draw_frame(app, deck)) {
+            case gdox::ui::request::quit:
+                gdox_background_lifecycle_apply(
+                    &lifecycle, GDOX_BACKGROUND_QUIT_REQUESTED
+                );
+                break;
+            case gdox::ui::request::close_window:
+                gdox_background_lifecycle_apply(
+                    &lifecycle, GDOX_BACKGROUND_WINDOW_CLOSED
+                );
+                break;
+            case gdox::ui::request::none:
+                break;
         }
     }
 

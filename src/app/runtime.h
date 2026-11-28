@@ -48,6 +48,7 @@ void gdox_runtime_copy_snapshot(
     gdox_runtime_snapshot *snapshot
 );
 void gdox_runtime_set_auto_start(gdox_runtime *runtime, bool enabled);
+void gdox_runtime_set_theme(gdox_runtime *runtime, uint8_t theme);
 void gdox_runtime_request(gdox_runtime *runtime, gdox_runtime_command command);
 bool gdox_runtime_begin_preservation(
     gdox_runtime *runtime,

@@ -1,5 +1,6 @@
 #include "app/app.h"
 #include "app/runtime.h"
+#include "platform/user_storage.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -111,6 +112,14 @@ void gdox_app_set_auto_start(gdox_app *app, bool enabled)
     }
 }
 
+void gdox_app_set_theme(gdox_app *app, uint8_t theme)
+{
+    if (app != NULL && theme <= GDOX_THEME_GDOX) {
+        app->snapshot.settings.theme = theme;
+        gdox_runtime_set_theme(app->runtime, theme);
+    }
+}
+
 void gdox_app_command(gdox_app *app, gdox_session_event event)
 {
     if (app == NULL || app->runtime == NULL) {
@@ -162,6 +171,15 @@ bool gdox_app_open_disc_image(gdox_app *app, const char *path)
 {
     return app != NULL && app->runtime != NULL
         && gdox_runtime_open_disc_image(app->runtime, path);
+}
+
+bool gdox_app_data_path(const char *relative, char *output, size_t capacity)
+{
+    char path[GDOX_STORAGE_PATH_CAPACITY];
+    gdox_error error;
+
+    return output != NULL && gdox_user_data_path(relative, path, &error)
+        && (size_t)snprintf(output, capacity, "%s", path) < capacity;
 }
 
 void gdox_app_use_physical_disc(gdox_app *app)

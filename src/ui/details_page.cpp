@@ -1,15 +1,31 @@
 #include "ui/presentation_internal.hpp"
 
+#include <cstdarg>
 #include <cstdint>
 
 namespace gdox::ui::detail {
 namespace {
 
+constexpr float value_column = 200.0F;
+
 void status_line(const char *label, bool value)
 {
     ImGui::TextUnformatted(label);
-    ImGui::SameLine(190.0F);
+    ImGui::SameLine(value_column);
     ImGui::TextColored(value ? ready : muted, "%s", value ? "Ready" : "Needed");
+}
+
+/* A name and its value in two columns. */
+void row(const char *label, const char *format, ...) IM_FMTARGS(2);
+void row(const char *label, const char *format, ...)
+{
+    va_list arguments;
+
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine(value_column);
+    va_start(arguments, format);
+    ImGui::TextV(format, arguments);
+    va_end(arguments);
 }
 
 const char *image_layout_name(const gdox_app_snapshot &snapshot)
@@ -32,19 +48,17 @@ const char *image_layout_name(const gdox_app_snapshot &snapshot)
 
 void draw_details(const gdox_app_snapshot &snapshot)
 {
-    ImGui::BeginChild(
-        "details-content",
-        ImVec2(0.0F, -footer_height),
-        ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened
+    begin_page("details-content");
+    /* Rows of facts sit closer together than controls do. */
+    ImGui::PushStyleVar(
+        ImGuiStyleVar_ItemSpacing,
+        ImVec2(ImGui::GetStyle().ItemSpacing.x, 4.0F)
     );
-    ImGui::SetWindowFontScale(1.25F);
-    ImGui::TextUnformatted("Technical details");
-    ImGui::SetWindowFontScale(1.0F);
+    aero::heading("Technical details");
     ImGui::TextColored(muted, "GDOX %s", GDOX_VERSION);
     ImGui::Dummy(ImVec2(0.0F, 12.0F));
 
-    ImGui::TextUnformatted("Game source");
-    ImGui::Separator();
+    aero::group("Game source");
     ImGui::TextColored(
         snapshot.media_source == GDOX_MEDIA_PHYSICAL_DISC ? ready : muted,
         "%s",
@@ -76,26 +90,27 @@ void draw_details(const gdox_app_snapshot &snapshot)
     }
     ImGui::Dummy(ImVec2(0.0F, 14.0F));
 
-    ImGui::TextUnformatted(
+    aero::group(
         snapshot.media_source == GDOX_MEDIA_PHYSICAL_DISC
             ? "Physical disc reads"
             : "Disc image"
     );
-    ImGui::Separator();
     if (snapshot.media_source == GDOX_MEDIA_DISC_IMAGE) {
         ImGui::TextColored(
             muted,
             "Read-only file source; no physical optical reads are claimed."
         );
         if (snapshot.image_source_sectors != 0U) {
-            ImGui::Text(
-                "Image size          %.2f GiB",
+            row(
+                "Image size",
+                "%.2f GiB",
                 static_cast<double>(snapshot.image_source_sectors)
                     * 2048.0
                     / (1024.0 * 1024.0 * 1024.0)
             );
-            ImGui::Text(
-                "Game partition LBA  %llu",
+            row(
+                "Game partition LBA",
+                "%llu",
                 static_cast<unsigned long long>(
                     snapshot.image_game_partition_lba
                 )
@@ -108,21 +123,25 @@ void draw_details(const gdox_app_snapshot &snapshot)
             ready,
             "Confirmed directly from the optical transport"
         );
-        ImGui::Text(
-            "READ(12) commands   %llu",
+        row(
+            "READ(12) commands",
+            "%llu",
             static_cast<unsigned long long>(snapshot.physical_read_commands)
         );
-        ImGui::Text(
-            "Physical sectors   %llu",
+        row(
+            "Physical sectors",
+            "%llu",
             static_cast<unsigned long long>(snapshot.physical_read_sectors)
         );
-        ImGui::Text(
-            "Data delivered     %.2f MiB",
+        row(
+            "Data delivered",
+            "%.2f MiB",
             static_cast<double>(snapshot.physical_read_bytes)
                 / (1024.0 * 1024.0)
         );
-        ImGui::Text(
-            "Last physical LBA  %llu",
+        row(
+            "Last physical LBA",
+            "%llu",
             static_cast<unsigned long long>(snapshot.physical_last_lba)
         );
     }
@@ -145,15 +164,17 @@ void draw_details(const gdox_app_snapshot &snapshot)
                 : 0.0;
 
             ImGui::Dummy(ImVec2(0.0F, 8.0F));
-            ImGui::TextUnformatted("Live playback reads");
-            ImGui::Text(
-                "Guest requests      %llu (%.2f MiB)",
+            aero::group("Live playback reads");
+            row(
+                "Guest requests",
+                "%llu (%.2f MiB)",
                 static_cast<unsigned long long>(reads.requests),
                 static_cast<double>(reads.requested_bytes)
                     / (1024.0 * 1024.0)
             );
-            ImGui::Text(
-                "Served without drive I/O  %llu / %llu (%.1f%%)",
+            row(
+                "Served without drive I/O",
+                "%llu / %llu (%.1f%%)",
                 static_cast<unsigned long long>(
                     reads.served_without_drive_io_requests
                 ),
@@ -162,20 +183,23 @@ void draw_details(const gdox_app_snapshot &snapshot)
                 ),
                 no_drive_percent
             );
-            ImGui::Text(
-                "Drive-backed reads  %llu",
+            row(
+                "Drive-backed reads",
+                "%llu",
                 static_cast<unsigned long long>(
                     reads.requests_with_drive_io
                 )
             );
-            ImGui::Text(
-                "Guest optical I/O   %llu commands / %.2f MiB",
+            row(
+                "Guest optical I/O",
+                "%llu commands / %.2f MiB",
                 static_cast<unsigned long long>(reads.physical_commands),
                 static_cast<double>(reads.physical_bytes)
                     / (1024.0 * 1024.0)
             );
-            ImGui::Text(
-                "Sequential / discontinuous  %llu / %llu",
+            row(
+                "Sequential / discontinuous",
+                "%llu / %llu",
                 static_cast<unsigned long long>(
                     reads.sequential_requests
                 ),
@@ -183,8 +207,9 @@ void draw_details(const gdox_app_snapshot &snapshot)
                     reads.discontinuous_requests
                 )
             );
-            ImGui::Text(
-                "Read service avg / max  %.1f / %llu ms",
+            row(
+                "Read service avg / max",
+                "%.1f / %llu ms",
                 average_service_ms,
                 static_cast<unsigned long long>(
                     reads.maximum_service_milliseconds
@@ -193,7 +218,7 @@ void draw_details(const gdox_app_snapshot &snapshot)
             if (reads.failed_requests != 0U) {
                 ImGui::TextColored(
                     warning,
-                    "Failed guest reads  %llu",
+                    "Failed guest reads: %llu",
                     static_cast<unsigned long long>(
                         reads.failed_requests
                     )
@@ -203,18 +228,19 @@ void draw_details(const gdox_app_snapshot &snapshot)
     }
     ImGui::Dummy(ImVec2(0.0F, 14.0F));
 
-    ImGui::TextUnformatted("Runtime");
-    ImGui::Separator();
+    aero::group("Runtime");
     if (snapshot.media_backend == GDOX_MEDIA_BACKEND_XENIA) {
         status_line("Xenia", snapshot.xenia_ready);
         if (snapshot.xenia_policy != nullptr
             && snapshot.xenia_policy->runtime != nullptr) {
-            ImGui::Text(
-                "Revision            %s",
+            row(
+                "Revision",
+                "%s",
                 snapshot.xenia_policy->runtime->revision
             );
-            ImGui::Text(
-                "Launch module       %s",
+            row(
+                "Launch module",
+                "%s",
                 snapshot.xenia_policy->launch_module
             );
         }
@@ -231,11 +257,11 @@ void draw_details(const gdox_app_snapshot &snapshot)
     }
     ImGui::Dummy(ImVec2(0.0F, 14.0F));
 
-    ImGui::TextUnformatted("Current state");
-    ImGui::Separator();
+    aero::group("Current state");
     ImGui::TextWrapped("%s", snapshot.status);
     ImGui::TextColored(muted, "%s", snapshot.notice);
-    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    end_page();
 }
 
 }
