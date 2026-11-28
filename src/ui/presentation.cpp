@@ -1,50 +1,80 @@
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include "ui/presentation.hpp"
 #include "ui/presentation_internal.hpp"
+#include "ui/cover_art.hpp"
 #include "ui/theme.hpp"
+#include "ui/window_frame.hpp"
 
 #include "nfd.h"
 #include "raylib.h"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 
 namespace gdox::ui::detail {
 namespace {
 
+constexpr ImGuiWindowFlags root_flags = ImGuiWindowFlags_NoDecoration
+    | ImGuiWindowFlags_NoMove
+    | ImGuiWindowFlags_NoSavedSettings
+    | ImGuiWindowFlags_NoBringToFrontOnFocus;
+
 bool file_dialogs_ready = false;
 std::array<char, 192> ui_notice{};
+/* The white page under the tabs, set by draw_root() for begin_page(). */
+ImVec2 page_min;
+ImVec2 page_max;
 
-bool page_button(const char *label, bool selected, float width)
+bool draw_header()
 {
-    if (selected) {
-        ImGui::PushStyleColor(
-            ImGuiCol_Button,
-            ImVec4(0.063F, 0.486F, 0.063F, 1.0F)
-        );
-        ImGui::PushStyleColor(
-            ImGuiCol_ButtonHovered,
-            ImVec4(0.086F, 0.60F, 0.086F, 1.0F)
-        );
-    } else {
-        ImGui::PushStyleColor(
-            ImGuiCol_Button,
-            ImVec4(0.10F, 0.12F, 0.13F, 1.0F)
-        );
-        ImGui::PushStyleColor(
-            ImGuiCol_ButtonHovered,
-            ImVec4(0.15F, 0.17F, 0.18F, 1.0F)
-        );
+    const char *site_label = "gdox.korze.org";
+    const char *discord_label = "Discord";
+    constexpr float link_gap = 7.0F;
+    constexpr float quit_width = 75.0F;
+    const ImVec2 origin = ImGui::GetCursorPos();
+    const float right = origin.x + ImGui::GetContentRegionAvail().x;
+    const float line = ImGui::GetTextLineHeight();
+    const float button_height = ImGui::GetFrameHeight();
+
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.6F);
+    const ImVec2 brand = ImGui::CalcTextSize("GDOX");
+    ImGui::TextColored(accent, "GDOX");
+    ImGui::PopFont();
+    const float row = std::max(brand.y, button_height);
+    const float links_width = ImGui::CalcTextSize(site_label).x
+        + ImGui::CalcTextSize("|").x
+        + ImGui::CalcTextSize(discord_label).x
+        + link_gap * 2.0F;
+    const float links_x = right - quit_width - 14.0F - links_width;
+
+    ImGui::SetCursorPos(ImVec2(
+        links_x, origin.y + std::floor((row - line) * 0.5F)
+    ));
+    if (aero::link(site_label)) {
+        OpenURL("https://gdox.korze.org");
     }
-    const bool pressed = ImGui::Button(
-        label,
-        ImVec2(width, std::max(34.0F, ImGui::GetFrameHeight()))
+    ImGui::SameLine(0.0F, link_gap);
+    ImGui::TextColored(
+        ImGui::ColorConvertU32ToFloat4(aero::rgb(0xA0A0A0)), "|"
     );
-    ImGui::PopStyleColor(2);
-    return pressed;
+    ImGui::SameLine(0.0F, link_gap);
+    if (aero::link(discord_label)) {
+        OpenURL("https://discord.gg/TEzuUEJk4B");
+    }
+    ImGui::SetCursorPos(ImVec2(
+        right - quit_width,
+        origin.y + std::floor((row - button_height) * 0.5F)
+    ));
+    const bool quit_requested = aero::button(
+        "Quit", ImVec2(quit_width, 0.0F)
+    );
+    ImGui::SetCursorPos(ImVec2(origin.x, origin.y + row + 9.0F));
+    return quit_requested;
 }
 
-bool draw_header(gdox_app &app, const gdox_app_snapshot &snapshot)
+void draw_tabs(gdox_app &app, const gdox_app_snapshot &snapshot)
 {
     static constexpr std::array<const char *, 5> labels = {
         "Play",
@@ -60,179 +90,110 @@ bool draw_header(gdox_app &app, const gdox_app_snapshot &snapshot)
         GDOX_APP_PAGE_SETTINGS,
         GDOX_APP_PAGE_SOURCES,
     };
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    int selected = 0;
 
-    const char *tagline =
-        "made by korze, with love, for gaming preservation everywhere";
-    const float row_x = ImGui::GetCursorPosX();
-    const float row_y = ImGui::GetCursorPosY();
-    const float content_width = ImGui::GetContentRegionAvail().x;
-    const float content_right = ImGui::GetWindowContentRegionMax().x;
-    const bool compact = content_width < 840.0F;
-    const float title_scale = compact ? 1.85F : 2.10F;
-    const float tagline_scale = compact ? 0.65F : 0.82F;
-    const float button_width = compact ? 58.0F : 62.0F;
-    const float button_height = ImGui::GetFrameHeight();
-    const char *site_label = compact ? "Site" : "gdox.korze.org";
-    const char *discord_label = "Discord";
-    const float link_gap = 7.0F;
-    const float button_gap = 12.0F;
-    const float site_width = ImGui::CalcTextSize(site_label).x;
-    const float separator_width = ImGui::CalcTextSize("·").x;
-    const float discord_width = ImGui::CalcTextSize(discord_label).x;
-    const float links_width = site_width + link_gap + separator_width
-        + link_gap + discord_width;
-    const float actions_width = links_width + button_gap + button_width;
-    const float actions_x = content_right - actions_width;
-
-    ImGui::SetWindowFontScale(title_scale);
-    const ImVec2 title_size = ImGui::CalcTextSize("GDOX");
-    ImGui::SetWindowFontScale(tagline_scale);
-    const ImVec2 tagline_size = ImGui::CalcTextSize(tagline);
-    ImGui::SetWindowFontScale(1.0F);
-    const float brand_width = title_size.x + 14.0F + tagline_size.x;
-    const bool single_row = brand_width + 18.0F + actions_width
-        <= content_width;
-    const float brand_height = std::max(title_size.y, tagline_size.y);
-    const float actions_height = std::max(
-        button_height,
-        ImGui::GetTextLineHeight()
-    );
-    const float single_row_height = std::max(brand_height, actions_height);
-    const float brand_y = single_row
-        ? row_y + (single_row_height - brand_height) * 0.5F
-        : row_y;
-    const float actions_y = single_row
-        ? row_y + (single_row_height - actions_height) * 0.5F
-        : row_y + brand_height + 4.0F;
-    const float text_y = actions_y
-        + std::max(
-            0.0F,
-            (actions_height - ImGui::GetTextLineHeight()) * 0.5F
-        );
-    const float header_height = single_row
-        ? single_row_height
-        : brand_height + 4.0F + actions_height;
-
-    ImGui::SetWindowFontScale(title_scale);
-    ImGui::SetCursorPos(ImVec2(
-        row_x,
-        brand_y + std::max(0.0F, (brand_height - title_size.y) * 0.5F)
-    ));
-    ImGui::TextColored(accent, "GDOX");
-
-    ImGui::SetWindowFontScale(tagline_scale);
-    const float tagline_x = row_x + title_size.x + 14.0F;
-    ImGui::SetCursorPos(ImVec2(
-        tagline_x,
-        brand_y + std::max(
-            0.0F,
-            (brand_height - tagline_size.y) * 0.5F
-        )
-    ));
-    ImGui::TextColored(
-        ImVec4(0.38F, 0.41F, 0.43F, 1.0F),
-        "%s",
-        tagline
-    );
-
-    ImGui::SetWindowFontScale(1.0F);
-    ImGui::SetCursorPos(ImVec2(actions_x, text_y));
-    ImGui::PushStyleColor(
-        ImGuiCol_TextLink,
-        ImVec4(0.62F, 0.66F, 0.68F, 1.0F)
-    );
-    if (ImGui::TextLink(site_label)) {
-        OpenURL("https://gdox.korze.org");
-    }
-    ImGui::SameLine(0.0F, 7.0F);
-    ImGui::TextColored(muted, "·");
-    ImGui::SameLine(0.0F, 7.0F);
-    if (ImGui::TextLink(discord_label)) {
-        OpenURL("https://discord.gg/TEzuUEJk4B");
-    }
-    ImGui::PopStyleColor();
-    ImGui::SetCursorPos(ImVec2(
-        content_right - button_width,
-        actions_y + (actions_height - button_height) * 0.5F
-    ));
-    ImGui::PushStyleVar(
-        ImGuiStyleVar_ButtonTextAlign,
-        ImVec2(0.5F, 0.5F)
-    );
-    const bool quit_requested = ImGui::Button(
-        "Quit",
-        ImVec2(button_width, button_height)
-    );
-    ImGui::PopStyleVar();
-    ImGui::SetCursorPos(ImVec2(row_x, row_y + header_height));
-    ImGui::Dummy(ImVec2(0.0F, 4.0F));
-
-    constexpr float gap = 8.0F;
-    const float width = std::max(
-        88.0F,
-        (ImGui::GetContentRegionAvail().x
-            - gap * static_cast<float>(labels.size() - 1U))
-            / static_cast<float>(labels.size())
-    );
-    for (std::size_t index = 0U; index < labels.size(); ++index) {
-        if (index != 0U) {
-            ImGui::SameLine(0.0F, gap);
-        }
-        if (page_button(labels[index], snapshot.page == pages[index], width)) {
-            gdox_app_select_page(&app, pages[index]);
+    for (std::size_t index = 0U; index < pages.size(); ++index) {
+        if (snapshot.page == pages[index]) {
+            selected = static_cast<int>(index);
         }
     }
-    ImGui::Dummy(ImVec2(0.0F, 4.0F));
-    return quit_requested;
+    draw->AddRectFilled(page_min, page_max, aero::color.window);
+    draw->AddRect(page_min, page_max, aero::color.control_border);
+    const int clicked = aero::tabs(
+        labels.data(), static_cast<int>(labels.size()), selected
+    );
+    if (clicked >= 0) {
+        gdox_app_select_page(&app, pages[static_cast<std::size_t>(clicked)]);
+    }
 }
 
-void draw_footer(const gdox_app_snapshot &snapshot, bool gaming_mode)
+void draw_status_bar(
+    const gdox_app_snapshot &snapshot,
+    bool gaming_mode,
+    const ImVec2 &min,
+    const ImVec2 &max
+)
 {
-    ImGui::TextColored(muted, "%s", snapshot.status);
-    const char *notice = ui_notice[0] != '\0' ? ui_notice.data() : snapshot.notice;
-    if (notice[0] != '\0') {
-        const float notice_width = ImGui::CalcTextSize(notice).x;
-        ImGui::SameLine(
-            std::max(
-                ImGui::GetCursorPosX(),
-                ImGui::GetWindowContentRegionMax().x - notice_width
-            )
-        );
-        ImGui::TextColored(warning, "%s", notice);
-    } else {
-        const char *controls = gaming_mode
+    const char *notice = ui_notice[0] != '\0'
+        ? ui_notice.data() : snapshot.notice;
+    const bool has_notice = notice[0] != '\0';
+    const char *aside = has_notice ? notice
+        : gaming_mode
             ? "D-pad navigate  |  A select  |  LB/RB pages"
             : "F11 playback fullscreen  |  Ctrl+P pause";
-        const float controls_width = ImGui::CalcTextSize(controls).x;
-        ImGui::SameLine(
-            std::max(
-                ImGui::GetCursorPosX(),
-                ImGui::GetWindowContentRegionMax().x - controls_width
-            )
-        );
-        ImGui::TextColored(muted, "%s", controls);
-    }
+    const float inset = ImGui::GetStyle().WindowPadding.x;
+    const float y = min.y + 2.0F + std::floor(
+        (max.y - min.y - 2.0F - ImGui::GetTextLineHeight()) * 0.5F
+    );
+    const float aside_x = std::max(
+        min.x + inset, max.x - inset - ImGui::CalcTextSize(aside).x
+    );
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+
+    draw->AddRectFilled(
+        min,
+        ImVec2(max.x, min.y + 1.0F),
+        ImGui::GetColorU32(ImGuiCol_Separator)
+    );
+    draw->AddRectFilled(
+        ImVec2(min.x, min.y + 1.0F),
+        ImVec2(max.x, min.y + 2.0F),
+        aero::color.window
+    );
+    draw->PushClipRect(min, ImVec2(aside_x - 12.0F, max.y), true);
+    draw->AddText(
+        ImVec2(min.x + inset, y), aero::color.text, snapshot.status
+    );
+    draw->PopClipRect();
+    draw->AddText(
+        ImVec2(aside_x, y),
+        has_notice
+            ? ImGui::ColorConvertFloat4ToU32(warning)
+            : aero::color.gray_text,
+        aside
+    );
 }
 
-bool draw_root(gdox_app &app, bool gaming_mode)
+request draw_root(gdox_app &app, bool gaming_mode)
 {
     const gdox_app_snapshot *snapshot = gdox_app_snapshot_get(&app);
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
     if (snapshot == nullptr) {
-        return false;
+        return request::none;
     }
-    bool quit_requested = false;
+    static int applied_theme = -1;
+    if (snapshot->settings.theme != applied_theme) {
+        applied_theme = snapshot->settings.theme;
+        apply_theme(snapshot->settings.theme, gaming_mode);
+        frame::show(snapshot->settings.theme == GDOX_THEME_WINDOWS_7);
+    }
+    ImVec2 position = viewport->WorkPos;
+    ImVec2 size = viewport->WorkSize;
+    request result = frame::draw("GDOX", position, size)
+        ? request::close_window : request::none;
+    const ImVec2 padding = ImGui::GetStyle().WindowPadding;
+    const float status_height = ImGui::GetFontSize() + 8.0F;
 
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
-    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration
-        | ImGuiWindowFlags_NoMove
-        | ImGuiWindowFlags_NoSavedSettings
-        | ImGuiWindowFlags_NoBringToFrontOnFocus;
+    ImGui::SetNextWindowPos(position);
+    ImGui::SetNextWindowSize(size);
+    /* The root window is the whole client area: no rounding or border. */
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
-    if (ImGui::Begin("GDOX", nullptr, flags)) {
-        quit_requested = draw_header(app, *snapshot);
+    const bool root_open = ImGui::Begin("GDOX", nullptr, root_flags);
+    ImGui::PopStyleVar(2);
+    if (root_open) {
+        if (draw_header()) {
+            result = request::quit;
+        }
+        page_min = ImGui::GetCursorScreenPos() + ImVec2(
+            0.0F,
+            aero::plain ? ImGui::GetFrameHeight() + 6.0F
+                        : ImGui::GetFontSize() + 8.0F
+        );
+        page_max = position + size
+            - ImVec2(padding.x, status_height + padding.y - 2.0F);
+        draw_tabs(app, *snapshot);
         switch (snapshot->page) {
             case GDOX_APP_PAGE_PLAY:
                 draw_play(app, *snapshot);
@@ -250,14 +211,39 @@ bool draw_root(gdox_app &app, bool gaming_mode)
                 draw_sources(app, *snapshot);
                 break;
         }
-        draw_footer(*snapshot, gaming_mode);
+        draw_status_bar(
+            *snapshot,
+            gaming_mode,
+            ImVec2(position.x, position.y + size.y - status_height),
+            position + size
+        );
     }
     ImGui::End();
-    ImGui::PopStyleVar(2);
-    return quit_requested;
+    return result;
 }
 
 }
+void begin_page(const char *identifier, ImGuiWindowFlags flags)
+{
+    ImGui::SetCursorScreenPos(page_min + ImVec2(1.0F, 1.0F));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0F, 12.0F));
+    ImGui::BeginChild(
+        identifier,
+        page_max - page_min - ImVec2(2.0F, 2.0F),
+        ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened,
+        flags
+    );
+    ImGui::PopStyleVar();
+    aero::skin_scrollbar(
+        (flags & ImGuiWindowFlags_AlwaysVerticalScrollbar) != 0
+    );
+}
+
+void end_page()
+{
+    ImGui::EndChild();
+}
+
 bool initialize_dialogs()
 {
     file_dialogs_ready = NFD_Init() == NFD_OKAY;
@@ -307,15 +293,16 @@ void set_dialog_error(const char *operation)
     );
 }
 
-bool action_button(const char *label, bool enabled, const ImVec2 &size)
+bool action_button(
+    const char *label,
+    bool enabled,
+    const ImVec2 &size,
+    bool is_default
+)
 {
-    if (!enabled) {
-        ImGui::BeginDisabled();
-    }
-    const bool pressed = ImGui::Button(label, size);
-    if (!enabled) {
-        ImGui::EndDisabled();
-    }
+    ImGui::BeginDisabled(!enabled);
+    const bool pressed = aero::button(label, size, is_default && enabled);
+    ImGui::EndDisabled();
     return enabled && pressed;
 }
 
@@ -405,12 +392,13 @@ namespace gdox::ui {
 
 void initialize_presentation()
 {
-    apply_theme();
+    load_fonts();
     (void)detail::initialize_dialogs();
 }
 
 void shutdown_presentation()
 {
+    cover::shutdown();
     detail::shutdown_dialogs();
 }
 
@@ -419,9 +407,32 @@ void clear_notice()
     detail::set_notice("");
 }
 
-bool draw_application(gdox_app &app, bool gaming_mode)
+request draw_application(gdox_app &app, bool gaming_mode)
 {
     return detail::draw_root(app, gaming_mode);
+}
+
+void draw_closing(const gdox_app_snapshot &snapshot)
+{
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    ImVec2 position = viewport->WorkPos;
+    ImVec2 size = viewport->WorkSize;
+
+    (void)frame::draw("GDOX", position, size);
+    ImGui::SetNextWindowPos(position);
+    ImGui::SetNextWindowSize(size);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
+    ImGui::Begin("##closing", nullptr, detail::root_flags);
+    ImGui::PopStyleVar(2);
+    aero::heading("Closing GDOX");
+    ImGui::Spacing();
+    ImGui::TextWrapped("%s", snapshot.drive);
+    ImGui::TextWrapped("%s", snapshot.notice);
+    if (snapshot.pending_cleanup_count != 0U) {
+        ImGui::TextWrapped("%s", snapshot.pending_cleanup_notice);
+    }
+    ImGui::End();
 }
 
 }

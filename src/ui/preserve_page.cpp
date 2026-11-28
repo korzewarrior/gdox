@@ -69,14 +69,10 @@ void draw_preservation_progress(
                 / static_cast<double>(snapshot.preservation_total_bytes)
         )
         : 0.0F;
-    ImGui::SetWindowFontScale(1.25F);
-    ImGui::TextUnformatted(
-        preservation_phase_label(snapshot.preservation_phase)
-    );
-    ImGui::SetWindowFontScale(1.0F);
+    aero::heading(preservation_phase_label(snapshot.preservation_phase));
     ImGui::TextColored(muted, "%s", snapshot.disc);
-    ImGui::Dummy(ImVec2(0.0F, 18.0F));
-    ImGui::ProgressBar(fraction, ImVec2(-1.0F, 24.0F));
+    ImGui::Dummy(ImVec2(0.0F, 12.0F));
+    aero::progress(fraction);
     ImGui::Text(
         "%.2f / %.2f GiB",
         static_cast<double>(snapshot.preservation_completed_bytes)
@@ -99,11 +95,11 @@ void draw_preservation_progress(
         );
     }
     ImGui::TextWrapped("Output: %s", snapshot.preservation_output);
-    ImGui::Dummy(ImVec2(0.0F, 18.0F));
+    ImGui::Dummy(ImVec2(0.0F, 12.0F));
     if (action_button(
             "Cancel",
             snapshot.can_cancel_preservation,
-            ImVec2(-1.0F, 42.0F)
+            ImVec2(0.0F, 0.0F)
         )) {
         gdox_app_cancel_preservation(&app);
     }
@@ -119,32 +115,26 @@ void draw_preserve(gdox_app &app, const gdox_app_snapshot &snapshot)
     static int suggested_format = -1;
     static bool name_is_default = true;
 
-    ImGui::BeginChild(
-        "preserve-content",
-        ImVec2(0.0F, -footer_height),
-        ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened
-    );
+    begin_page("preserve-content");
     const bool compact_layout = ImGui::GetWindowHeight() < 420.0F;
     draw_drive_selector(app, snapshot);
     if (snapshot.phase == GDOX_APP_PRESERVING) {
         draw_preservation_progress(app, snapshot);
-        ImGui::EndChild();
+        end_page();
         return;
     }
 
     if (snapshot.preservation_complete) {
-        ImGui::SetWindowFontScale(1.20F);
-        ImGui::TextUnformatted("Preservation complete");
-        ImGui::SetWindowFontScale(1.0F);
+        aero::heading("Preservation complete");
         ImGui::TextWrapped("%s", snapshot.notice);
         ImGui::TextWrapped("Output: %s", snapshot.preservation_output);
-        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0.0F, 6.0F));
     }
 
-    ImGui::TextUnformatted("Format");
-    (void)ImGui::RadioButton("Playable XISO", &format, 0);
-    ImGui::SameLine();
-    (void)ImGui::RadioButton("Full-disc preservation", &format, 1);
+    aero::group("Format");
+    (void)aero::radio("Playable XISO", &format, 0);
+    ImGui::SameLine(0.0F, 18.0F);
+    (void)aero::radio("Full-disc preservation", &format, 1);
     const char *disc_title =
         snapshot.media_source == GDOX_MEDIA_PHYSICAL_DISC
             && disc_is_present(snapshot)
@@ -178,24 +168,31 @@ void draw_preserve(gdox_app &app, const gdox_app_snapshot &snapshot)
     );
     ImGui::Dummy(ImVec2(0.0F, compact_layout ? 2.0F : 12.0F));
 
-    ImGui::TextUnformatted("Save folder");
-    ImGui::TextColored(
-        muted,
-        "%s",
-        snapshot.settings.preservation_directory[0] != '\0'
-            ? snapshot.settings.preservation_directory
-            : "Choose a folder before preserving"
+    aero::group("Save folder");
+    const bool has_folder =
+        snapshot.settings.preservation_directory[0] != '\0';
+    const float choose_width = 120.0F;
+    ImGui::SetNextItemWidth(
+        ImGui::GetContentRegionAvail().x
+            - choose_width
+            - ImGui::GetStyle().ItemSpacing.x
     );
-    if (ImGui::Button("Choose folder...", ImVec2(148.0F, 34.0F))) {
+    aero::field(
+        "##preservation-folder",
+        has_folder
+            ? snapshot.settings.preservation_directory
+            : "Choose a folder before preserving",
+        !has_folder
+    );
+    ImGui::SameLine();
+    if (aero::button("Choose folder...", ImVec2(choose_width, 0.0F))) {
         choose_preservation_folder(app, snapshot);
     }
-    if (!compact_layout) {
-        ImGui::Dummy(ImVec2(0.0F, 8.0F));
-    }
+    ImGui::Dummy(ImVec2(0.0F, compact_layout ? 2.0F : 12.0F));
 
-    ImGui::TextUnformatted("File name");
+    aero::group("File name");
     ImGui::SetNextItemWidth(-1.0F);
-    if (ImGui::InputText(
+    if (aero::edit(
             "##preservation-name",
             filename.data(),
             filename.size()
@@ -205,7 +202,7 @@ void draw_preserve(gdox_app &app, const gdox_app_snapshot &snapshot)
     if (!valid_output_name(filename.data())) {
         ImGui::TextColored(warning, "Enter a file name, without folders.");
     }
-    (void)ImGui::Checkbox("Verify the finished image", &verify);
+    (void)aero::checkbox("Verify the finished image", &verify);
     if (snapshot.media_platform == GDOX_MEDIA_PLATFORM_XBOX_360) {
         ImGui::TextColored(
             muted,
@@ -218,10 +215,20 @@ void draw_preserve(gdox_app &app, const gdox_app_snapshot &snapshot)
         );
     }
 
-    const float remaining = ImGui::GetContentRegionAvail().y;
-    if (remaining > 42.0F) {
-        ImGui::Dummy(ImVec2(0.0F, remaining - 42.0F));
+    /* The page's command button sits in its bottom right corner. */
+    const float begin_width = 150.0F;
+    const float begin_height = ImGui::GetFrameHeight() + 4.0F;
+    const float spare = ImGui::GetContentRegionAvail().y
+        - begin_height
+        - ImGui::GetStyle().ItemSpacing.y;
+    if (spare > 0.0F) {
+        ImGui::Dummy(ImVec2(0.0F, spare));
     }
+    ImGui::SetCursorPosX(
+        ImGui::GetCursorPosX()
+            + ImGui::GetContentRegionAvail().x
+            - begin_width
+    );
     std::string output_path;
     const bool output_ready = build_output_path(
         snapshot.settings.preservation_directory,
@@ -232,7 +239,8 @@ void draw_preserve(gdox_app &app, const gdox_app_snapshot &snapshot)
     if (action_button(
             "Begin preservation",
             can_begin,
-            ImVec2(-1.0F, 42.0F)
+            ImVec2(begin_width, begin_height),
+            true
         )) {
         if (!gdox_app_begin_preservation(
                 &app,
@@ -247,7 +255,7 @@ void draw_preserve(gdox_app &app, const gdox_app_snapshot &snapshot)
             set_notice("");
         }
     }
-    ImGui::EndChild();
+    end_page();
 }
 
 }

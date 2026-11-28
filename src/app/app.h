@@ -25,6 +25,7 @@ bool gdox_app_shutdown(gdox_app *app, gdox_error *error);
 const gdox_app_snapshot *gdox_app_snapshot_get(const gdox_app *app);
 void gdox_app_select_page(gdox_app *app, gdox_app_page page);
 void gdox_app_set_auto_start(gdox_app *app, bool enabled);
+void gdox_app_set_theme(gdox_app *app, uint8_t theme);
 void gdox_app_command(gdox_app *app, gdox_session_event event);
 bool gdox_app_begin_preservation(
     gdox_app *app,
@@ -47,6 +48,8 @@ bool gdox_app_use_bundled_xemu(gdox_app *app);
 bool gdox_app_select_drive(gdox_app *app, const char *id);
 bool gdox_app_set_preservation_directory(gdox_app *app, const char *path);
 bool gdox_app_open_disc_image(gdox_app *app, const char *path);
+/* Resolves `relative` under the per-user GDOX data directory. */
+bool gdox_app_data_path(const char *relative, char *output, size_t capacity);
 void gdox_app_use_physical_disc(gdox_app *app);
 bool gdox_app_import_firmware(gdox_app *app, const char *path);
 bool gdox_app_import_mcpx(gdox_app *app, const char *path);

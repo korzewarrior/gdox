@@ -30,6 +30,8 @@ if(NOT GDOX_RAYLIB_TARGET)
         GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(raylib)
+    # Cover art (src/ui/cover_art.cpp) is mostly JPEG.
+    target_compile_definitions(raylib PRIVATE SUPPORT_FILEFORMAT_JPG=1)
     set(GDOX_RAYLIB_TARGET raylib)
 endif()
 
@@ -75,6 +77,17 @@ target_include_directories(
         ${rlimgui_SOURCE_DIR}
 )
 target_compile_definitions(gdox_imgui PRIVATE NO_FONT_AWESOME)
+# Hinted glyphs come much closer to Windows' text than stb_truetype's; the
+# built-in rasteriser remains where FreeType is not installed.
+find_package(Freetype QUIET)
+if(TARGET Freetype::Freetype)
+    target_sources(
+        gdox_imgui
+        PRIVATE ${imgui_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp
+    )
+    target_compile_definitions(gdox_imgui PUBLIC IMGUI_ENABLE_FREETYPE)
+    target_link_libraries(gdox_imgui PUBLIC Freetype::Freetype)
+endif()
 target_link_libraries(gdox_imgui PUBLIC ${GDOX_RAYLIB_TARGET})
 if(MSVC)
     target_compile_options(gdox_imgui PRIVATE /w)
@@ -88,7 +101,9 @@ add_executable(
     gdox
     src/app/background.c
     src/app/background_lifecycle.c
+    src/ui/aero.cpp
     src/ui/configuration_pages.cpp
+    src/ui/cover_art.cpp
     src/ui/details_page.cpp
     src/ui/gamepad_input_policy.c
     src/ui/main.cpp
@@ -97,6 +112,7 @@ add_executable(
     src/ui/presentation.cpp
     src/ui/preserve_page.cpp
     src/ui/theme.cpp
+    src/ui/window_frame.cpp
 )
 if(NOT WIN32)
     target_sources(
@@ -112,7 +128,8 @@ if(WIN32)
             src/platform/instance_guard_windows.c
     )
     target_compile_definitions(gdox PRIVATE _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(gdox PRIVATE shell32)
+    target_sources(gdox PRIVATE src/ui/window_frame_win32.c)
+    target_link_libraries(gdox PRIVATE shell32 urlmon ole32)
     configure_file(
         src/platform/windows_resources.rc.in
         "${CMAKE_CURRENT_BINARY_DIR}/windows_resources.rc"
@@ -153,6 +170,12 @@ elseif(APPLE)
     )
     target_link_libraries(gdox PRIVATE "-framework AppKit")
 else()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # The Windows 7 frame hands moves and resizes to the X11 window manager.
+        find_package(X11 REQUIRED)
+        target_sources(gdox PRIVATE src/ui/window_frame_x11.c)
+        target_link_libraries(gdox PRIVATE X11::X11)
+    endif()
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
         pkg_check_modules(GDOX_DBUS QUIET IMPORTED_TARGET dbus-1)

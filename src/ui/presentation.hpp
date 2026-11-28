@@ -7,10 +7,15 @@ extern "C" {
 
 namespace gdox::ui {
 
+/* What the user asked of the window this frame. */
+enum class request { none, close_window, quit };
+
 void initialize_presentation();
 void shutdown_presentation();
 void clear_notice();
-bool draw_application(gdox_app &app, bool gaming_mode);
+request draw_application(gdox_app &app, bool gaming_mode);
+/* Shown while a quit waits for the drive to be restored. */
+void draw_closing(const gdox_app_snapshot &snapshot);
 
 }
 

@@ -24,6 +24,7 @@ typedef struct gdox_runtime_media_info {
     gdox_x360_executable_kind xenia_module_kind;
     gdox_x360_execution_info xenia_module_execution;
     char title[GDOX_LIVE_TITLE_CAPACITY];
+    char media_id[16];
 } gdox_runtime_media_info;
 
 typedef struct gdox_runtime_media_session {

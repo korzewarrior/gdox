@@ -33,6 +33,11 @@ typedef enum gdox_app_phase {
     GDOX_APP_ATTENTION
 } gdox_app_phase;
 
+enum {
+    GDOX_THEME_WINDOWS_7 = 0,
+    GDOX_THEME_GDOX = 1
+};
+
 typedef enum gdox_host_profile {
     GDOX_HOST_PROFILE_DESKTOP = 0,
     GDOX_HOST_PROFILE_HANDHELD
@@ -56,6 +61,8 @@ typedef struct gdox_app_settings {
     char preservation_directory[GDOX_EMULATOR_PATH_CAPACITY];
     char optical_device_id[GDOX_OPTICAL_DEVICE_ID_CAPACITY];
     char optical_device_label[GDOX_APP_DRIVE_LABEL_CAPACITY];
+    /* GDOX_THEME_WINDOWS_7 or GDOX_THEME_GDOX. */
+    uint8_t theme;
 } gdox_app_settings;
 
 typedef struct gdox_app_optical_device {
@@ -118,6 +125,8 @@ typedef struct gdox_app_snapshot {
     uint64_t image_game_partition_lba;
     char drive[GDOX_APP_TEXT_CAPACITY];
     char disc[GDOX_APP_TEXT_CAPACITY];
+    /* Cover-art key: Xbox/360 title ID as 8 hex digits, GameCube/Wii game ID. */
+    char media_id[16];
     char status[GDOX_APP_TEXT_CAPACITY];
     char notice[GDOX_APP_TEXT_CAPACITY];
     char xemu_setup[GDOX_APP_TEXT_CAPACITY];

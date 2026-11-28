@@ -38,6 +38,7 @@ void gdox_runtime_reset_media_snapshot(
     snapshot->image_source_sectors = 0U;
     snapshot->image_game_partition_lba = 0U;
     snapshot->disc_image_path[0] = '\0';
+    snapshot->media_id[0] = '\0';
     snapshot->physical_read_commands = 0U;
     snapshot->physical_read_sectors = 0U;
     snapshot->physical_read_bytes = 0U;
@@ -81,6 +82,9 @@ bool gdox_runtime_apply_media_open_result(
     snapshot->image_game_partition_lba = info->game_partition_lba;
     gdox_runtime_copy_text(
         snapshot->disc, sizeof(snapshot->disc), info->title
+    );
+    gdox_runtime_copy_text(
+        snapshot->media_id, sizeof(snapshot->media_id), info->media_id
     );
     return true;
 }
